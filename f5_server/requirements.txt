@@ -1,0 +1,16 @@
+# venv: .venv-f5 (создаётся f5_server/setup.sh). Отдельный venv — несовместим с
+# основным API. torch/torchaudio/vocos/transformers подтягивает сам пакет f5-tts.
+#
+# ВАЖНО-1: f5-tts официально поддерживает Python 3.10-3.12. На 3.13 ставится, но
+# setup.sh предпочитает python3.11/3.12, если они есть.
+# ВАЖНО-2: f5-tts тянет torch 2.12/torchaudio 2.11/torchcodec — это ломает аудио на
+# машине без ffmpeg shared-libs. setup.sh ПОСЛЕ установки откатывает на torch==2.8.0
+# / torchaudio==2.8.0 и удаляет torchcodec (см. шаг 2a). Здесь torch НЕ пиним — иначе
+# f5-tts всё равно перетянет свой; порядок важен, фиксируем в setup.sh.
+f5-tts            # код инференса F5-TTS (тянет torch, torchaudio, vocos, transformers)
+ruaccent          # простановка ударений для русского (ключевое для качества)
+soundfile         # запись WAV
+fastapi
+uvicorn[standard]
+pydantic
+huggingface_hub[cli]

@@ -1,0 +1,5 @@
+{
+  "comment": "RAG-сервис живёт в своём venv (lightrag/torch конфликтуют с основным API). Указываем его Pylance, чтобы редактор не ругался на импорты lightrag.",
+  "venvPath": ".",
+  "venv": ".venv"
+}

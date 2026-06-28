@@ -1,0 +1,23 @@
+# Spark-сервер (казахский TTS). venv: .venv-spark (создаётся spark_server/setup.sh)
+#
+# ВАЖНО: Spark — особый случай. Большинство зависимостей инференса тянутся ДИНАМИЧЕСКИ
+# из склонированного репозитория SparkAudio/Spark-TTS (spark_tts_repo/requirements.txt),
+# их нельзя зафиксировать здесь. Ниже — только ВЕРХНИЙ слой (обёртка-сервер + torch).
+# Полная установка — spark_server/setup.sh (git clone + repo-reqs + загрузка модели).
+[project]
+name = "ai-dos-spark"
+version = "0.1.0"
+description = "Ai-dos Spark-TTS сервер казахского TTS"
+requires-python = ">=3.10"
+dependencies = [
+    "torch==2.8.0",          # 2.5.1 из repo НЕ ставится на 3.13 — подменяем
+    "torchaudio==2.8.0",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "huggingface_hub[cli]",
+    # + зависимости из spark_tts_repo/requirements.txt (ставит setup.sh, кроме torch/gradio)
+]
+
+[tool.uv]
+package = false

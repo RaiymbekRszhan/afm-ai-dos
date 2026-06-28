@@ -1,0 +1,16 @@
+[Unit]
+Description=Ai-dos RAG (ответ строго по базе РК, порт 8077)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-dos
+WorkingDirectory=/opt/ai-dos/rag
+# Зовёт LLM/эмбеддинги АФМ по HTTP (адреса в rag/.env). Индекс — rag_storage/ (ingest заранее).
+ExecStart=/opt/ai-dos/rag/.venv/bin/uvicorn ragsvc.server:app --host 0.0.0.0 --port 8077
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

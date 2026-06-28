@@ -1,0 +1,7 @@
+lightrag-hku==1.4.9.10
+openai>=1.30
+numpy
+tiktoken
+fastapi
+uvicorn[standard]
+python-dotenv

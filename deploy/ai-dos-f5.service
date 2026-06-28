@@ -1,0 +1,19 @@
+[Unit]
+Description=Ai-dos F5-TTS (русский TTS, порт 8810)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-dos
+WorkingDirectory=/opt/ai-dos
+# GPU: cuda. На CPU убрать строку (run.sh по умолчанию cpu).
+Environment=F5_DEVICE=cuda
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStart=/bin/bash f5_server/run.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

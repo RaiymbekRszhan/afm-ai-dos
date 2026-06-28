@@ -1,0 +1,25 @@
+[Unit]
+Description=Ai-dos оркестратор (STT -> RAG -> TTS, порт 8000)
+After=network-online.target ai-dos-rag.service ai-dos-f5.service ai-dos-spark.service
+Wants=network-online.target ai-dos-rag.service ai-dos-f5.service ai-dos-spark.service
+
+[Service]
+Type=simple
+User=ai-dos
+WorkingDirectory=/opt/ai-dos
+# Соответствует run_api.sh. STT каз — локальный Whisper (офлайн), TTS — наши сервисы.
+Environment=STT_KK_USE_WHISPER=true
+Environment=WHISPER_DEVICE=cuda
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=TTS_PROVIDER=f5
+Environment=F5_URL=http://localhost:8810/tts
+Environment=TTS_KK_PROVIDER=spark
+Environment=SPARK_URL=http://localhost:8809/tts
+Environment=RAG_URL=http://localhost:8077/ask
+ExecStart=/opt/ai-dos/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

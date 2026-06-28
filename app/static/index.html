@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>АФМ — проверка STT / TTS</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --accent:#3b62f6; --ok:#22c55e; --muted:#94a3b8; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg);
+           color: #e2e8f0; margin: 0; padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+    .card { background: var(--card); border-radius: 14px; padding: 20px; margin-bottom: 20px;
+            max-width: 720px; }
+    .card h2 { font-size: 16px; margin: 0 0 14px; }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 10px;
+             padding: 11px 18px; font-size: 15px; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.rec { background: #ef4444; }
+    button.sec { background: #334155; }
+    select, textarea { background: #0f172a; color: #e2e8f0; border: 1px solid #334155;
+            border-radius: 8px; padding: 9px; font-size: 14px; font-family: inherit; }
+    textarea { width: 100%; min-height: 70px; resize: vertical; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .out { margin-top: 14px; padding: 12px; background: #0f172a; border-radius: 8px;
+           min-height: 22px; font-size: 15px; white-space: pre-wrap; }
+    .status { font-size: 13px; color: var(--muted); margin-left: 6px; }
+    label { font-size: 13px; color: var(--muted); }
+    audio { width: 100%; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>🎙️ Цифровой офицер «Ai-dos» — проверка STT / TTS</h1>
+  <p class="sub">Запись с микрофона → распознавание (STT) и синтез речи (TTS).</p>
+
+  <!-- ============ STT ============ -->
+  <div class="card">
+    <h2>1. STT — распознавание речи</h2>
+    <div class="row">
+      <button id="sttRec">● Записать</button>
+      <select id="sttLang">
+        <option value="russian">Русский</option>
+        <option value="kazakh">Казахский</option>
+      </select>
+      <span class="status" id="sttStatus">готов</span>
+    </div>
+    <div class="out" id="sttOut">—</div>
+  </div>
+
+  <!-- ============ TTS ============ -->
+  <div class="card">
+    <h2>2. TTS — синтез речи</h2>
+    <textarea id="ttsText" placeholder="Текст для озвучивания (можно вставить результат STT выше)"></textarea>
+    <div class="row" style="margin-top:10px">
+      <select id="ttsLang">
+        <option value="russian">Русский</option>
+        <option value="kazakh">Казахский</option>
+      </select>
+      <button id="ttsBtn">🔊 Озвучить</button>
+      <span class="status" id="ttsStatus"></span>
+    </div>
+    <audio id="ttsAudio" controls hidden></audio>
+  </div>
+
+  <!-- ============ Полный цикл ============ -->
+  <div class="card">
+    <h2>3. Полный цикл (микрофон → ответ голосом)</h2>
+    <p class="sub" style="margin:0 0 12px">Аудио → STT → база знаний + LLM → TTS.</p>
+    <div class="row">
+      <button id="voiceRec" class="sec">● Спросить голосом</button>
+      <select id="voiceLang">
+        <option value="russian">Русский</option>
+        <option value="kazakh">Казахский</option>
+      </select>
+      <span class="status" id="voiceStatus">готов</span>
+    </div>
+    <div class="out" id="voiceOut">—</div>
+    <audio id="voiceAudio" controls hidden></audio>
+  </div>
+
+  <!-- ============ Спросить текстом ============ -->
+  <div class="card">
+    <h2>4. Спросить текстом (без микрофона)</h2>
+    <p class="sub" style="margin:0 0 12px">Вопрос текстом → ответ строго по базе (RAG + LLM). Удобно, когда говорить вслух неудобно.</p>
+    <textarea id="askText" placeholder="Напишите вопрос. Например: Мошенники оформили на меня кредит. Что делать? (Enter — отправить)"></textarea>
+    <div class="row" style="margin-top:10px">
+      <select id="askLang">
+        <option value="russian">Русский</option>
+        <option value="kazakh">Казахский</option>
+      </select>
+      <button id="askBtn">Спросить</button>
+      <button id="askSpeakBtn" class="sec" disabled>🔊 Озвучить ответ</button>
+      <span class="status" id="askStatus">готов</span>
+    </div>
+    <div class="out" id="askOut">—</div>
+    <audio id="askAudio" controls hidden></audio>
+  </div>
+
+<script>
+// ---------- запись с микрофона + кодирование в WAV 16кГц моно ----------
+const TARGET_SR = 16000;
+
+function encodeWav(float32, sampleRate) {
+  // нормализация громкости: тихая запись = хуже распознавание
+  let peak = 0;
+  for (let i = 0; i < float32.length; i++) { const a = Math.abs(float32[i]); if (a > peak) peak = a; }
+  const gain = peak > 0.01 ? Math.min(4, 0.97 / peak) : 1;
+
+  // даунсэмпл до 16кГц с усреднением окна (простой анти-алиасинг вместо
+  // выборки каждого N-го сэмпла — это убирает «кашу» и помогает казахскому)
+  const ratio = sampleRate / TARGET_SR;
+  const outLen = Math.floor(float32.length / ratio);
+  const pcm = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const start = Math.floor(i * ratio);
+    const end = Math.min(float32.length, Math.floor((i + 1) * ratio));
+    let sum = 0, cnt = 0;
+    for (let j = start; j < end; j++) { sum += float32[j]; cnt++; }
+    let s = (cnt ? sum / cnt : float32[start] || 0) * gain;
+    s = Math.max(-1, Math.min(1, s));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  // WAV-заголовок (44 байта) + PCM
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const view = new DataView(buf);
+  const w = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); view.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE");
+  w(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, TARGET_SR, true);
+  view.setUint32(28, TARGET_SR * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  w(36, "data"); view.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+// универсальный рекордер: вызывает onReady(wavBlob) после остановки
+function makeRecorder(btn, statusEl, onReady) {
+  let ctx, stream, proc, src, chunks = [], recording = false;
+  btn.onclick = async () => {
+    if (!recording) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: {
+          channelCount: 1, echoCancellation: true,
+          noiseSuppression: true, autoGainControl: true,
+        }});
+      } catch (e) { statusEl.textContent = "нет доступа к микрофону: " + e.message; return; }
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      src = ctx.createMediaStreamSource(stream);
+      proc = ctx.createScriptProcessor(4096, 1, 1);
+      chunks = [];
+      proc.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      src.connect(proc); proc.connect(ctx.destination);
+      recording = true; btn.classList.add("rec"); btn.textContent = "■ Стоп"; statusEl.textContent = "запись...";
+    } else {
+      recording = false; btn.classList.remove("rec");
+      proc.disconnect(); src.disconnect(); stream.getTracks().forEach(t => t.stop());
+      const len = chunks.reduce((a, c) => a + c.length, 0);
+      const flat = new Float32Array(len);
+      let off = 0; for (const c of chunks) { flat.set(c, off); off += c.length; }
+      const wav = encodeWav(flat, ctx.sampleRate);
+      ctx.close();
+      btn.textContent = "● Записать"; statusEl.textContent = "обработка...";
+      onReady(wav);
+    }
+  };
+}
+
+// ---------- 1. STT ----------
+makeRecorder(document.getElementById("sttRec"), document.getElementById("sttStatus"), async (wav) => {
+  const fd = new FormData();
+  fd.append("data", wav, "rec.wav");
+  fd.append("language", document.getElementById("sttLang").value);
+  try {
+    const r = await fetch("/transcribe", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.status);
+    let html = j.text;
+    if (j.raw_text && j.raw_text !== j.text) {
+      html = j.text + "\n\n↳ распознано (до коррекции): " + j.raw_text;
+    }
+    document.getElementById("sttOut").textContent = html;
+    document.getElementById("ttsText").value = j.text; // удобно сразу озвучить
+    document.getElementById("sttStatus").textContent = "готов";
+  } catch (e) {
+    document.getElementById("sttOut").textContent = "Ошибка: " + e.message;
+    document.getElementById("sttStatus").textContent = "ошибка";
+  }
+});
+
+// ---------- 2. TTS ----------
+document.getElementById("ttsBtn").onclick = async () => {
+  const text = document.getElementById("ttsText").value.trim();
+  const st = document.getElementById("ttsStatus");
+  if (!text) { st.textContent = "введите текст"; return; }
+  st.textContent = "синтез...";
+  try {
+    const r = await fetch("/speak", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language: document.getElementById("ttsLang").value })
+    });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+    const blob = await r.blob();
+    const a = document.getElementById("ttsAudio");
+    a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+    st.textContent = "готово";
+  } catch (e) { st.textContent = "ошибка: " + e.message; }
+};
+
+// ---------- 3. Полный цикл ----------
+makeRecorder(document.getElementById("voiceRec"), document.getElementById("voiceStatus"), async (wav) => {
+  const fd = new FormData();
+  fd.append("data", wav, "rec.wav");
+  fd.append("language", document.getElementById("voiceLang").value);
+  const out = document.getElementById("voiceOut");
+  try {
+    const r = await fetch("/voice", { method: "POST", body: fd });
+    const ct = r.headers.get("content-type") || "";
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+    if (ct.includes("audio")) {
+      const q = r.headers.get("x-question");
+      const ans = r.headers.get("x-answer");
+      out.textContent = ((q ? "Вопрос: " + decodeURIComponent(q) : "")
+        + (ans ? "\n\nОтвет: " + decodeURIComponent(ans) : "")) || "Ответ получен";
+      const blob = await r.blob();
+      const a = document.getElementById("voiceAudio");
+      a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+    } else {
+      const j = await r.json();
+      out.textContent = "Вопрос: " + j.question + "\n\nОтвет: " + j.answer;
+    }
+    document.getElementById("voiceStatus").textContent = "готов";
+  } catch (e) {
+    out.textContent = "Ошибка: " + e.message;
+    document.getElementById("voiceStatus").textContent = "ошибка";
+  }
+});
+
+// ---------- 4. Спросить текстом (RAG /chat, без микрофона) ----------
+const askBtn = document.getElementById("askBtn");
+const askSpeakBtn = document.getElementById("askSpeakBtn");
+let askAnswer = "";  // последний ответ — чтобы озвучить его кнопкой
+
+askBtn.onclick = async () => {
+  const question = document.getElementById("askText").value.trim();
+  const st = document.getElementById("askStatus");
+  const out = document.getElementById("askOut");
+  if (!question) { st.textContent = "введите вопрос"; return; }
+  st.textContent = "думаю..."; askBtn.disabled = true; askSpeakBtn.disabled = true; askAnswer = "";
+  try {
+    const r = await fetch("/chat", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, language: document.getElementById("askLang").value })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.status);
+    askAnswer = j.answer || "";
+    out.textContent = askAnswer + (j.sources ? "\n\n↳ источники: " + j.sources : "");
+    askSpeakBtn.disabled = !askAnswer;
+    st.textContent = "готов";
+  } catch (e) {
+    out.textContent = "Ошибка: " + e.message; st.textContent = "ошибка";
+  } finally {
+    askBtn.disabled = false;
+  }
+};
+
+// Enter (без Shift) в поле вопроса — отправить
+document.getElementById("askText").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askBtn.click(); }
+});
+
+// Озвучить уже полученный ответ через /speak
+askSpeakBtn.onclick = async () => {
+  if (!askAnswer) return;
+  const st = document.getElementById("askStatus");
+  st.textContent = "синтез...";
+  try {
+    const r = await fetch("/speak", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: askAnswer, language: document.getElementById("askLang").value })
+    });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+    const a = document.getElementById("askAudio");
+    a.src = URL.createObjectURL(await r.blob()); a.hidden = false; a.play();
+    st.textContent = "готов";
+  } catch (e) { st.textContent = "ошибка: " + e.message; }
+};
+</script>
+</body>
+</html>

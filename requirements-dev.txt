@@ -1,0 +1,3 @@
+# Dev/тестовые зависимости основного API (ставить в .venv).
+#   source .venv/bin/activate && pip install -r requirements-dev.txt
+pytest>=8

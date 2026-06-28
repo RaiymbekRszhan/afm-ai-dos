@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+openai==1.59.6
+httpx==0.28.1
+numpy==2.2.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-multipart==0.0.20
+num2words==0.5.14        # числа -> слова для русского TTS (F5 цифры не читает)
+
+# Казахский STT (Whisper-kk, локально/на GPU). Тяжёлые — ставить на Wi-Fi.
+torch==2.12.1
+transformers==5.12.1
+accelerate==1.14.0
+librosa==0.11.0
+soundfile==0.14.0
+

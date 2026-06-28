@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# venv (каждый сервис — свой; не переносятся Mac<->Linux)
+.venv/
+.venv-f5/
+.venv-spark/
+
+# секреты/локальная конфигурация
+.env
+
+# аудио (генерируемое/временное) — но образцы для клона голоса НУЖНЫ
+*.wav
+*.aiff
+!refs/*.wav
+
+# тяжёлые/скачиваемые/генерируемые артефакты
+# (модели TTS качаются на месте; код Spark-TTS клонируется; индекс RAG строится через ingest)
+models/
+spark_tts_repo/
+rag/rag_storage/
+# промежуточные txt конвертера (исходник — data/raw/*.docx)
+rag/_convert/*.txt
+
+# инструкции для Claude Code — в репозиторий не публикуем
+CLAUDE.md

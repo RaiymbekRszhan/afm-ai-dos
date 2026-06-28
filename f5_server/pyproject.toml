@@ -1,0 +1,22 @@
+# F5-сервер (русский TTS). venv: .venv-f5 (создаётся f5_server/setup.sh).
+#
+# ВАЖНО: основной вес зависимостей (torch/torchaudio/vocos/transformers) тянет сам
+# пакет f5-tts — фиксировать их здесь не нужно. Полная установка + загрузка модели,
+# вокодера и RUAccent — в f5_server/setup.sh.
+[project]
+name = "ai-dos-f5"
+version = "0.1.0"
+description = "Ai-dos F5-TTS_RUSSIAN сервер русского TTS"
+requires-python = ">=3.10,<3.13"  # f5-tts официально 3.10-3.12
+dependencies = [
+    "f5-tts",
+    "ruaccent",
+    "soundfile",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "huggingface_hub[cli]",
+]
+
+[tool.uv]
+package = false
