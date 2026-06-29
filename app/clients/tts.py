@@ -67,7 +67,6 @@ _NORM_COMMON = [
     (r"\bJusan\b", "Жусан"),
     (r"\bBereke\b", "Береке"),
     (r"\bBank\b", "банк"),
-    (r"№\s*", "номер "),
 ]
 # Кириллические аббревиатуры — только для русского (kk-аналоги другие):
 _NORM_RU = [
@@ -84,6 +83,7 @@ _NORM_RU = [
     (r"\bКоАП\b", "ко-ап"),
     (r"\bУК\b", "у-ка"),
     (r"\bРК\b", "эр-ка"),
+    (r"№\s*", "номер "),
 ]
 # --- Казахская морфология окончаний (для озвучки) ---
 # Аббревиатуру раскрываем в полные слова, а падежный суффикс через дефис
@@ -165,6 +165,7 @@ _NORM_KK_SIMPLE = [
     (r"КЖ/ТҚҚ", "Қылмыстық жолмен алынған кірістерді заңдастыруға және терроризмді қаржыландыруға қарсы іс-қимыл"),
     (r"\bЖСН/БСН\b", "жеке немесе бизнес сәйкестендіру нөмірі"),
     (r"\bҚМ-?1\b", "қаржы мониторингінің бірінші"),
+    (r"№\s*", "нөмір "),
 ]
 
 
@@ -288,6 +289,134 @@ def _ru_numbers(text: str) -> str:
     return _NUM_RE.sub(_num_repl, text)            # остальные числа -> количественные
 
 
+# --- Числа на казахском: цифры -> слова -----------------------------------
+# num2words казахский НЕ умеет (NotImplementedError), поэтому конвертер свой.
+# Используется и без num2words: для kk цифры всегда озвучиваются.
+_KK_ONES = ["", "бір", "екі", "үш", "төрт", "бес", "алты", "жеті", "сегіз", "тоғыз"]
+_KK_TENS = ["", "он", "жиырма", "отыз", "қырық", "елу", "алпыс", "жетпіс", "сексен", "тоқсан"]
+_KK_SCALE = ["", "мың", "миллион", "миллиард", "триллион"]
+_KK_FRAC_PLACE = {1: "оннан", 2: "жүзден", 3: "мыңнан"}  # дробь: «бүтін оннан бес»
+_KK_LET = "А-Яа-яЁёӘәІіҢңҒғҮүҰұҚқӨөҺһ"
+# Порядковая форма ПОСЛЕДНЕГО слова числа (остальные слова не меняются).
+_KK_ORDINAL_LAST = {
+    "бір": "бірінші", "екі": "екінші", "үш": "үшінші", "төрт": "төртінші",
+    "бес": "бесінші", "алты": "алтыншы", "жеті": "жетінші", "сегіз": "сегізінші",
+    "тоғыз": "тоғызыншы", "он": "оныншы", "жиырма": "жиырмасыншы",
+    "отыз": "отызыншы", "қырық": "қырқыншы", "елу": "елуінші", "алпыс": "алпысыншы",
+    "жетпіс": "жетпісінші", "сексен": "сексенінші", "тоқсан": "тоқсаныншы",
+    "жүз": "жүзінші", "мың": "мыңыншы", "миллион": "миллионыншы",
+    "миллиард": "миллиардыншы", "триллион": "триллионыншы",
+}
+
+
+def _kk_triple(n: int) -> list[str]:
+    """0..999 -> слова (жүз/ондық/бірлік)."""
+    words: list[str] = []
+    h, rem = divmod(n, 100)
+    if h:
+        words.append("жүз" if h == 1 else f"{_KK_ONES[h]} жүз")
+    t, o = divmod(rem, 10)
+    if t:
+        words.append(_KK_TENS[t])
+    if o:
+        words.append(_KK_ONES[o])
+    return words
+
+
+def _kk_cardinal(n: int) -> str | None:
+    """Целое -> количественное (50000 -> 'елу мың'). None — если слишком большое."""
+    if n == 0:
+        return "нөл"
+    neg = n < 0
+    n = abs(n)
+    groups: list[int] = []
+    while n:
+        n, r = divmod(n, 1000)
+        groups.append(r)
+    if len(groups) > len(_KK_SCALE):
+        return None  # больше триллиона — пусть читается по цифрам
+    parts: list[str] = []
+    for idx in range(len(groups) - 1, -1, -1):
+        g = groups[idx]
+        if not g:
+            continue
+        if idx == 1 and g == 1:  # 1000 -> «мың» (без «бір»)
+            parts.append(_KK_SCALE[idx])
+        else:
+            parts.extend(_kk_triple(g))
+            if idx:
+                parts.append(_KK_SCALE[idx])
+    res = " ".join(parts)
+    return f"минус {res}" if neg else res
+
+
+def _kk_ordinal(n: int) -> str:
+    """Целое -> порядковое (214 -> 'екі жүз он төртінші')."""
+    c = _kk_cardinal(n)
+    if c is None:
+        return str(n)
+    words = c.split()
+    words[-1] = _KK_ORDINAL_LAST.get(words[-1], words[-1] + "ыншы")
+    return " ".join(words)
+
+
+def _kk_digits(s: str) -> str:
+    """Цифры по одной (для ЖСН/БСН, телефонов)."""
+    return " ".join("нөл" if d == "0" else _KK_ONES[int(d)] for d in s)
+
+
+def _kk_num_str(tok: str) -> str:
+    core = re.sub(r"[\s ]", "", tok)  # убрать разделители тысяч (пробел/nbsp)
+    if "," in core:
+        intp, frac = core.split(",", 1)
+        whole = _kk_cardinal(int(intp or 0))
+        place = _KK_FRAC_PLACE.get(len(frac))
+        if whole and place:
+            return f"{whole} бүтін {place} {_kk_cardinal(int(frac))}"
+        return f"{whole or _kk_digits(intp)} бүтін {_kk_digits(frac)}"
+    if len(core) >= 9:  # длинные коды (ЖСН/БСН, телефоны) — по цифрам
+        return _kk_digits(core)
+    c = _kk_cardinal(int(core))
+    return c if c is not None else _kk_digits(core)
+
+
+def _kk_num_repl(m: "re.Match") -> str:
+    try:
+        return _kk_num_str(m.group(0))
+    except Exception:
+        return m.group(0)
+
+
+def _kk_pct_sub(m: "re.Match") -> str:
+    try:
+        return f"{_kk_num_str(m.group(1))} пайыз"
+    except Exception:
+        return m.group(0)
+
+
+# «N-бап», «5-тармақ», «2024-жыл» -> порядковое (дефис+слово -> «... слово»).
+_KK_ORD_HYPHEN_RE = re.compile(rf"\b(\d{{1,4}})-([{_KK_LET}]+)")
+# Год через пробел: «2024 жыл/жылы/жылғы» -> порядковое.
+_KK_YEAR_RE = re.compile(r"\b(\d{4})\s+(жыл\w*)", re.IGNORECASE)
+
+
+def _kk_ord_hyphen_sub(m: "re.Match") -> str:
+    return f"{_kk_ordinal(int(m.group(1)))} {m.group(2)}"
+
+
+def _kk_ord_year_sub(m: "re.Match") -> str:
+    return f"{_kk_ordinal(int(m.group(1)))} {m.group(2)}"
+
+
+def _kk_numbers(text: str) -> str:
+    """Цифры -> казахские слова. «N-бап»/годы — ПОРЯДКОВЫЕ, проценты -> пайыз,
+    длинные коды (ЖСН/телефон) — по цифрам, остальное — количественные."""
+    text = _KK_ORD_HYPHEN_RE.sub(_kk_ord_hyphen_sub, text)  # N-бап -> порядковое
+    text = _KK_YEAR_RE.sub(_kk_ord_year_sub, text)          # NNNN жыл -> порядковое
+    text = re.sub(r"(\d+(?:,\d+)?)\s*%", _kk_pct_sub, text)  # проценты -> пайыз
+    return _NUM_RE.sub(_kk_num_repl, text)                  # остальные -> количественные
+
+
 def _normalize_for_tts(text: str, language: str | None) -> str:
     """Раскрывает аббревиатуры/латиницу/числа в произносимый вид (только для озвучки)."""
     for pat, rep in _NORM_COMMON:
@@ -305,11 +434,19 @@ def _normalize_for_tts(text: str, language: str | None) -> str:
             lambda m, e=expansion, w=wtype: _kk_inflect(e, w, _kk_case(m.group(1))),
             text,
         )
-    return text
+    return _kk_numbers(text)  # числа -> слова (ПОСЛЕ раскрытия аббревиатур)
 
 
 # Граница предложения: после .!?… и переноса строки.
 _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
+
+# Кусок «произносим», если в нём есть хотя бы одна буква (кириллица/латиница).
+# Куски из одних цифр/знаков TTS не озвучивает: Spark выдаёт 0 токенов и падает.
+_HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+
+
+def _has_speech(text: str) -> bool:
+    return bool(_HAS_LETTER.search(text))
 
 
 def _hard_split(sentence: str, max_chars: int) -> list[str]:
@@ -407,6 +544,10 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
              if _provider_for(language) == "f5"
              else settings.tts_max_chars)
     parts = _split_for_tts(text, settings.tts_max_chars, group)
+    # Выкидываем куски без букв (одни цифры/знаки) — TTS на них падает.
+    parts = [p for p in parts if _has_speech(p)]
+    if not parts:
+        raise RuntimeError("Нет произносимого текста для синтеза")
     if len(parts) == 1:
         return await _synthesize_one(parts[0], language)
     audios = [await _synthesize_one(part, language) for part in parts]
