@@ -37,6 +37,9 @@ PITCH = os.environ.get("SPARK_PITCH", "moderate")
 SPEED = os.environ.get("SPARK_SPEED", "moderate")
 DEVICE = os.environ.get("SPARK_DEVICE", "cpu")
 PORT = int(os.environ.get("SPARK_PORT", "8809"))
+# Сколько раз перегенерировать при вырожденной выдаче (0 семантических токенов).
+# Генерация стохастична (do_sample=True), поэтому повтор обычно помогает.
+RETRIES = int(os.environ.get("SPARK_RETRIES", "2"))
 
 sys.path.insert(0, REPO)  # чтобы импортировались cli.SparkTTS и sparktts
 from cli.SparkTTS import SparkTTS  # noqa: E402
@@ -58,20 +61,42 @@ def health():
     return {"status": "ok", "gender": GENDER, "cloning": bool(SPEAKER_WAV)}
 
 
-@app.post("/tts")
-def synthesize(req: TTSRequest):
-    if not req.text.strip():
-        raise HTTPException(status_code=400, detail="Пустой текст")
+def _infer(text: str):
+    """Один прогон синтеза с учётом режима (клонирование или gender)."""
     if SPEAKER_WAV:
         kw = {"prompt_speech_path": SPEAKER_WAV}
         if SPEAKER_TEXT:
             kw["prompt_text"] = SPEAKER_TEXT  # текст образца -> точнее клон
-        wav = _model.inference(req.text, **kw)  # клонирование
-    else:
-        wav = _model.inference(req.text, gender=GENDER, pitch=PITCH, speed=SPEED)
-    buf = io.BytesIO()
-    sf.write(buf, wav, _model.sample_rate, format="WAV", subtype="PCM_16")
-    return Response(content=buf.getvalue(), media_type="audio/wav")
+        return _model.inference(text, **kw)  # клонирование
+    return _model.inference(text, gender=GENDER, pitch=PITCH, speed=SPEED)
+
+
+@app.post("/tts")
+def synthesize(req: TTSRequest):
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Пустой текст")
+    # Модель иногда выдаёт 0 семантических токенов -> detokenize падает (einx: n=0).
+    # Генерация стохастична, поэтому пробуем повторно, а не отдаём 500.
+    last_err: Exception | None = None
+    for attempt in range(RETRIES + 1):
+        try:
+            wav = _infer(text)
+        except Exception as e:  # вырожденная генерация и пр. сбои синтеза
+            last_err = e
+            print(f"[spark] попытка {attempt + 1}/{RETRIES + 1} не удалась: {e}")
+            continue
+        if wav is None or len(wav) == 0:  # пустой звук — тоже перегенерируем
+            last_err = RuntimeError("синтез вернул пустой звук")
+            print(f"[spark] попытка {attempt + 1}/{RETRIES + 1}: пустой звук")
+            continue
+        buf = io.BytesIO()
+        sf.write(buf, wav, _model.sample_rate, format="WAV", subtype="PCM_16")
+        return Response(content=buf.getvalue(), media_type="audio/wav")
+    raise HTTPException(
+        status_code=422,
+        detail=f"Spark не смог озвучить текст (вырожденная генерация): {last_err}",
+    )
 
 
 if __name__ == "__main__":
