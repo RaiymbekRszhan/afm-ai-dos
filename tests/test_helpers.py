@@ -37,9 +37,26 @@ def test_split_groups_sentences_for_f5():
 
 # ---------- TTS: нормализация аббревиатур (только для звука) ----------
 def test_normalize_ru_expands_abbr():
+    # Кодексы раскрываются полностью: после «статья N» — родительный падеж.
     out = tts._normalize_for_tts("Согласно статье 214 КоАП и Закону о ПОД/ФТ.", "russian")
-    assert "ко-ап" in out and "под-эф-тэ" in out
+    assert "Кодекса об административных правонарушениях" in out
+    assert "противодействия отмыванию доходов и финансированию терроризма" in out
     assert "КоАП" not in out and "ПОД/ФТ" not in out
+    # Без цифры перед кодексом — именительный.
+    out2 = tts._normalize_for_tts("УК запрещает это.", "russian")
+    assert "Уголовный кодекс запрещает" in out2
+
+
+def test_normalize_ru_phone_digits():
+    # Короткие номера/телефоны читаются по цифрам, обычные числа — словами.
+    out = tts._normalize_for_tts("Позвоните по номеру 1458.", "russian")
+    assert "один четыре пять восемь" in out
+
+
+def test_normalize_latin_translit():
+    # Латиница вне словаря брендов транслитерируется в кириллицу.
+    out = tts._normalize_for_tts("Приложение Google доступно.", "russian")
+    assert "гугл" in out and "Google" not in out
 
 
 @pytest.mark.skipif(tts._num2words is None, reason="num2words не установлен")

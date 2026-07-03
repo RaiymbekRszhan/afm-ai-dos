@@ -95,6 +95,15 @@ cd .. && deactivate
 > эмбеддинги (минуты), без нагрузки на LLM. Качество подтверждено eval (см. `rag/eval/`).
 > `ingest` возобновляемый: при обрыве просто запусти снова.
 
+> ⚠️ **Словарь tiktoken — завендорен, копировать обязательно.** LightRAG при старте
+> берёт словарь токенизатора; без кэша tiktoken лезет в интернет (`openaipublic.blob...`)
+> и на офлайн-сервере RAG **не стартует** (симптом: `NameResolutionError ... o200k_base.tiktoken`).
+> Лекарство: папка `rag/vendor/tiktoken/` должна приехать вместе с проектом, а переменная
+> `TIKTOKEN_CACHE_DIR` указывать на неё (в `run_api.sh` и `deploy/ai-dos-rag.service` уже
+> прописано). Пересоздать папку (на машине с интернетом):
+> `TIKTOKEN_CACHE_DIR=$PWD/vendor/tiktoken python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"`.
+> Кэш во временной папке ОС ненадёжен — macOS/Linux чистят её при перезагрузке.
+
 ## ШАГ 4. F5-сервер (русский TTS)
 ```bash
 bash f5_server/setup.sh                # .venv-f5 + f5-tts + модель + Vocos + RUAccent
@@ -118,7 +127,7 @@ cp .env.example .env
 ```
 # внутренние сервисы АФМ (адреса те же)
 LLM_BASE_URL=http://192.168.165.2:8901/v1
-STT_URL=http://192.168.165.2:8004/transcribe
+STT_URL=http://192.168.165.2:8804/transcribe   # 2026-07-03: АФМ перенёс STT с 8004 на 8804
 # (эмбеддинги нужны только RAG-сервису — настраиваются в rag/.env, шаг 3, не здесь)
 
 # казахский STT — локальный Whisper на GPU

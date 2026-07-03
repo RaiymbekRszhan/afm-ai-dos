@@ -8,6 +8,8 @@ Type=simple
 User=ai-dos
 WorkingDirectory=/opt/ai-dos/rag
 # Зовёт LLM/эмбеддинги АФМ по HTTP (адреса в rag/.env). Индекс — rag_storage/ (ingest заранее).
+# Словарь tiktoken завендорен (иначе качается из интернета, которого на сервере нет).
+Environment=TIKTOKEN_CACHE_DIR=/opt/ai-dos/rag/vendor/tiktoken
 ExecStart=/opt/ai-dos/rag/.venv/bin/uvicorn ragsvc.server:app --host 0.0.0.0 --port 8077
 Restart=always
 RestartSec=5

@@ -27,5 +27,14 @@ rag/rag_storage/
 # промежуточные txt конвертера (исходник — data/raw/*.docx)
 rag/_convert/*.txt
 
+# дубликат: скрипт рендер-ноды раздаётся из unreal/ напрямую (маршрут в app/main.py)
+app/static/aidos_editor.py
+
+# рабочие артефакты рендер-ноды (ответы, кэш)
+unreal/_answers/
+
+# брошенный Unity-прототип (стек ушёл в Unreal 2026-06-30; папку можно удалить)
+unity/
+
 # инструкции для Claude Code — в репозиторий не публикуем
 CLAUDE.md

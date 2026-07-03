@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 512
 
     # STT
-    stt_url: str = "http://192.168.165.2:8004/transcribe"
+    # 2026-07-03: АФМ перенёс сервис распознавания с 8004 на 8804
+    stt_url: str = "http://192.168.165.2:8804/transcribe"
     stt_default_language: str = "russian"
     # LLM-постобработка: исправляет ошибки распознавания перед поиском по базе.
     # Это ДОП. вызов LLM (медленный сервер АФМ), поэтому по умолчанию только для

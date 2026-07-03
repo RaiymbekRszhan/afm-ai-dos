@@ -85,8 +85,17 @@ python -m ragsvc.ingest            # загрузить всё из data/
 ## Шаг 3. Запуск сервиса
 
 ```bash
+export TIKTOKEN_CACHE_DIR="$PWD/vendor/tiktoken"   # словарь токенизатора — офлайн
 uvicorn ragsvc.server:app --host 0.0.0.0 --port 8077
 ```
+
+> ⚠️ **Без `TIKTOKEN_CACHE_DIR` сервис в офлайн-сети не стартует**: LightRAG на старте
+> берёт словарь tiktoken, и без локального кэша тот лезет в интернет
+> (`openaipublic.blob...`, симптом — `NameResolutionError ... o200k_base.tiktoken`).
+> Словари завендорены в `vendor/tiktoken/` (o200k + cl100k) — папка обязана ехать на
+> сервер вместе с проектом. Пересоздать (на машине с интернетом):
+> `TIKTOKEN_CACHE_DIR=$PWD/vendor/tiktoken python -c "import tiktoken; tiktoken.get_encoding('o200k_base'); tiktoken.get_encoding('cl100k_base')"`.
+> `run_api.sh` в корне и `deploy/ai-dos-rag.service` выставляют переменную сами.
 
 Бэкенд аватара после STT шлёт:
 

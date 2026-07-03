@@ -28,6 +28,7 @@
     .status { font-size: 13px; color: var(--muted); margin-left: 6px; }
     label { font-size: 13px; color: var(--muted); }
     audio { width: 100%; margin-top: 12px; }
+    a.dl { display: inline-block; margin-top: 10px; color: #93c5fd; font-size: 14px; }
   </style>
 </head>
 <body>
@@ -61,6 +62,7 @@
       <span class="status" id="ttsStatus"></span>
     </div>
     <audio id="ttsAudio" controls hidden></audio>
+    <a id="ttsDl" class="dl" hidden>⬇ Скачать WAV (для аватара)</a>
   </div>
 
   <!-- ============ Полный цикл ============ -->
@@ -77,6 +79,7 @@
     </div>
     <div class="out" id="voiceOut">—</div>
     <audio id="voiceAudio" controls hidden></audio>
+    <a id="voiceDl" class="dl" hidden>⬇ Скачать answer.wav (для аватара)</a>
   </div>
 
   <!-- ============ Спросить текстом ============ -->
@@ -95,6 +98,7 @@
     </div>
     <div class="out" id="askOut">—</div>
     <audio id="askAudio" controls hidden></audio>
+    <a id="askDl" class="dl" hidden>⬇ Скачать WAV (для аватара)</a>
   </div>
 
 <script>
@@ -166,6 +170,20 @@ function makeRecorder(btn, statusEl, onReady) {
   };
 }
 
+// показать ссылку «скачать WAV» — чтобы забрать ответ в Unreal (MetaHuman Performance)
+function offerDownload(linkId, blob, name) {
+  const a = document.getElementById(linkId);
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.hidden = false;
+}
+
+function stamp() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, "0");
+  return `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
 // ---------- 1. STT ----------
 makeRecorder(document.getElementById("sttRec"), document.getElementById("sttStatus"), async (wav) => {
   const fd = new FormData();
@@ -203,6 +221,7 @@ document.getElementById("ttsBtn").onclick = async () => {
     const blob = await r.blob();
     const a = document.getElementById("ttsAudio");
     a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+    offerDownload("ttsDl", blob, `tts_${document.getElementById("ttsLang").value}_${stamp()}.wav`);
     st.textContent = "готово";
   } catch (e) { st.textContent = "ошибка: " + e.message; }
 };
@@ -225,6 +244,7 @@ makeRecorder(document.getElementById("voiceRec"), document.getElementById("voice
       const blob = await r.blob();
       const a = document.getElementById("voiceAudio");
       a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+      offerDownload("voiceDl", blob, `answer_${document.getElementById("voiceLang").value}_${stamp()}.wav`);
     } else {
       const j = await r.json();
       out.textContent = "Вопрос: " + j.question + "\n\nОтвет: " + j.answer;
@@ -281,8 +301,10 @@ askSpeakBtn.onclick = async () => {
       body: JSON.stringify({ text: askAnswer, language: document.getElementById("askLang").value })
     });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+    const blob = await r.blob();
     const a = document.getElementById("askAudio");
-    a.src = URL.createObjectURL(await r.blob()); a.hidden = false; a.play();
+    a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+    offerDownload("askDl", blob, `answer_${document.getElementById("askLang").value}_${stamp()}.wav`);
     st.textContent = "готов";
   } catch (e) { st.textContent = "ошибка: " + e.message; }
 };

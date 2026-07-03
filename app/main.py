@@ -14,6 +14,13 @@ from app.schemas import ChatRequest, ChatResponse, SpeakRequest, TranscribeRespo
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+# Кэш последнего озвученного ответа: рендер-нода (Unreal) забирает его через
+# GET /last_answer после того, как вопрос задали голосом в веб-UI (/voice).
+_last_answer: dict = {}
+# long-poll: /last_answer/wait висит на этом событии до появления нового ответа
+import asyncio as _asyncio
+_answer_event = _asyncio.Event()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,6 +61,18 @@ async def _read_upload(data: UploadFile) -> bytes:
 app = FastAPI(title="АФМ — Цифровой офицер Ai-dos", lifespan=lifespan, docs_url=None,
               redoc_url=None)
 
+_UNREAL_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "unreal", "aidos_editor.py")
+
+
+@app.get("/static/aidos_editor.py", include_in_schema=False)
+async def unreal_script():
+    """Скрипт для рендер-ноды раздаётся из unreal/ напрямую — единственный
+    источник правды, копий в static/ держать не нужно. Маршрут объявлен ДО
+    mount("/static"), поэтому перекрывает статику."""
+    return FileResponse(_UNREAL_SCRIPT, media_type="text/x-python")
+
+
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
@@ -65,6 +84,12 @@ async def root():
 @app.get("/ui", include_in_schema=False)
 async def ui():
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
+
+
+@app.get("/avatar", include_in_schema=False)
+async def avatar_ui():
+    """Гражданский фронтенд: живой аватар (Pixel Streaming с рендер-ноды) + микрофон."""
+    return FileResponse(os.path.join(_STATIC_DIR, "avatar.html"))
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -192,6 +217,10 @@ async def voice_endpoint(
             out_audio = await tts.synthesize(answer, lang)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"TTS error: {e}")
+        import time
+        _last_answer.update(audio=out_audio, question=question, answer=answer,
+                            id=str(time.time()))
+        _answer_event.set()  # разбудить висящие long-poll'ы ноды
         return Response(
             content=out_audio,
             media_type=f"audio/{settings.tts_format}",
@@ -204,3 +233,50 @@ async def voice_endpoint(
         )
 
     return {"question": question, "answer": answer, "sources": result["sources"]}
+
+
+@app.get("/last_answer/id")
+async def last_answer_id():
+    """Лёгкая проверка «есть ли новый ответ» — рендер-нода опрашивает её в цикле,
+    не выкачивая WAV целиком."""
+    return {"id": _last_answer.get("id")}
+
+
+@app.get("/last_answer/wait")
+async def last_answer_wait(since: str = "", timeout: float = 25):
+    """Long-poll: держим запрос, пока не появится ответ новее `since` (или до
+    `timeout` секунд). Нода узнаёт о готовом ответе мгновенно, без 5-сек опроса."""
+    import asyncio
+    timeout = min(max(timeout, 1.0), 55.0)
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while _last_answer.get("id", "") in ("", since):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        _answer_event.clear()
+        try:
+            await asyncio.wait_for(_answer_event.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            break
+    return {"id": _last_answer.get("id")}
+
+
+@app.get("/last_answer")
+async def last_answer():
+    """Последний ответ /voice (WAV + текст в заголовках) — для рендер-ноды.
+
+    X-Id меняется с каждым новым ответом: клиент может отличить свежий ответ
+    от уже проигранного.
+    """
+    if not _last_answer:
+        raise HTTPException(status_code=404, detail="Ответов ещё не было")
+    return Response(
+        content=_last_answer["audio"],
+        media_type=f"audio/{settings.tts_format}",
+        headers={
+            "X-Question": quote(_last_answer["question"]),
+            "X-Answer": quote(_last_answer["answer"]),
+            "X-Id": _last_answer["id"],
+        },
+    )

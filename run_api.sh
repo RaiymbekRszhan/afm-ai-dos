@@ -16,7 +16,11 @@ bash spark_server/run.sh &
 
 # RAG (8077) — ОТДЕЛЬНЫЙ venv (lightrag/torch конфликтуют с голосовым слоем).
 # Подоболочка, чтобы активация его venv не протекла в основной shell.
-( cd rag && source .venv/bin/activate && uvicorn ragsvc.server:app --host 0.0.0.0 --port 8077 ) &
+# TIKTOKEN_CACHE_DIR: словарь токенизатора завендорен локально (rag/vendor/tiktoken)
+# — иначе tiktoken лезет в интернет, которого в сети АФМ нет (см. rag/README).
+( cd rag && source .venv/bin/activate \
+  && export TIKTOKEN_CACHE_DIR="$PWD/vendor/tiktoken" \
+  && uvicorn ragsvc.server:app --host 0.0.0.0 --port 8077 ) &
 
 # Основной оркестратор (8000) — на venv голосового слоя.
 source .venv/bin/activate
