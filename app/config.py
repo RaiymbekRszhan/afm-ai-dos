@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.2
     llm_top_p: float = 0.95
     llm_max_tokens: int = 512
+    # Явный таймаут запроса к LLM (сек). Без него openai-SDK ждёт 600 с — и
+    # LLM-коррекция STT может подвесить весь /voice на минуты.
+    llm_timeout: float = 90.0
 
     # STT
     # 2026-07-03: АФМ перенёс сервис распознавания с 8004 на 8804
@@ -38,6 +41,12 @@ class Settings(BaseSettings):
     tts_provider: str = "f5"        # русский/по умолчанию: f5 | say | openai
     tts_kk_provider: str = "spark"  # казахский: spark | say | openai
     f5_url: str = ""  # HTTP-эндпоинт F5-TTS-сервера (русский TTS)
+    # Клиентский референс для F5-серверов, которые ждут ref_audio+ref_text в КАЖДОМ
+    # запросе (multipart /tts — напр. GPU-сервер АФМ на :8991). Если f5_ref_audio
+    # задан — шлём multipart {ref_audio, ref_text, gen_text}; иначе — прежний
+    # JSON {text, language} (локальный f5_server, где референс задан на сервере).
+    f5_ref_audio: str = ""   # путь к WAV-референсу тембра (для multipart-режима)
+    f5_ref_text: str = ""    # транскрипт референса; "@путь" — прочитать из файла
     spark_url: str = ""  # HTTP-эндпоинт Spark-TTS-сервера (казахский TTS)
     tts_format: str = "wav"
     # Длинное предложение (> ~182 симв.) TTS может обрезать — слишком длинные
@@ -63,6 +72,14 @@ class Settings(BaseSettings):
 
     # Загрузка аудио: предел размера файла (защита от перегруза памяти).
     max_upload_mb: int = 25
+    # Сколько запросов /voice обрабатывать одновременно. /voice — самый дорогой
+    # путь (Whisper + до 10 вызовов TTS, минуты CPU/GPU); без лимита пачка
+    # параллельных запросов кладёт TTS/GPU-ноду. Остальные ждут в очереди.
+    max_concurrent_voice: int = 2
+    # Общий токен для эндпоинтов рендер-ноды (/last_answer*). Пусто = проверка
+    # выключена (обратная совместимость). Если задан — нода должна слать его в
+    # заголовке X-Aidos-Token (см. unreal/aidos_editor.py, env AIDOS_TOKEN).
+    last_answer_token: str = ""
 
     @property
     def tts_enabled(self) -> bool:

@@ -56,10 +56,27 @@
 
 <script>
 // ---------- окно стрима (Pixel Streaming на Windows-ноде) ----------
+// Разрешаем только адреса внутренней сети (LAN-нода) или same-origin: иначе
+// ?stream=http://evil из подсунутой ссылки навсегда покажет чужой контент
+// (фишинг) внутри официальной страницы АФМ — и запомнится в localStorage.
+function isAllowedStream(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;  // не javascript:/data:
+  const h = u.hostname;
+  if (h === location.hostname || h === "localhost") return true;
+  return /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(h);  // приватные диапазоны LAN
+}
 function setStream(url) {
   url = url || document.getElementById("streamUrl").value.trim();
   if (!url) return;
   if (!/^https?:\/\//.test(url)) url = "http://" + url;
+  if (!isAllowedStream(url)) {
+    document.getElementById("status").textContent =
+      "адрес трансляции должен быть во внутренней сети — публичные адреса отклонены";
+    return;
+  }
   localStorage.setItem("aidos_stream", url);
   const f = document.getElementById("stream");
   f.src = url; f.hidden = false;

@@ -15,6 +15,9 @@ dependencies = [
     "pydantic==2.10.4",
     "pydantic-settings==2.7.1",
     "python-multipart==0.0.20",
+    # Числа -> слова для русской озвучки (F5 цифры не читает). Без пакета озвучка
+    # чисел на русском молча деградирует (импорт в tts.py обёрнут в try/except).
+    "num2words==0.5.14",
     # Казахский STT (Whisper-kk). Тяжёлые — на GPU нужен torch под CUDA сервера.
     "torch==2.12.1",
     "transformers==5.12.1",

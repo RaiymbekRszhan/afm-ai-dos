@@ -57,17 +57,25 @@ curl -m 5 http://192.168.165.2:8806/v1/models   # эмбеддинги (нужн
 
 С Mac, из папки проекта:
 ```bash
-# код + база знаний + образцы голоса + RAG-сервис
+# код + база знаний + образцы голоса + RAG-сервис + запуск/деплой
 scp -r app scripts f5_server spark_server rag refs \
-       requirements.txt .env.example README.md \
+       requirements.txt pyproject.toml run_api.sh deploy \
+       .env.example README.md \
        ПОЛЬЗОВАТЕЛЬ@СЕРВЕР:~/STT/
 ```
 `refs/` (твои образцы голоса) **обязательно** — их нельзя скачать.
-В `rag/` копируется код и база `rag/data/`, но **не** `rag/.venv` и `rag/rag_storage/`
-(venv пересоздаётся, индекс заново строится через `ingest` на шаге 3).
+`run_api.sh` и `deploy/` нужны на шаге 7 (запуск) — без них деплой по инструкции не соберётся.
 
-**НЕ копируй:** `.venv*`, `rag/.venv`, `rag/rag_storage/`, `rag/_convert/`, `spark_tts_repo/`,
-`models/` (пересоздаются/скачиваются на сервере).
+⚠️ `scp -r rag` копирует **всё** содержимое, включая `rag/.venv` (сборка под macOS,
+на Linux не работает) и `rag/rag_storage/`. Сразу после копирования удали их на сервере —
+venv пересоздаётся, индекс строится заново через `ingest` (шаг 3):
+```bash
+ssh ПОЛЬЗОВАТЕЛЬ@СЕРВЕР 'rm -rf ~/STT/rag/.venv ~/STT/rag/rag_storage ~/STT/rag/_convert'
+```
+(Либо копируй через `rsync -a --exclude='.venv' --exclude='rag_storage' rag/ …` — scp исключать не умеет.)
+
+**НЕ нужны на сервере** (пересоздаются/скачиваются): `.venv*`, `rag/.venv`, `rag/rag_storage/`,
+`rag/_convert/`, `spark_tts_repo/`, `models/`.
 
 ---
 
@@ -104,7 +112,12 @@ cd .. && deactivate
 > `TIKTOKEN_CACHE_DIR=$PWD/vendor/tiktoken python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"`.
 > Кэш во временной папке ОС ненадёжен — macOS/Linux чистят её при перезагрузке.
 
-## ШАГ 4. F5-сервер (русский TTS)
+## ШАГ 4. F5-сервер (русский TTS) — ОПЦИОНАЛЬНО
+
+> ⏭️ **Пропусти этот шаг, если русский TTS берётся с GPU-сервера АФМ** (`192.168.165.2:8991`
+> — вариант по умолчанию, `run_api.sh` уже на него настроен, см. ниже). Локальный
+> `f5_server` нужен только для автономного/оффлайн русского TTS на этой же машине.
+
 ```bash
 bash f5_server/setup.sh                # .venv-f5 + f5-tts + модель + Vocos + RUAccent
 ```
@@ -137,28 +150,46 @@ WHISPER_DEVICE=cuda
 # источник ответа — RAG-сервис
 RAG_URL=http://localhost:8077/ask
 
-# TTS — наши сервисы
+# TTS: казахский Spark локально; русский F5 — с GPU-сервера АФМ (быстро, ~1.5 c)
 TTS_PROVIDER=f5
-F5_URL=http://localhost:8810/tts
+F5_URL=http://192.168.165.2:8991/tts
+F5_REF_AUDIO=refs/ref_ru_f5.wav      # референс тембра (шлётся в каждый запрос)
+F5_REF_TEXT=@refs/ref_ru.txt         # "@путь" = прочитать транскрипт из файла
 TTS_KK_PROVIDER=spark
 SPARK_URL=http://localhost:8809/tts
+# Локальный русский F5 вместо GPU: F5_URL=http://localhost:8810/tts, убери F5_REF_*, старт с USE_LOCAL_F5=1
 ```
-И в `f5_server/run.sh` / `spark_server/run.sh` поставь `*_DEVICE="cuda"` (для GPU).
+И в `spark_server/run.sh` поставь `SPARK_DEVICE="cuda"` (для GPU).
 LLM/эмбеддинги RAG-сервиса настраиваются отдельно в `rag/.env` (шаг 3).
+
+> **Как оркестратор выбирает контракт F5:** если задан `F5_REF_AUDIO` — шлёт
+> multipart `{ref_audio, ref_text, gen_text}` на GPU-сервер (референс в каждом
+> запросе); если пусто — прежний JSON `{text, language}` на локальный `f5_server`.
+> `run_api.sh` уже настроен на GPU-сервер по умолчанию (`USE_LOCAL_F5=0`) — отдельные
+> ключи запуска не нужны. Вернуть локальный русский TTS: `USE_LOCAL_F5=1
+> F5_URL=http://localhost:8810/tts bash run_api.sh`.
+
+**Через systemd:** в `deploy/ai-dos-api.service` поставь
+`Environment=F5_URL=http://192.168.165.2:8991/tts`,
+`Environment=F5_REF_AUDIO=refs/ref_ru_f5.wav`,
+`Environment=F5_REF_TEXT=@refs/ref_ru.txt` и отключи юнит `ai-dos-f5`
+(`systemctl disable --now ai-dos-f5`).
 
 ---
 
 ## ШАГ 7. Запустить всё
-**Одной командой** (поднимает f5 + spark + rag + основной API, Ctrl-C гасит всё):
+**Одной командой** (поднимает spark + rag + основной API; русский TTS — с GPU-сервера
+АФМ, локальный f5 не стартует; Ctrl-C гасит всё):
 ```bash
 HF_HUB_OFFLINE=1 bash run_api.sh
 ```
-Или вручную по сервисам (4 окна / tmux):
+Или вручную по сервисам (tmux). `f5_server` — только если нужен локальный русский TTS
+(`USE_LOCAL_F5=1` и `F5_URL=http://localhost:8810/tts`); по умолчанию он не нужен:
 ```bash
-bash f5_server/run.sh                                                # 8810
-bash spark_server/run.sh                                             # 8809
-(cd rag && source .venv/bin/activate && uvicorn ragsvc.server:app --host 0.0.0.0 --port 8077)
+bash spark_server/run.sh                                             # 8809 (казахский TTS)
+(cd rag && source .venv/bin/activate && uvicorn ragsvc.server:app --host 127.0.0.1 --port 8077)
 source .venv/bin/activate && HF_HUB_OFFLINE=1 uvicorn app.main:app --host 0.0.0.0 --port 8000
+# локальный русский TTS (опционально): bash f5_server/run.sh            # 8810
 ```
 
 ---
@@ -195,6 +226,17 @@ curl -X POST http://localhost:8000/speak -H 'Content-Type: application/json' \
 Или открой `http://СЕРВЕР:8000/` в браузере — тест-страница с микрофоном.
 
 </details>
+
+---
+
+## Работа 24/7
+
+`run_api.sh` — для отладки; для боевого режима:
+- **бэкенд**: systemd-юниты + сторож `/health` — [deploy/README.md](deploy/README.md)
+  (автозапуск при загрузке, рестарт при падении и при зависании);
+- **рендер-нода** (Windows/Unreal): `init_unreal.py` + `watchdog.ps1` —
+  [unreal/README.md](unreal/README.md), раздел «Работа 24/7»;
+- жива ли нода — `curl http://СЕРВЕР:8000/health` → `node.watching: true`.
 
 ---
 

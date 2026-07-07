@@ -11,8 +11,15 @@ import os
 import re
 import tempfile
 import wave
+from urllib.parse import urlparse, urlunparse
 
 from app.config import settings
+
+
+def _health_from(url: str) -> str:
+    """URL /health из адреса /tts (устойчиво к URL без пути)."""
+    p = urlparse(url)
+    return urlunparse(p._replace(path="/health", params="", query="", fragment=""))
 
 try:
     from num2words import num2words as _num2words
@@ -405,6 +412,7 @@ def _kk_digits(s: str) -> str:
 
 
 def _kk_num_str(tok: str) -> str:
+    had_sep = bool(re.search(r"[\s ]", tok))  # были ли разделители тысяч?
     core = re.sub(r"[\s ]", "", tok)  # убрать разделители тысяч (пробел/nbsp)
     if "," in core:
         intp, frac = core.split(",", 1)
@@ -413,7 +421,9 @@ def _kk_num_str(tok: str) -> str:
         if whole and place:
             return f"{whole} бүтін {place} {_kk_cardinal(int(frac))}"
         return f"{whole or _kk_digits(intp)} бүтін {_kk_digits(frac)}"
-    if len(core) >= 9:  # длинные коды (ЖСН/БСН, телефоны) — по цифрам
+    # Длинный код БЕЗ разделителей (ЖСН/БСН, телефон) — по цифрам. А «100 000 000»
+    # (с разделителями тысяч) — это сумма, её читаем словами («жүз миллион»).
+    if len(core) >= 9 and not had_sep:
         return _kk_digits(core)
     c = _kk_cardinal(int(core))
     return c if c is not None else _kk_digits(core)
@@ -437,10 +447,17 @@ def _kk_pct_sub(m: "re.Match") -> str:
 _KK_ORD_HYPHEN_RE = re.compile(rf"\b(\d{{1,4}})-([{_KK_LET}]+)")
 # Год через пробел: «2024 жыл/жылы/жылғы» -> порядковое.
 _KK_YEAR_RE = re.compile(r"\b(\d{4})\s+(жыл\w*)", re.IGNORECASE)
+# Сам суффикс порядкового, записанный после дефиса («2-ші»): его НЕ оставляем
+# отдельным словом — порядковое числительное уже содержит нужное окончание.
+_KK_ORD_SUFFIXES = {"ші", "шы", "ыншы", "інші", "ншы", "нші"}
 
 
 def _kk_ord_hyphen_sub(m: "re.Match") -> str:
-    return f"{_kk_ordinal(int(m.group(1)))} {m.group(2)}"
+    ordinal = _kk_ordinal(int(m.group(1)))
+    word = m.group(2)
+    if word.lower() in _KK_ORD_SUFFIXES:
+        return ordinal  # «2-ші» -> «екінші» (без дублирующего «ші»)
+    return f"{ordinal} {word}"
 
 
 def _kk_ord_year_sub(m: "re.Match") -> str:
@@ -597,18 +614,27 @@ def _concat_wav(parts: list[bytes]) -> bytes:
     out = io.BytesIO()
     writer: wave.Wave_write | None = None
     gap = b""
+    fmt: tuple[int, int, int] | None = None  # (nchannels, sampwidth, framerate) первого куска
     try:
         for idx, blob in enumerate(parts):
             with wave.open(io.BytesIO(blob), "rb") as reader:
+                params = (reader.getnchannels(), reader.getsampwidth(),
+                          reader.getframerate())
                 if writer is None:
+                    fmt = params
+                    nch, sw, fr = params
                     writer = wave.open(out, "wb")
-                    nch, sw, fr = (reader.getnchannels(), reader.getsampwidth(),
-                                   reader.getframerate())
                     writer.setnchannels(nch)
                     writer.setsampwidth(sw)
                     writer.setframerate(fr)
                     n_frames = int(fr * settings.tts_gap_ms / 1000)
                     gap = b"\x00" * (n_frames * nch * sw)  # тишина нужной длины
+                elif params != fmt:
+                    # Куски с разной частотой/каналами склеивать нельзя — иначе
+                    # получится ускоренный/искажённый звук БЕЗ ошибки. Падаем явно.
+                    raise RuntimeError(
+                        f"Несовместимые параметры WAV при склейке: {params} != {fmt}"
+                    )
                 if idx and gap:                            # пауза перед каждым, кроме первого
                     writer.writeframes(gap)
                 writer.writeframes(reader.readframes(reader.getnframes()))
@@ -664,7 +690,6 @@ async def _synthesize_one(text: str, language: str | None = None) -> bytes:
 
 # ---------- macOS say (только локальная отладка) ----------
 async def _say(text: str, language: str | None) -> bytes:
-    lang = _resolve_lang(language)
     # У macOS нет казахского голоса — для kk звучание будет неточным (это ок для отладки).
     voice = "Milena"  # русский голос
     with tempfile.TemporaryDirectory() as d:
@@ -689,16 +714,65 @@ async def _say(text: str, language: str | None) -> bytes:
 
 
 # ---------- F5-TTS_RUSSIAN (русский, отдельный сервис по HTTP) ----------
+_f5_ref_cache: dict[str, tuple[bytes, str]] = {}  # путь -> (аудио-байты, ref_text)
+
+
+def _f5_reference() -> tuple[bytes, str]:
+    """Клиентский референс (аудио + транскрипт) для multipart-контракта F5.
+
+    Кэшируем в памяти: WAV читается с диска один раз, а не на каждый кусок ответа.
+    ref_text вида "@путь" читается из файла (удобно ссылаться на refs/ref_ru.txt).
+    """
+    path = settings.f5_ref_audio
+    cached = _f5_ref_cache.get(path)
+    if cached is not None:
+        return cached
+    if not os.path.isfile(path):
+        raise RuntimeError(f"F5_REF_AUDIO={path!r} — файл референса не найден.")
+    with open(path, "rb") as f:
+        audio = f.read()
+    ref_text = settings.f5_ref_text
+    if ref_text.startswith("@"):
+        ref_path = ref_text[1:]
+        if not os.path.isfile(ref_path):
+            raise RuntimeError(f"F5_REF_TEXT=@{ref_path} — файл транскрипта не найден.")
+        with open(ref_path, encoding="utf-8") as f:
+            ref_text = f.read().strip()
+    if not ref_text.strip():
+        raise RuntimeError(
+            "F5_REF_TEXT пуст — multipart-сервер F5 требует транскрипт референса "
+            "(укажи текст или @refs/ref_ru.txt в .env)."
+        )
+    result = (audio, ref_text)
+    _f5_ref_cache[path] = result
+    return result
+
+
 async def _f5(text: str, language: str | None) -> bytes:
-    """Вызывает отдельный F5-TTS-сервер. Контракт: POST {text, language} -> WAV."""
+    """Вызывает F5-TTS-сервер (русский TTS). Два контракта:
+
+    - multipart (если задан F5_REF_AUDIO): POST {ref_audio, ref_text, gen_text}
+      — GPU-сервер АФМ, референс шлёт клиент;
+    - JSON (иначе): POST {text, language} — локальный f5_server с серверным референсом.
+    """
     import httpx
     if not settings.f5_url:
         raise RuntimeError(
             "TTS=f5, но F5_URL не задан. Запусти f5_server и укажи адрес в .env."
         )
     async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(settings.f5_url,
-                                 json={"text": text, "language": language or "russian"})
+        if settings.f5_ref_audio:
+            audio, ref_text = _f5_reference()
+            resp = await client.post(
+                settings.f5_url,
+                files={"ref_audio": ("ref.wav", audio, "audio/wav")},
+                data={"ref_text": ref_text, "gen_text": text},
+            )
+        else:
+            resp = await client.post(
+                settings.f5_url,
+                json={"text": text, "language": language or "russian"},
+            )
         resp.raise_for_status()
         return resp.content
 
@@ -754,7 +828,7 @@ async def healthy() -> dict:
     out: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=3.0) as client:
         for name, url in targets.items():
-            health_url = f"{url.rsplit('/', 1)[0]}/health"
+            health_url = _health_from(url)
             try:
                 resp = await client.get(health_url)
                 resp.raise_for_status()

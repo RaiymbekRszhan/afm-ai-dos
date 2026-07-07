@@ -4,12 +4,14 @@
 """
 import asyncio
 import io
+import threading
 
 import httpx
 
 from app.config import settings
 
 _whisper = None  # ленивый кэш pipeline
+_whisper_lock = threading.Lock()  # чтобы не грузить модель дважды (прогрев + запрос)
 
 
 def _is_kk(language: str | None) -> bool:
@@ -41,7 +43,14 @@ async def transcribe(audio_bytes: bytes, filename: str, language: str | None = N
 def load_whisper() -> None:
     """Загружает Whisper-kk в память (один раз). Зовётся при прогреве и в _whisper_kk."""
     global _whisper
-    if _whisper is None:
+    if _whisper is not None:
+        return
+    # Double-checked locking: прогрев (фоновый поток) и первый kk-запрос (другой
+    # поток через to_thread) иначе оба увидят None и загрузят модель дважды
+    # (гигабайты -> скачок памяти/OOM).
+    with _whisper_lock:
+        if _whisper is not None:
+            return
         import torch
         from transformers import pipeline
         from transformers.utils import logging as hf_logging
@@ -100,10 +109,17 @@ async def _afm(audio_bytes: bytes, filename: str, language: str,
         if status and status != "success":
             raise RuntimeError(f"STT вернул статус '{status}': {payload}")
         if "data" in payload:
-            return payload["data"]
+            data = payload["data"]
+            # Защита от {"data": null}: иначе .strip() у вызывающего даст
+            # AttributeError -> 500 вместо аккуратного 502.
+            if not isinstance(data, str):
+                raise RuntimeError(f"STT вернул нестроковый data: {payload!r}")
+            return data
         for key in ("text", "transcription", "result", "transcript"):
             if key in payload:
-                return payload[key]
+                value = payload[key]
+                if isinstance(value, str):
+                    return value
     if isinstance(payload, str):
         return payload
     raise RuntimeError(f"Неожиданный формат ответа STT: {payload!r}")

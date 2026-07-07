@@ -1,0 +1,10 @@
+[Unit]
+Description=Ai-dos: периодическая проверка /health оркестратора (раз в 2 мин)
+
+[Timer]
+# 5 мин после загрузки: даём Whisper/TTS прогреться, не рестартим на старте
+OnBootSec=5min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

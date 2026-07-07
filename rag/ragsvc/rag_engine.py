@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from lightrag import LightRAG, QueryParam
@@ -12,7 +13,9 @@ from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from . import config
 from .providers import llm_model_func, embedding_func, get_rerank
-from .prompts import AFM_SYSTEM_PROMPT
+from .prompts import AFM_SYSTEM_PROMPT, NOT_FOUND_KK, NOT_FOUND_RU
+
+log = logging.getLogger("ragsvc")
 
 
 async def build_rag() -> LightRAG:
@@ -24,6 +27,10 @@ async def build_rag() -> LightRAG:
         rerank_model_func=get_rerank(),
         chunk_token_size=config.CHUNK_TOKEN_SIZE,
         chunk_overlap_token_size=config.CHUNK_OVERLAP,
+        # Кэш ответов LLM. Ключ кэша LightRAG НЕ учитывает версию базы, поэтому
+        # после переингеста он отдавал бы устаревшие ответы. По умолчанию выкл
+        # (LLM_CACHE в config) — «строго по актуальной базе» важнее скорости.
+        enable_llm_cache=config.LLM_CACHE,
         # параллелизм при загрузке/запросах
         llm_model_max_async=config.LLM_MAX_ASYNC,
         max_parallel_insert=config.MAX_PARALLEL_INSERT,
@@ -36,7 +43,13 @@ async def build_rag() -> LightRAG:
     # LLM АФМ — таймауты и брошенные чанки). Чанки всё равно идут в векторное хранилище.
     async def _skip_kg(chunk, pipeline_status=None, pipeline_status_lock=None):
         return []
-    rag._process_extract_entities = _skip_kg
+    if hasattr(rag, "_process_extract_entities"):
+        rag._process_extract_entities = _skip_kg
+    else:
+        # API LightRAG изменился — патч не применился. Без него ingest снова начнёт
+        # звать LLM на каждый чанк (таймауты). Громко предупреждаем, не молчим.
+        log.warning("LightRAG: метод _process_extract_entities не найден — "
+                    "пропуск извлечения сущностей НЕ применён (сверь версию lightrag).")
     return rag
 
 
@@ -57,6 +70,16 @@ def _query_param(lang: str | None) -> QueryParam:
 
 _CLEANUP = re.compile(r"[#*`]+")
 
+# LightRAG при НУЛЕВОЙ выдаче поиска (пустой/мусорный вопрос) короткозамыкает и
+# возвращает свою английскую заглушку с маркером [no-context] — БЕЗ вызова LLM,
+# минуя наш промпт. В озвучку её пускать нельзя (гражданин услышит английский).
+_LC_FALLBACK_RE = re.compile(r"\[no-context\]|sorry,?\s+i'?m not able to provide",
+                             re.IGNORECASE)
+
+
+def _not_found(lang: str | None) -> str:
+    return NOT_FOUND_KK if lang == "kk" else NOT_FOUND_RU
+
 
 def _for_tts(text: str) -> str:
     """Подчищаем остатки markdown/служебных секций, чтобы TTS читал гладко."""
@@ -76,10 +99,15 @@ async def answer(rag: LightRAG, question: str, lang: str | None = None) -> str:
         # aquery вернул None — запрос внутри LightRAG упал (см. логи сервиса).
         raise RuntimeError("LightRAG вернул пустой результат на запрос")
     if isinstance(resp, str):
-        return _for_tts(resp)
-    # на случай stream=True — собираем
-    chunks = [c async for c in resp]
-    return _for_tts("".join(chunks))
+        text = _for_tts(resp)
+    else:
+        # на случай stream=True — собираем
+        chunks = [c async for c in resp]
+        text = _for_tts("".join(chunks))
+    if _LC_FALLBACK_RE.search(text):
+        # Заменяем англ. заглушку LightRAG фирменной фразой отказа на языке вопроса.
+        return _not_found(lang)
+    return text
 
 
 _REF_HEADER = re.compile(r"Reference Document List[^\n]*:\s*", re.IGNORECASE)

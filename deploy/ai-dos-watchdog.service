@@ -1,0 +1,8 @@
+[Unit]
+Description=Ai-dos сторож: /health оркестратора не отвечает -> restart ai-dos-api
+# oneshot, запускается по ai-dos-watchdog.timer. Работает от root: нужен
+# systemctl restart. Сам скрипт только читает /health и пишет счётчик в /run.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/ai-dos/scripts/api_watchdog.sh

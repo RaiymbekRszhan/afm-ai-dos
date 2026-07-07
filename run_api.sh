@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
 # Запуск ВСЕГО голосового стека одной командой:
-#   f5 (8810) + spark (8809) + rag (8077) + основной API (8000).
+#   spark (8809) + rag (8077) + основной API (8000). Русский TTS — по умолчанию
+#   с GPU-сервера АФМ (F5_URL ниже), локальный f5_server НЕ поднимается.
 #   bash run_api.sh
 # Останавливается по Ctrl-C — гасит все дочерние сервисы.
 set -uo pipefail
 cd "$(dirname "$0")"
 
+# Проверяем venv ДО старта: иначе `source .venv/bin/activate` тихо провалится
+# (нет set -e) и uvicorn запустится из чужого окружения PATH.
+need_venv(){ [ -f "$1/bin/activate" ] || { echo "ОШИБКА: venv '$1' не создан — см. DEPLOY.md (ШАГ 2-5)"; exit 1; }; }
+need_venv .venv
+need_venv rag/.venv
+
 # По выходу из скрипта убиваем всю группу процессов (дочерние сервисы).
 trap 'kill 0' EXIT INT TERM
 
-# Русский TTS (F5, 8810) и казахский TTS (Spark, 8809) — у каждого свой venv
-# и свой env внутри run.sh, поэтому просто запускаем их в фоне.
-bash f5_server/run.sh &
+# Казахский TTS (Spark, 8809) — свой venv, запускаем в фоне.
+# Русский TTS по умолчанию берём с GPU-сервера АФМ (F5_URL ниже), локальный
+# f5_server НЕ поднимаем. Чтобы вернуть локальный: USE_LOCAL_F5=1 F5_URL=http://localhost:8810/tts bash run_api.sh
+USE_LOCAL_F5="${USE_LOCAL_F5:-0}"
+if [ "$USE_LOCAL_F5" = "1" ]; then bash f5_server/run.sh & fi
 bash spark_server/run.sh &
 
 # RAG (8077) — ОТДЕЛЬНЫЙ venv (lightrag/torch конфликтуют с голосовым слоем).
 # Подоболочка, чтобы активация его venv не протекла в основной shell.
 # TIKTOKEN_CACHE_DIR: словарь токенизатора завендорен локально (rag/vendor/tiktoken)
 # — иначе tiktoken лезет в интернет, которого в сети АФМ нет (см. rag/README).
+# RAG слушает только localhost: единственный клиент — оркестратор на этой же машине.
 ( cd rag && source .venv/bin/activate \
   && export TIKTOKEN_CACHE_DIR="$PWD/vendor/tiktoken" \
-  && uvicorn ragsvc.server:app --host 0.0.0.0 --port 8077 ) &
+  && uvicorn ragsvc.server:app --host 127.0.0.1 --port 8077 ) &
 
 # Основной оркестратор (8000) — на venv голосового слоя.
 source .venv/bin/activate
@@ -30,13 +40,17 @@ export STT_KK_USE_WHISPER=true
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-# TTS: русский -> F5-сервер, казахский -> Spark-сервер
-export TTS_PROVIDER=f5
-export F5_URL=http://localhost:8810/tts
-export TTS_KK_PROVIDER=spark
-export SPARK_URL=http://localhost:8809/tts
+# TTS: русский -> F5 на GPU-сервере АФМ (multipart с клиентским референсом),
+# казахский -> Spark. ${VAR:-...} — любой адрес/референс можно переопределить
+# снаружи (напр. свой F5_URL или F5_REF_AUDIO). Референс шлётся в каждый запрос.
+export TTS_PROVIDER="${TTS_PROVIDER:-f5}"
+export F5_URL="${F5_URL:-http://192.168.165.2:8991/tts}"
+export F5_REF_AUDIO="${F5_REF_AUDIO:-refs/ref_ru_f5.wav}"
+export F5_REF_TEXT="${F5_REF_TEXT:-@refs/ref_ru.txt}"
+export TTS_KK_PROVIDER="${TTS_KK_PROVIDER:-spark}"
+export SPARK_URL="${SPARK_URL:-http://localhost:8809/tts}"
 
 # Источник ответа — внешний RAG-сервис
-export RAG_URL=http://localhost:8077/ask
+export RAG_URL="${RAG_URL:-http://localhost:8077/ask}"
 
 uvicorn app.main:app --host 0.0.0.0 --port 8000

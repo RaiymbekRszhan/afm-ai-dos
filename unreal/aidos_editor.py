@@ -29,9 +29,20 @@ import uuid
 # ---------------- конфиг ----------------
 
 BACKEND = os.environ.get("AIDOS_BACKEND", "http://192.168.23.120:8000")
+# Токен для эндпоинтов /last_answer* (если бэкенд настроен с LAST_ANSWER_TOKEN).
+# Пусто = не слать (обратная совместимость с бэкендом без токена).
+TOKEN = os.environ.get("AIDOS_TOKEN", "")
 TIMEOUT = 420            # TTS на CPU Мака ~2-4 мин на ответ
 CONTENT_DIR = "/Game/Aidos/Answers"      # куда импортировать SoundWave
 SAVE_DIR = None          # None = <Project>/Saved/Aidos (заполняется ниже)
+
+
+def _open(url, timeout):
+    """GET к бэкенду с токеном ноды в заголовке (если задан AIDOS_TOKEN)."""
+    req = urllib.request.Request(url)
+    if TOKEN:
+        req.add_header("X-Aidos-Token", TOKEN)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 try:
     import unreal
@@ -57,7 +68,10 @@ def _multipart(fields, file_field, filename, payload, ctype="audio/wav"):
 
 def _save_wav(audio_bytes, tag):
     os.makedirs(SAVE_DIR, exist_ok=True)
-    path = os.path.join(SAVE_DIR, "answer_%s_%s.wav" % (tag, time.strftime("%H%M%S")))
+    # Дата + короткий uuid: без них два ответа в одну секунду перезаписали бы друг
+    # друга (и SoundWave-ассет с тем же именем пересоздался бы поверх играющего).
+    name = "answer_%s_%s_%s.wav" % (tag, time.strftime("%Y%m%d_%H%M%S"), uuid.uuid4().hex[:4])
+    path = os.path.join(SAVE_DIR, name)
     with open(path, "wb") as f:
         f.write(audio_bytes)
     return path
@@ -482,11 +496,14 @@ def _current_base():
     return None
 
 
-def cleanup(keep_current=True):
-    """Удаляет артефакты ПРОШЛЫХ ответов (WAV/SoundWave/Performance/секвенции),
-    кроме текущей открытой. Вызывается сама после каждого нового ответа;
-    руками — a.cleanup() (разгрести накопившееся). НИКОГДА не роняет пайплайн:
-    любая ошибка здесь — warning, а не обрыв (иначе не дойдём до Play)."""
+def cleanup(keep_current=True, sequences=False):
+    """Удаляет артефакты ПРОШЛЫХ ответов. Звук/мимику — все, кроме текущего.
+    Level Sequences в АВТО-режиме НЕ трогаем (sequences=False): их спавнаблы держат
+    ссылку даже спустя несколько ответов, поэтому удаление даёт блокирующую модалку
+    «используется» + порчу пакета -> фризы и рваное воспроизведение. Секвенции
+    копятся (лёгкие ассеты); снести безопасно — закрыть вкладку Sequencer и вызвать
+    a.cleanup(sequences=True), либо перезапустить редактор.
+    НИКОГДА не роняет пайплайн: любая ошибка здесь — warning, а не обрыв."""
     removed = 0
     try:
         base = _current_base() if keep_current else None
@@ -503,6 +520,14 @@ def cleanup(keep_current=True):
                 continue
             if base and base in name:
                 continue                  # текущий ответ оставляем
+            # Level Sequences в авто-режиме НЕ трогаем: их спавнаблы (BP_AFM_agent_v03_C)
+            # держат ссылку даже спустя несколько ответов, поэтому delete_asset даёт
+            # блокирующую модалку «используется» + порчу пакета -> фризы и рваное
+            # воспроизведение. Копятся, но это лёгкие ассеты. Снести накопившиеся
+            # безопасно: закрыть вкладку Sequencer, потом a.cleanup(sequences=True)
+            # (или просто перезапустить редактор).
+            if name.startswith(("LS_Perf_answer_", "LS_Perf_last_")) and not sequences:
+                continue
             try:
                 if unreal.EditorAssetLibrary.delete_asset(p):
                     removed += 1
@@ -524,26 +549,62 @@ def cleanup(keep_current=True):
     return removed
 
 
+def _deferred_play(seq):
+    """Запускает play() не сразу, а на первом «спокойном» кадре редактора.
+
+    Сборка ответа (импорт + Process + экспорт) идёт синхронно в одном slate-тике
+    ~10 c. Если вызвать play() в конце этого блока, ПЕРВЫЙ кадр воспроизведения
+    получает дельту времени = длине сборки, и Sequencer (играет по реальному
+    времени) перематывает плейхед на ~10 c вперёд — слышно только хвост ответа.
+    Ждём кадр с нормальной дельтой (<=0.5 c), затем ставим плейхед на начало и
+    играем. Предохранитель: не ждём дольше ~30 тиков."""
+    st = {"handle": None, "ticks": 0, "calm": 0}
+
+    def _go(dt):
+        st["ticks"] += 1
+        # Копим ПОДРЯД идущие спокойные кадры (dt<=0.1 c): один спокойный кадр может
+        # оказаться между двумя фризами, а нам нужно, чтобы турбулентность (валидация,
+        # сборка мусора, редкие модалки) точно улеглась — иначе первый кадр
+        # воспроизведения ловит большую дельту и плейхед прыгает вперёд.
+        st["calm"] = st["calm"] + 1 if dt <= 0.1 else 0
+        if st["calm"] < 4 and st["ticks"] < 60:   # предохранитель: не ждём вечно
+            return
+        try:
+            unreal.LevelSequenceEditorBlueprintLibrary.set_current_time(
+                int(seq.get_playback_start()))
+            unreal.LevelSequenceEditorBlueprintLibrary.play()
+            print("[aidos] ▶ играю ответ (с начала)")
+        except Exception as e:
+            print("[aidos] автоплей не сработал (%s) — жми Play в Sequencer" % e)
+        try:
+            unreal.unregister_slate_post_tick_callback(st["handle"])
+        except Exception:
+            pass
+
+    try:
+        st["handle"] = unreal.register_slate_post_tick_callback(_go)
+    except Exception as e:
+        # если тик-колбэк недоступен — играем сразу (лучше с перемоткой, чем молча)
+        print("[aidos] отложенный запуск недоступен (%s), играю сразу" % e)
+        try:
+            unreal.LevelSequenceEditorBlueprintLibrary.set_current_time(
+                int(seq.get_playback_start()))
+            unreal.LevelSequenceEditorBlueprintLibrary.play()
+        except Exception:
+            pass
+
+
 def _build_and_play(wav_path):
     """Общий хвост пайплайна: WAV ответа -> Performance -> LS -> позиция -> Play."""
-    sound = import_wav(wav_path)
+    sound = import_wav(wav_path)      # ВАЖНО: до cleanup (иначе очистка снесёт свежий WAV)
     seq = export_sequence(process_performance(sound))
     fix_spawn_transform(seq)
     unreal.LevelSequenceEditorBlueprintLibrary.open_level_sequence(seq)
     _set_idle_visible(False)          # манекен скрыт: в кадре только двойник секвенции
-    cleanup()                         # чистим ДО запуска: play() идёт по реальному
-                                      # времени, и любой фриз после него срезает
-                                      # начало ответа (перескок плейхеда вперёд)
-    try:                              # плейхед строго на начало
-        unreal.LevelSequenceEditorBlueprintLibrary.set_current_time(
-            int(seq.get_playback_start()))
-    except Exception:
-        pass
-    try:
-        unreal.LevelSequenceEditorBlueprintLibrary.play()
-        print("[aidos] ▶ играю ответ")
-    except Exception as e:
-        print("[aidos] автоплей не сработал (%s) — жми Play в Sequencer" % e)
+    cleanup()                         # чистим звук/мимику прошлых ответов (секвенции
+                                      # пропускаем — их удаление даёт модалку)
+    _deferred_play(seq)               # play на «спокойном» кадре: иначе первая дельта
+                                      # = времени сборки и плейхед прыгает в конец
     return seq
 
 
@@ -614,7 +675,7 @@ def play_last():
     секция 3), а тут забираешь последний ответ и аватар его проигрывает."""
     _check_not_playing()
     try:
-        resp = urllib.request.urlopen(BACKEND + "/last_answer", timeout=30)
+        resp = _open(BACKEND + "/last_answer", 30)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             print("[aidos] на бэкенде ещё нет ответов — сначала спроси голосом в веб-UI")
@@ -624,11 +685,14 @@ def play_last():
     if qid and qid == _LAST_ID[0]:
         print("[aidos] нового ответа нет (этот уже проигран) — задай вопрос в веб-UI")
         return None
-    _LAST_ID[0] = qid
     question = urllib.parse.unquote(resp.headers.get("X-Question", ""))
     answer = urllib.parse.unquote(resp.headers.get("X-Answer", ""))
     print("[aidos] Вопрос: %s\n[aidos] Ответ: %s" % (question, answer))
-    return _build_and_play(_save_wav(resp.read(), "last"))
+    result = _build_and_play(_save_wav(resp.read(), "last"))
+    # Помечаем проигранным ТОЛЬКО после успешной сборки: если _build_and_play упал
+    # (сеть/Play-режим), ответ не потеряется — автослежение сможет повторить.
+    _LAST_ID[0] = qid
+    return result
 
 
 # Короткие имена: основной путь — v3 (экспорт+авто-позиция). Шаблонный вариант
@@ -649,6 +713,112 @@ def probe_speech_api():
             print(cls.__doc__)
 
 
+def probe_realtime():
+    """РАЗВЕДКА реал-тайм audio-driven анимации в ЭТОЙ версии UE 5.7.
+
+    Цель — уйти от «WAV -> Performance -> Level Sequence на каждый ответ» к живому
+    липсинку: аватар проговаривает WAV сразу, лицо гонится в реальном времени, без
+    генерации ассетов. Запусти в Python-консоли UE: `a.probe_realtime()` и пришли
+    ВЕСЬ вывод (удобно через страницу /debug/log на бэкенде). По нему подберём точную
+    интеграцию — гадать вслепую по версиям 5.6/5.7 нельзя."""
+    def _members(obj):
+        return sorted(m for m in dir(obj) if not m.startswith("_"))
+
+    print("========== PROBE REALTIME (UE %s) ==========" %
+          getattr(unreal.SystemLibrary, "get_engine_version", lambda: "?")())
+
+    # [1] Все unreal.* по ключевым словам realtime/audio-driven/livelink/speech.
+    print("\n=== [1] unreal.* (audio-driven / livelink / speech / realtime) ===")
+    kws = ("audiodriven", "audio_driven", "audiotoface", "audio2face", "speech2face",
+           "livelink", "live_link", "realtime", "real_time", "speech", "audiodevice",
+           "metahumanperformance", "metahumananim")
+    try:
+        hits = sorted({n for n in dir(unreal)
+                       if any(k in n.lower() for k in kws)
+                       or ("metahuman" in n.lower() and ("audio" in n.lower()
+                                                         or "live" in n.lower()
+                                                         or "anim" in n.lower()))})
+        for n in hits:
+            print("   ", n)
+        if not hits:
+            print("   (ничего не нашлось — пришли и вывод a.dump_api())")
+    except Exception as e:
+        print("   ошибка перечисления:", e)
+
+    # [2] Методы/свойства классов-кандидатов на живой аудио-драйв.
+    print("\n=== [2] Классы-кандидаты (члены) ===")
+    candidates = (
+        "MetaHumanLiveLinkAudioDevice", "MetaHumanAudioDrivenAnimationLiveLinkSource",
+        "MetaHumanSpeechToPerformance", "MetaHumanSpeechProcessingSettings",
+        "MetaHumanPerformance", "AnimNode_MetaHumanAudioDrivenAnimation",
+        "LiveLinkComponentController", "AudioCaptureComponent", "SynthComponent",
+    )
+    for cls_name in candidates:
+        cls = getattr(unreal, cls_name, None)
+        print("\n--- %s : %s ---" % (cls_name, "ЕСТЬ" if cls else "нет"))
+        if cls:
+            print("   ", _members(cls))
+
+    # [3] Как СЕЙЧАС настроено лицо аватара (ищем audio-driven вход у Face).
+    print("\n=== [3] Face-компонент BP_AFM_agent_v03 (Animation Mode / Anim Class) ===")
+    try:
+        bp = unreal.load_asset("/Game/MetaHumans/AFM_agent_v02/BP_AFM_agent_v03")
+        print("   BP:", bp)
+        gen = getattr(bp, "generated_class", None)
+        cdo = unreal.get_default_object(gen()) if callable(gen) else None
+        if cdo:
+            for comp_name in ("Face", "FaceMesh", "Body"):
+                comp = cdo.get_editor_property(comp_name) if comp_name in _members(cdo) else None
+                if comp:
+                    print("   [%s] props:" % comp_name, _members(comp)[:60])
+    except Exception as e:
+        print("   не удалось разобрать BP:", e)
+
+    # [4] Плагины, относящиеся к MetaHuman/аудио/LiveLink.
+    print("\n=== [4] Плагины (MetaHuman / Audio / LiveLink) ===")
+    try:
+        plugins = unreal.PluginBlueprintLibrary.get_enabled_plugin_names()
+        for p in sorted(plugins):
+            low = p.lower()
+            if any(k in low for k in ("metahuman", "audio", "livelink", "live link",
+                                      "lipsync", "speech", "nne", "neural")):
+                print("   ", p)
+    except Exception as e:
+        print("   список плагинов недоступен:", e)
+
+    print("\n========== КОНЕЦ PROBE — пришли ВЕСЬ вывод ==========")
+
+
+def probe_realtime2():
+    """РАЗВЕДКА №2: члены классов реалтайм-аудио-липсинка (MetaHuman Live Link).
+
+    По probe_realtime() уже знаем, что плагин MetaHumanLiveLink установлен.
+    Этот дамп нужен, чтобы спроектировать v4 «нажал Play — аватар говорит сам»:
+    как задаётся аудио-устройство источника, какие есть настройки solve/mood и
+    можно ли применить Live Link-пресет программно. Запусти в консоли UE:
+    `a.probe_realtime2()` и пришли ВЕСЬ вывод (через /debug/log)."""
+    names = (
+        "MetaHumanAudioLiveLinkSubjectSettings", "MetaHumanAudioBaseLiveLinkSubjectSettings",
+        "MetaHumanLocalLiveLinkSourceBlueprint", "MetaHumanLocalLiveLinkSubjectSettings",
+        "MetaHumanLiveLinkSubjectSettings", "MetaHumanLiveLinkAudioDevice",
+        "MetaHumanLiveLinkAudioFormat", "MetaHumanLiveLinkAudioTrack",
+        "AudioDrivenAnimationModels", "AudioDrivenAnimationMood",
+        "AudioDrivenAnimationOutputControls", "AudioDrivenAnimationSolveOverrides",
+        "MetaHumanRealtimeSmoothingParams", "MetaHumanCharacterAnimInstance",
+        "LiveLinkPreset", "LiveLinkBlueprintLibrary",
+    )
+    print("========== PROBE REALTIME 2 ==========")
+    for cls_name in names:
+        cls = getattr(unreal, cls_name, None)
+        print("\n--- %s : %s ---" % (cls_name, "ЕСТЬ" if cls else "нет"))
+        if cls:
+            print("   ", sorted(m for m in dir(cls) if not m.startswith("_")))
+            doc = (cls.__doc__ or "").strip()
+            if doc:
+                print("    doc:", doc[:500])
+    print("\n========== КОНЕЦ PROBE 2 — пришли ВЕСЬ вывод ==========")
+
+
 # ---------------- автослежение: аватар отвечает сам, без команд ----------------
 
 # Long-poll в ФОНОВОМ потоке: бэкенд держит запрос /last_answer/wait открытым до
@@ -656,16 +826,27 @@ def probe_speech_api():
 # фонового потока звать НЕЛЬЗЯ, поэтому поток только складывает id в очередь, а
 # главный поток (slate-тик) забирает её и играет.
 
-_WATCH = {"handle": None, "queue": [], "stop": True, "thread": None}
+_WATCH = {"handle": None, "queue": [], "stop": True, "thread": None,
+          "gen": 0, "retries": {}, "cooldown_until": 0.0}
+_MAX_PLAY_RETRIES = 3
+_RETRY_COOLDOWN_SEC = 10  # пауза перед повтором: без неё 3 ретрая сгорают за 3 тика
 
 
-def _watch_loop():
+def _watch_loop(my_gen):
     import time as _time
     since = _LAST_ID[0] or ""
-    while not _WATCH["stop"]:
+    if not since:
+        # На старте берём текущий id как базу — иначе /wait с пустым since вернёт
+        # его немедленно и аватар первым делом проиграет старый (вчерашний) ответ.
         try:
-            r = urllib.request.urlopen(
-                BACKEND + "/last_answer/wait?timeout=25&since=" + since, timeout=30)
+            since = json.load(_open(BACKEND + "/last_answer/id", 5)).get("id") or ""
+        except Exception:
+            pass
+    # gen: если watch() перезапустили, этот (возможно, зависший в urlopen) поток
+    # увидит смену поколения и выйдет — иначе накапливались бы вечные long-poll'ы.
+    while not _WATCH["stop"] and _WATCH["gen"] == my_gen:
+        try:
+            r = _open(BACKEND + "/last_answer/wait?timeout=25&since=" + since, 30)
             qid = json.load(r).get("id") or ""
             if qid and qid != since:
                 _WATCH["queue"].append(qid)
@@ -674,7 +855,7 @@ def _watch_loop():
             if e.code == 404:   # старый бэкенд без /wait — обычный опрос раз в 5 с
                 _time.sleep(5)
                 try:
-                    r = urllib.request.urlopen(BACKEND + "/last_answer/id", timeout=3)
+                    r = _open(BACKEND + "/last_answer/id", 3)
                     qid = json.load(r).get("id") or ""
                     if qid and qid != since:
                         _WATCH["queue"].append(qid)
@@ -694,12 +875,17 @@ def watch(interval=None):
     stop_watch()
     _WATCH["stop"] = False
     _WATCH["queue"] = []
-    _WATCH["thread"] = threading.Thread(target=_watch_loop, daemon=True)
+    _WATCH["retries"] = {}
+    _WATCH["gen"] += 1
+    my_gen = _WATCH["gen"]
+    _WATCH["thread"] = threading.Thread(target=_watch_loop, args=(my_gen,), daemon=True)
     _WATCH["thread"].start()
 
     def _tick(_dt):
         if not _WATCH["queue"]:
             return
+        if time.time() < _WATCH["cooldown_until"]:
+            return  # недавняя ошибка — даём сети/редактору отдышаться перед повтором
         try:  # пока играет предыдущий ответ — подождём
             if unreal.LevelSequenceEditorBlueprintLibrary.is_playing():
                 return
@@ -711,9 +897,21 @@ def watch(interval=None):
         print("[aidos] 🔔 новый ответ на бэкенде — собираю и играю")
         try:
             play_last()
+            _WATCH["retries"].pop(qid, None)
         except Exception as e:
-            print("[aidos] ⚠ автоответ упал: %s" % e)
-            _LAST_ID[0] = qid   # не зацикливаться на битом ответе
+            # Временная ошибка (сеть моргнула, Play-режим) — не теряем ответ, а
+            # повторяем несколько раз; только исчерпав попытки, пропускаем.
+            n = _WATCH["retries"].get(qid, 0) + 1
+            _WATCH["retries"][qid] = n
+            _WATCH["cooldown_until"] = time.time() + _RETRY_COOLDOWN_SEC
+            if n <= _MAX_PLAY_RETRIES:
+                print("[aidos] ⚠ автоответ упал (попытка %d/%d), повторю: %s"
+                      % (n, _MAX_PLAY_RETRIES, e))
+                _WATCH["queue"].append(qid)   # вернуть в очередь на повтор
+            else:
+                print("[aidos] ⚠ автоответ упал %d раза, пропускаю: %s" % (n, e))
+                _LAST_ID[0] = qid
+                _WATCH["retries"].pop(qid, None)
 
     _WATCH["handle"] = unreal.register_slate_post_tick_callback(_tick)
     print("[aidos] 👂 слежу за ответами (long-poll, мгновенно). Стоп: a.stop_watch()")
@@ -721,6 +919,7 @@ def watch(interval=None):
 
 def stop_watch():
     _WATCH["stop"] = True       # фоновый поток выйдет после текущего запроса (<30 с)
+    _WATCH["gen"] += 1          # и досрочно, если сейчас перезапустят watch()
     if _WATCH.get("handle") is not None:
         unreal.unregister_slate_post_tick_callback(_WATCH["handle"])
         _WATCH["handle"] = None

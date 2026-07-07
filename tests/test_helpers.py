@@ -159,6 +159,85 @@ def test_concat_inserts_gap():
     assert wav_nframes(out) == expected
 
 
+# ---------- TTS: выбор контракта F5 (JSON локальный vs multipart удалённый) ----------
+class _FakeResp:
+    content = b"RIFFwav"
+    def raise_for_status(self):
+        pass
+
+
+class _FakeClient:
+    """Подменяет httpx.AsyncClient, записывая аргументы последнего .post()."""
+    sent: dict = {}
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, files=None, data=None, json=None):
+        _FakeClient.sent = {"url": url, "files": files, "data": data, "json": json}
+        return _FakeResp()
+
+
+def test_f5_multipart_contract_when_ref_configured(monkeypatch, tmp_path):
+    """F5_REF_AUDIO задан -> multipart {ref_audio, ref_text, gen_text}."""
+    import asyncio
+    import httpx
+
+    ref = tmp_path / "ref.wav"
+    ref.write_bytes(b"RIFF0000")
+    monkeypatch.setattr(tts.settings, "f5_url", "http://f5/tts")
+    monkeypatch.setattr(tts.settings, "f5_ref_audio", str(ref))
+    monkeypatch.setattr(tts.settings, "f5_ref_text", "текст референса")
+    tts._f5_ref_cache.clear()
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    out = asyncio.run(tts._f5("Озвучиваемый текст", "russian"))
+    assert out == b"RIFFwav"
+    sent = _FakeClient.sent
+    assert sent["json"] is None                       # НЕ JSON-контракт
+    assert sent["data"]["gen_text"] == "Озвучиваемый текст"
+    assert sent["data"]["ref_text"] == "текст референса"
+    assert "ref_audio" in sent["files"]               # референс — файлом
+
+
+def test_f5_json_contract_when_no_ref(monkeypatch):
+    """Без F5_REF_AUDIO -> прежний JSON {text, language} (локальный f5_server)."""
+    import asyncio
+    import httpx
+
+    monkeypatch.setattr(tts.settings, "f5_url", "http://f5/tts")
+    monkeypatch.setattr(tts.settings, "f5_ref_audio", "")
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    out = asyncio.run(tts._f5("Текст", "russian"))
+    assert out == b"RIFFwav"
+    sent = _FakeClient.sent
+    assert sent["files"] is None                      # НЕ multipart
+    assert sent["json"] == {"text": "Текст", "language": "russian"}
+
+
+def test_f5_reference_reads_at_path_and_caches(monkeypatch, tmp_path):
+    """F5_REF_TEXT='@path' читается из файла; результат кэшируется."""
+    ref = tmp_path / "ref.wav"
+    ref.write_bytes(b"RIFFaudio")
+    txt = tmp_path / "ref.txt"
+    txt.write_text("транскрипт из файла", encoding="utf-8")
+    monkeypatch.setattr(tts.settings, "f5_ref_audio", str(ref))
+    monkeypatch.setattr(tts.settings, "f5_ref_text", "@" + str(txt))
+    tts._f5_ref_cache.clear()
+
+    audio, ref_text = tts._f5_reference()
+    assert audio == b"RIFFaudio"
+    assert ref_text == "транскрипт из файла"
+    assert str(ref) in tts._f5_ref_cache               # закэшировано
+
+
 # ---------- RAG: роутинг языка и health-url ----------
 def test_resolve_lang():
     assert rag._resolve_lang("russian") == "ru"

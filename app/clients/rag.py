@@ -5,6 +5,8 @@
 RAG-сервис озвучивается голосовым слоем, но живёт отдельно (lightrag/torch
 конфликтуют с зависимостями голосового слоя), поэтому общаемся по HTTP.
 """
+from urllib.parse import urlparse, urlunparse
+
 import httpx
 
 from app.config import settings
@@ -34,9 +36,12 @@ async def ask(question: str, language: str | None = None,
 
 
 def _health_url() -> str:
-    """Адрес /health RAG-сервиса, выведенный из rag_url (.../ask -> .../health)."""
-    base = settings.rag_url.rsplit("/", 1)[0]
-    return f"{base}/health"
+    """Адрес /health RAG-сервиса, выведенный из rag_url (.../ask -> .../health).
+
+    Через urlparse (а не rsplit): устойчиво и к URL без пути (http://host:8077).
+    """
+    p = urlparse(settings.rag_url)
+    return urlunparse(p._replace(path="/health", params="", query="", fragment=""))
 
 
 async def healthy() -> dict:

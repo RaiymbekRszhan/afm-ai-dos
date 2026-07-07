@@ -11,6 +11,20 @@ def test_health(client):
     assert "tts" in body and "enabled" in body["tts"]
 
 
+def test_health_node_heartbeat(client, monkeypatch):
+    """Heartbeat рендер-ноды: /health показывает watching=True после опроса
+    /last_answer* и False, пока нода ни разу не приходила (или пропала)."""
+    import app.main as main
+    monkeypatch.setitem(main._node_seen, "ts", None)          # нода ещё не приходила
+    node = client.get("/health").json()["node"]
+    assert node == {"watching": False, "last_poll_ago_sec": None}
+
+    client.get("/last_answer/id")                             # опрос от ноды
+    node = client.get("/health").json()["node"]
+    assert node["watching"] is True
+    assert node["last_poll_ago_sec"] < main._NODE_ALIVE_SEC
+
+
 def test_chat_ok(client):
     r = client.post("/chat", json={"question": "Какой порог по ювелирке?", "language": "russian"})
     assert r.status_code == 200

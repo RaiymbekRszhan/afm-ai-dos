@@ -17,9 +17,21 @@ Environment=F5_URL=http://localhost:8810/tts
 Environment=TTS_KK_PROVIDER=spark
 Environment=SPARK_URL=http://localhost:8809/tts
 Environment=RAG_URL=http://localhost:8077/ask
+# host 0.0.0.0: к оркестратору напрямую ходят браузеры граждан. За TLS-прокси
+# (рекомендуется) можно сузить до 127.0.0.1.
 ExecStart=/opt/ai-dos/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
+
+# Базовый sandbox (сервис принимает недоверенный ввод граждан, работает 24/7).
+# ProtectHome/ProtectSystem=strict НЕ ставим: модели/HF-кэш могут быть в домашнем
+# каталоге пользователя ai-dos — иначе загрузка Whisper сломается.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target

@@ -61,12 +61,19 @@ check_health(){ # check_health "Имя" URL  — ждёт {"status":"ok"} на /
   else no "$name — $url/health" "$(printf '%s' "$body" | head -c 200)"; fi
 }
 
-check_ask(){ # check_ask lang "вопрос"  — ждёт непустой ответ RAG по базе
+check_ask(){ # check_ask lang "вопрос"  — ждёт СОДЕРЖАТЕЛЬНЫЙ ответ RAG по базе
   local lang="$1" q="$2" body ans
   body="$(curl -s --max-time "${RAG_TIMEOUT:-180}" -X POST "$RAG/ask" \
         -H 'Content-Type: application/json' \
         --data "$(payload question "$q" lang "$lang" with_sources false)")" || true
   ans="$(printf '%s' "$body" | jget answer)"
+  # Фраза-отказ (нет в базе) на приёмочный вопрос, который В базе ЕСТЬ, — это провал
+  # поиска, а не «зелёный». Иначе healthcheck зелёный при неработающем RAG.
+  case "$ans" in
+    *"нет точной информации"*|*"нақты ақпарат жоқ"*)
+      no "RAG ($lang) — ответ-отказ на вопрос из базы (поиск не работает?)" \
+         "$(printf '%s' "$ans" | tr '\n' ' ' | head -c 90)…"; return;;
+  esac
   if [ "${#ans}" -ge 20 ]; then ok "RAG ответил по базе ($lang) — ${#ans} симв." "$(printf '%s' "$ans" | tr '\n' ' ' | head -c 90)…"
   else no "RAG ($lang) — пустой/короткий ответ" "$(printf '%s' "$body" | head -c 200)"; fi
 }
@@ -104,8 +111,18 @@ api_health="$(curl -s --max-time 10 "$API/health" 2>/dev/null)" || true
 if [ -n "$api_health" ]; then
   ru_prov="$(printf '%s' "$api_health" | jget tts.ru)"
   kk_prov="$(printf '%s' "$api_health" | jget tts.kk)"
-  case " $ru_prov $kk_prov " in *" f5 "*)    check_health "F5 (русский TTS)"    "$F5";;    esac
-  case " $ru_prov $kk_prov " in *" spark "*) check_health "Spark (казахский TTS)" "$SPARK";; esac
+  # Оркестратор УЖЕ пингует свои TTS-серверы по фактическим адресам (локальный
+  # f5_server ИЛИ GPU-сервер АФМ) и кладёт статус в tts.servers.* — берём его
+  # оттуда, а не гадаем URL (иначе при удалённом F5 ложный FAIL на localhost:8810).
+  check_tts_srv(){ # check_tts_srv f5|spark "Имя"
+    local key="$1" name="$2"
+    case "$(printf '%s' "$api_health" | jget "tts.servers.$key.reachable")" in
+      True|true) ok "$name — reachable (по данным $API/health)";;
+      *) no "$name — недоступен" "см. tts.servers.$key в $API/health";;
+    esac
+  }
+  case " $ru_prov $kk_prov " in *" f5 "*)    check_tts_srv f5    "F5 (русский TTS)";;    esac
+  case " $ru_prov $kk_prov " in *" spark "*) check_tts_srv spark "Spark (казахский TTS)";; esac
   case " $ru_prov $kk_prov " in
     *f5*|*spark*) ;;
     *) printf "  ${Y}ℹ INFO${N}  TTS внешний (ru=%s, kk=%s) — локальные TTS-серверы не проверяю\n" "${ru_prov:-?}" "${kk_prov:-?}";;

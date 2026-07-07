@@ -81,9 +81,20 @@ async def correct_transcript(text: str, language: str | None = None) -> str:
         {"role": "system", "content": CORRECTION_SYSTEM.format(lang=_lang_name(language))},
         {"role": "user", "content": text},
     ]
+    # Лимит токенов — с запасом от длины входа: коррекция примерно той же длины,
+    # что и оригинал; без запаса длинный ответ гражданина обрезается на полуслове.
+    budget = max(256, len(text) // 2 + 64)
     try:
-        corrected = await llm.chat(messages, max_tokens=256)
-    except Exception:
-        return text  # не валим распознавание из-за сбоя коррекции
+        corrected, finish = await llm.chat(messages, max_tokens=budget, return_finish=True)
+    except Exception as e:
+        # не валим распознавание из-за сбоя коррекции, но НЕ молчим — иначе долгую
+        # деградацию LLM (лежит неделями) никто не заметит.
+        _guard_log.warning("LLM-коррекция STT недоступна, отдаю сырой текст: %r", e)
+        return text
+    if finish == "length":
+        # Ответ обрезан лимитом -> в RAG уйдёт усечённый вопрос. Безопаснее вернуть
+        # оригинал целиком, чем обрубок.
+        _guard_log.warning("LLM-коррекция обрезана лимитом токенов, отдаю сырой текст")
+        return text
     corrected = corrected.strip()
     return corrected or text

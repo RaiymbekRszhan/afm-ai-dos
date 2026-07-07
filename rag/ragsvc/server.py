@@ -12,12 +12,27 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import config
-from .rag_engine import build_rag, answer, get_sources
+from .rag_engine import build_rag, answer, get_sources, _not_found
 
 _state: dict = {}
+
+
+def _norm_lang(lang: str | None) -> str | None:
+    """Приводит код языка к 'ru' | 'kk' | None. Неизвестный код -> None (LightRAG
+    ответит на языке вопроса), а не молча ломает языковую логику."""
+    if not lang:
+        return None
+    low = lang.strip().lower()
+    if low in ("ru", "kk"):
+        return low
+    if low.startswith(("kk", "kz", "kaz", "қаз", "каз")):
+        return "kk"
+    if low.startswith(("ru", "рус")):
+        return "ru"
+    return None
 
 
 @asynccontextmanager
@@ -31,7 +46,8 @@ app = FastAPI(title="AFM Digital Officer RAG", lifespan=lifespan)
 
 
 class Ask(BaseModel):
-    question: str
+    # max_length — защита от DoS/мегабайтного текста в эмбеддинг-сервис.
+    question: str = Field(..., max_length=config.MAX_QUESTION_CHARS)
     lang: str | None = None        # "ru" | "kk" | None (язык кнопки на экране)
     with_sources: bool = False
 
@@ -44,10 +60,15 @@ async def health():
 @app.post("/ask")
 async def ask(req: Ask):
     rag = _state["rag"]
-    text = await answer(rag, req.question, req.lang)
+    question = req.question.strip()
+    lang = _norm_lang(req.lang)
+    if not question:
+        # Пустой вопрос (например, мусорный STT): сразу фраза-отказ, без ретрива/LLM.
+        return {"answer": _not_found(lang), "sources": ""}
+    text = await answer(rag, question, lang)
     out = {"answer": text}
     if req.with_sources:
-        out["sources"] = await get_sources(rag, req.question, req.lang)
+        out["sources"] = await get_sources(rag, question, lang)
     return out
 
 

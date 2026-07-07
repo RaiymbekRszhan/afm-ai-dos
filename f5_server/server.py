@@ -26,12 +26,13 @@ RUAccent (вставляет «+» после ударной гласной) —
 """
 import io
 import os
+import threading
 
 import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 MODEL_ARCH = os.environ.get("F5_MODEL", "F5TTS_v1_Base")
 CKPT = os.environ.get("F5_CKPT_FILE", "")
@@ -42,10 +43,27 @@ DEVICE = os.environ.get("F5_DEVICE", "cpu")
 NFE = int(os.environ.get("F5_NFE_STEP", "32"))
 SPEED = float(os.environ.get("F5_SPEED", "1.0"))
 PORT = int(os.environ.get("F5_PORT", "8810"))
+# По умолчанию слушаем ТОЛЬКО localhost: единственный легитимный клиент —
+# оркестратор на той же машине. Для отдельной GPU-ноды поставь F5_HOST=0.0.0.0.
+HOST = os.environ.get("F5_HOST", "127.0.0.1")
+# Предел длины текста на один запрос: защита от DoS (долгий синтез/RUAccent на
+# гигантском тексте). Оркестратор режет ответ на куски <= ~600 симв.
+MAX_CHARS = int(os.environ.get("F5_MAX_CHARS", "5000"))
 USE_ACCENT = os.environ.get("F5_RUACCENT", "1").lower() not in ("0", "false", "no", "")
 
 if not REF_AUDIO:
     raise RuntimeError("F5_REF_AUDIO не задан — F5 требует референс-аудио (5-15 c). См. run.sh.")
+
+# Проверяем файлы на СТАРТЕ, а не при первом запросе: пустой CKPT/VOCAB заставит
+# f5-tts молча скачать дефолтную английскую модель с HF (в офлайн-сети АФМ —
+# отложенный краш). Лучше упасть сразу с понятным сообщением.
+for _label, _path in (("F5_REF_AUDIO", REF_AUDIO), ("F5_CKPT_FILE", CKPT),
+                      ("F5_VOCAB_FILE", VOCAB)):
+    if _path and not os.path.isfile(_path):
+        raise RuntimeError(f"{_label}={_path!r} — файл не найден. Проверь путь в run.sh/.env.")
+if not CKPT or not VOCAB:
+    print("[f5] ВНИМАНИЕ: F5_CKPT_FILE/F5_VOCAB_FILE не заданы — f5-tts попытается "
+          "скачать модель по умолчанию (в офлайн-сети АФМ это НЕ сработает).")
 
 from f5_tts.api import F5TTS  # noqa: E402
 
@@ -98,8 +116,15 @@ app = FastAPI(title="F5-TTS_RUSSIAN (русский TTS)")
 
 
 class TTSRequest(BaseModel):
-    text: str
+    text: str = Field(..., max_length=MAX_CHARS)
     language: str | None = "russian"
+
+
+# Модель F5TTS не потокобезопасна: .infer каждый вызов делает seed_everything()
+# (мутация глобального RNG torch/numpy) и пишет в глобальный кэш референс-аудио.
+# Эндпоинт синхронный -> Starlette зовёт его из пула потоков, поэтому сериализуем
+# инференс блокировкой (иначе параллельные запросы дают гонки/битый звук).
+_infer_lock = threading.Lock()
 
 
 @app.get("/health")
@@ -119,23 +144,24 @@ def synthesize(req: TTSRequest):
         raise HTTPException(status_code=400, detail="Пустой текст")
     gen_text = req.text
     ref_text = REF_TEXT
-    if _accent is not None:
-        # Ударения ставим и в озвучиваемый текст, и в транскрипт референса
-        # (модель обучена на тексте с «+», так согласованнее).
-        gen_text = _accent.process_all(gen_text)
-        if ref_text:
-            ref_text = _accent.process_all(ref_text)
-    wav, sr, _ = _model.infer(
-        ref_file=REF_AUDIO,
-        ref_text=ref_text,  # "" -> F5 авто-транскрибирует референс через Whisper
-        gen_text=gen_text,
-        nfe_step=NFE,
-        speed=SPEED,
-    )
+    with _infer_lock:  # сериализуем: RUAccent + F5.infer мутируют глобальное состояние
+        if _accent is not None:
+            # Ударения ставим и в озвучиваемый текст, и в транскрипт референса
+            # (модель обучена на тексте с «+», так согласованнее).
+            gen_text = _accent.process_all(gen_text)
+            if ref_text:
+                ref_text = _accent.process_all(ref_text)
+        wav, sr, _ = _model.infer(
+            ref_file=REF_AUDIO,
+            ref_text=ref_text,  # "" -> F5 авто-транскрибирует референс через Whisper
+            gen_text=gen_text,
+            nfe_step=NFE,
+            speed=SPEED,
+        )
     buf = io.BytesIO()
     sf.write(buf, wav, sr, format="WAV", subtype="PCM_16")
     return Response(content=buf.getvalue(), media_type="audio/wav")
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT)

@@ -165,17 +165,35 @@ function makeRecorder(btn, statusEl, onReady) {
       const wav = encodeWav(flat, ctx.sampleRate);
       ctx.close();
       btn.textContent = "● Записать"; statusEl.textContent = "обработка...";
-      onReady(wav);
+      // Блокируем кнопку на время обработки (/voice — это минуты): иначе повторное
+      // нажатие запускает второй параллельный запрос, а статусы перетирают друг друга.
+      btn.disabled = true;
+      try { await onReady(wav); } finally { btn.disabled = false; }
     }
   };
 }
 
 // показать ссылку «скачать WAV» — чтобы забрать ответ в Unreal (MetaHuman Performance)
+// Прежний object-URL освобождаем: иначе за долгую киоск-сессию память вкладки растёт.
 function offerDownload(linkId, blob, name) {
   const a = document.getElementById(linkId);
-  a.href = URL.createObjectURL(blob);
+  if (a.dataset.objurl) URL.revokeObjectURL(a.dataset.objurl);
+  const u = URL.createObjectURL(blob);
+  a.dataset.objurl = u;
+  a.href = u;
   a.download = name;
   a.hidden = false;
+}
+
+// проиграть WAV в <audio>, освободив прошлый object-URL и не роняя всё, если
+// браузер заблокировал автоплей (play() возвращает отклонённый promise).
+function playBlob(audioEl, blob) {
+  if (audioEl.dataset.objurl) URL.revokeObjectURL(audioEl.dataset.objurl);
+  const u = URL.createObjectURL(blob);
+  audioEl.dataset.objurl = u;
+  audioEl.src = u;
+  audioEl.hidden = false;
+  audioEl.play().catch(() => {});
 }
 
 function stamp() {
@@ -219,8 +237,7 @@ document.getElementById("ttsBtn").onclick = async () => {
     });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
     const blob = await r.blob();
-    const a = document.getElementById("ttsAudio");
-    a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+    playBlob(document.getElementById("ttsAudio"), blob);
     offerDownload("ttsDl", blob, `tts_${document.getElementById("ttsLang").value}_${stamp()}.wav`);
     st.textContent = "готово";
   } catch (e) { st.textContent = "ошибка: " + e.message; }
@@ -242,8 +259,7 @@ makeRecorder(document.getElementById("voiceRec"), document.getElementById("voice
       out.textContent = ((q ? "Вопрос: " + decodeURIComponent(q) : "")
         + (ans ? "\n\nОтвет: " + decodeURIComponent(ans) : "")) || "Ответ получен";
       const blob = await r.blob();
-      const a = document.getElementById("voiceAudio");
-      a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+      playBlob(document.getElementById("voiceAudio"), blob);
       offerDownload("voiceDl", blob, `answer_${document.getElementById("voiceLang").value}_${stamp()}.wav`);
     } else {
       const j = await r.json();
@@ -302,8 +318,7 @@ askSpeakBtn.onclick = async () => {
     });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
     const blob = await r.blob();
-    const a = document.getElementById("askAudio");
-    a.src = URL.createObjectURL(blob); a.hidden = false; a.play();
+    playBlob(document.getElementById("askAudio"), blob);
     offerDownload("askDl", blob, `answer_${document.getElementById("askLang").value}_${stamp()}.wav`);
     st.textContent = "готов";
   } catch (e) { st.textContent = "ошибка: " + e.message; }

@@ -20,13 +20,14 @@
 import io
 import os
 import sys
+import threading
 
 import soundfile as sf
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 REPO = os.environ.get("SPARK_REPO", "spark_tts_repo")
 MODEL_DIR = os.environ.get("SPARK_MODEL_DIR", "models/spark-kazakh")
@@ -37,6 +38,12 @@ PITCH = os.environ.get("SPARK_PITCH", "moderate")
 SPEED = os.environ.get("SPARK_SPEED", "moderate")
 DEVICE = os.environ.get("SPARK_DEVICE", "cpu")
 PORT = int(os.environ.get("SPARK_PORT", "8809"))
+# По умолчанию слушаем ТОЛЬКО localhost: единственный клиент — оркестратор на той
+# же машине. Для отдельной GPU-ноды поставь SPARK_HOST=0.0.0.0.
+HOST = os.environ.get("SPARK_HOST", "127.0.0.1")
+# Предел длины текста на один запрос: защита от DoS (долгий синтез на гигантском
+# тексте + тихая обрезка модели на ~3000 токенов). Оркестратор шлёт куски <= ~180.
+MAX_CHARS = int(os.environ.get("SPARK_MAX_CHARS", "3000"))
 # Сколько раз перегенерировать при вырожденной выдаче (0 семантических токенов).
 # Генерация стохастична (do_sample=True), поэтому повтор обычно помогает.
 RETRIES = int(os.environ.get("SPARK_RETRIES", "2"))
@@ -48,11 +55,16 @@ print(f"[spark] загружаю Spark-TTS-Kazakh из {MODEL_DIR} на {DEVICE}
 _model = SparkTTS(MODEL_DIR, torch.device(DEVICE))
 print("[spark] готово.")
 
+# Один экземпляр модели на процесс; синхронный эндпоинт исполняется в пуле потоков.
+# Параллельные model.generate непредсказуемо расходуют память (OOM на GPU) —
+# сериализуем инференс блокировкой.
+_infer_lock = threading.Lock()
+
 app = FastAPI(title="Spark-TTS-Kazakh")
 
 
 class TTSRequest(BaseModel):
-    text: str
+    text: str = Field(..., max_length=MAX_CHARS)
     language: str | None = "kazakh"
 
 
@@ -81,10 +93,16 @@ def synthesize(req: TTSRequest):
     last_err: Exception | None = None
     for attempt in range(RETRIES + 1):
         try:
-            wav = _infer(text)
+            with _infer_lock:
+                wav = _infer(text)
+        except torch.cuda.OutOfMemoryError as e:
+            # OOM повтором не лечится (только усугубляет) — отдаём сразу, без ретраев.
+            torch.cuda.empty_cache()
+            print(f"[spark] CUDA OOM: {e!r}")
+            raise HTTPException(status_code=503, detail="TTS временно перегружен (нехватка памяти).")
         except Exception as e:  # вырожденная генерация и пр. сбои синтеза
             last_err = e
-            print(f"[spark] попытка {attempt + 1}/{RETRIES + 1} не удалась: {e}")
+            print(f"[spark] попытка {attempt + 1}/{RETRIES + 1} не удалась: {e!r}")
             continue
         if wav is None or len(wav) == 0:  # пустой звук — тоже перегенерируем
             last_err = RuntimeError("синтез вернул пустой звук")
@@ -93,11 +111,14 @@ def synthesize(req: TTSRequest):
         buf = io.BytesIO()
         sf.write(buf, wav, _model.sample_rate, format="WAV", subtype="PCM_16")
         return Response(content=buf.getvalue(), media_type="audio/wav")
+    # Наружу — обобщённое сообщение (сырой текст исключения может содержать пути
+    # модели/детали окружения); подробности уже в логах сервиса выше.
+    print(f"[spark] исчерпаны попытки ({RETRIES + 1}); последняя ошибка: {last_err!r}")
     raise HTTPException(
         status_code=422,
-        detail=f"Spark не смог озвучить текст (вырожденная генерация): {last_err}",
+        detail="Spark не смог озвучить текст (вырожденная генерация).",
     )
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT)
