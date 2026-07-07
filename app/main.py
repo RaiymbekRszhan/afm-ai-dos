@@ -1,5 +1,4 @@
 import asyncio
-import html
 import logging
 import os
 import time
@@ -8,7 +7,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import service
@@ -20,19 +19,14 @@ log = logging.getLogger("ai_dos.api")
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
-# Отладочный «блокнот»: страница /debug/log, куда можно вставить текст из Output
-# Log Unreal и сохранить — ложится в этот файл (его читает разработчик/Claude).
-_DEBUG_LOG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug", "ue_log.txt")
-
-# Кэш последнего озвученного ответа: рендер-нода (Unreal) забирает его через
-# GET /last_answer после того, как вопрос задали голосом в веб-UI (/voice).
+# Кэш последнего озвученного ответа: аватар-клиент (Windows-ПК) забирает его
+# через GET /last_answer после того, как вопрос задали голосом в веб-UI (/voice).
 _last_answer: dict = {}
 # long-poll: /last_answer/wait висит на этом событии до появления нового ответа
 _answer_event = asyncio.Event()
-# Метка последнего опроса рендер-нодой (/last_answer*). Нода в авторежиме watch()
-# опрашивает /wait каждые ≤30 с, поэтому долгая тишина = нода упала/зависла.
-# По этой метке /health показывает состояние аватара, а watchdog на Windows-ноде
-# решает, пора ли перезапускать редактор (см. unreal/watchdog.ps1).
+# Метка последнего опроса аватар-клиентом (/last_answer*). Клиент опрашивает
+# /wait каждые ≤30 с, поэтому долгая тишина = аватар упал/завис. По этой метке
+# /health показывает состояние аватара — и человеку, и watchdog'у на ПК.
 _node_seen: dict = {"ts": None}
 # Порог «нода жива»: 3 цикла long-poll с запасом на ретраи после ошибок сети.
 _NODE_ALIVE_SEC = 90.0
@@ -81,25 +75,6 @@ async def _read_upload(data: UploadFile) -> bytes:
 app = FastAPI(title="АФМ — Цифровой офицер Ai-dos", lifespan=lifespan, docs_url=None,
               redoc_url=None)
 
-_UNREAL_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                              "unreal", "aidos_editor.py")
-
-
-@app.get("/static/aidos_editor.py", include_in_schema=False)
-async def unreal_script():
-    """Скрипт для рендер-ноды раздаётся из unreal/ напрямую — единственный
-    источник правды, копий в static/ держать не нужно. Маршрут объявлен ДО
-    mount("/static"), поэтому перекрывает статику."""
-    return FileResponse(_UNREAL_SCRIPT, media_type="text/x-python")
-
-
-@app.get("/static/init_unreal.py", include_in_schema=False)
-async def unreal_init_script():
-    """Автозапуск авторежима на ноде (кладётся рядом с aidos_editor.py)."""
-    path = os.path.join(os.path.dirname(_UNREAL_SCRIPT), "init_unreal.py")
-    return FileResponse(path, media_type="text/x-python")
-
-
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
@@ -111,12 +86,6 @@ async def root():
 @app.get("/ui", include_in_schema=False)
 async def ui():
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
-
-
-@app.get("/avatar", include_in_schema=False)
-async def avatar_ui():
-    """Гражданский фронтенд: живой аватар (Pixel Streaming с рендер-ноды) + микрофон."""
-    return FileResponse(os.path.join(_STATIC_DIR, "avatar.html"))
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -165,53 +134,6 @@ async def health():
         },
         "stt_kk_whisper": settings.stt_kk_use_whisper,
     }
-
-
-# --- Отладочный «блокнот» для логов ноды (временный, можно убрать после отладки) ---
-_DEBUG_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ai-dos — журнал для отладки</title>
-<style>
- body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
- h1{font-size:18px;margin:0 0 6px} .muted{color:#94a3b8;font-size:13px;margin:0 0 12px}
- textarea{width:100%;height:55vh;background:#1e293b;color:#e2e8f0;border:1px solid #334155;
-   border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;box-sizing:border-box}
- button{background:#3b62f6;color:#fff;border:0;border-radius:8px;padding:11px 22px;font-size:15px;cursor:pointer;margin-top:10px}
- .ok{color:#22c55e;font-size:14px;margin-left:12px}
-</style></head><body>
- <h1>Журнал Unreal для отладки</h1>
- <p class="muted">Вставь текст из Output Log (UE) и нажми «Сохранить». Потом скажи в чате — я его прочитаю.__STATUS__</p>
- <form method="post" action="/debug/log">
-   <textarea name="text" placeholder="Вставь сюда лог из Output Log Unreal...">__CONTENT__</textarea><br>
-   <button type="submit">Сохранить</button>
- </form>
-</body></html>"""
-
-
-def _debug_render(status: str = "") -> str:
-    saved = ""
-    if os.path.exists(_DEBUG_LOG):
-        with open(_DEBUG_LOG, encoding="utf-8") as f:
-            saved = f.read()
-    return (_DEBUG_PAGE
-            .replace("__STATUS__", status)
-            .replace("__CONTENT__", html.escape(saved)))
-
-
-@app.get("/debug/log", include_in_schema=False)
-async def debug_log_page():
-    """Страница-блокнот: вставить сюда лог ноды и сохранить в файл на Маке."""
-    return HTMLResponse(_debug_render())
-
-
-@app.post("/debug/log", include_in_schema=False)
-async def debug_log_save(text: str = Form(default="")):
-    """Сохраняет вставленный лог в файл (перезаписывает предыдущий)."""
-    os.makedirs(os.path.dirname(_DEBUG_LOG), exist_ok=True)
-    with open(_DEBUG_LOG, "w", encoding="utf-8") as f:
-        f.write(text)
-    return HTMLResponse(_debug_render(
-        status=f' <span class="ok">✓ сохранено ({len(text)} симв.)</span>'))
 
 
 @app.post("/transcribe", response_model=TranscribeResponse)
@@ -319,7 +241,7 @@ async def voice_endpoint(
                 raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
             _last_answer.update(audio=out_audio, question=question, answer=answer,
                                 id=str(time.time()))
-            _answer_event.set()  # разбудить висящие long-poll'ы ноды
+            _answer_event.set()  # разбудить висящие long-poll'ы аватара
             return Response(
                 content=out_audio,
                 media_type=f"audio/{settings.tts_format}",
@@ -335,11 +257,11 @@ async def voice_endpoint(
 
 
 def _check_node_token(token: str | None) -> None:
-    """Опциональная защита эндпоинтов ноды. Если LAST_ANSWER_TOKEN задан —
-    требуем его в заголовке X-Aidos-Token (иначе 401). Пусто = проверка выключена
-    (обратная совместимость: старая нода без токена продолжает работать).
+    """Опциональная защита эндпоинтов аватар-клиента. Если LAST_ANSWER_TOKEN
+    задан — требуем его в заголовке X-Aidos-Token (иначе 401). Пусто = проверка
+    выключена (клиент без токена продолжает работать).
 
-    Успешный вызов заодно обновляет heartbeat ноды (_node_seen): через него
+    Успешный вызов заодно обновляет heartbeat аватара (_node_seen): через него
     проходят все /last_answer*, других клиентов у этих эндпоинтов нет."""
     expected = settings.last_answer_token
     if expected and token != expected:
@@ -349,8 +271,8 @@ def _check_node_token(token: str | None) -> None:
 
 @app.get("/last_answer/id")
 async def last_answer_id(x_aidos_token: str | None = Header(default=None)):
-    """Лёгкая проверка «есть ли новый ответ» — рендер-нода опрашивает её в цикле,
-    не выкачивая WAV целиком."""
+    """Лёгкая проверка «есть ли новый ответ» — аватар-клиент опрашивает её в
+    цикле, не выкачивая WAV целиком."""
     _check_node_token(x_aidos_token)
     return {"id": _last_answer.get("id")}
 
@@ -364,7 +286,7 @@ async def last_answer_wait(
     x_aidos_token: str | None = Header(default=None),
 ):
     """Long-poll: держим запрос, пока не появится ответ новее `since` (или до
-    `timeout` секунд). Нода узнаёт о готовом ответе мгновенно, без 5-сек опроса."""
+    `timeout` секунд). Аватар узнаёт о готовом ответе мгновенно, без 5-сек опроса."""
     _check_node_token(x_aidos_token)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -382,7 +304,7 @@ async def last_answer_wait(
 
 @app.get("/last_answer")
 async def last_answer(x_aidos_token: str | None = Header(default=None)):
-    """Последний ответ /voice (WAV + текст в заголовках) — для рендер-ноды.
+    """Последний ответ /voice (WAV + текст в заголовках) — для аватар-клиента.
 
     X-Id меняется с каждым новым ответом: клиент может отличить свежий ответ
     от уже проигранного.

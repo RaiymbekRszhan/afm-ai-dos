@@ -76,9 +76,9 @@ class Settings(BaseSettings):
     # путь (Whisper + до 10 вызовов TTS, минуты CPU/GPU); без лимита пачка
     # параллельных запросов кладёт TTS/GPU-ноду. Остальные ждут в очереди.
     max_concurrent_voice: int = 2
-    # Общий токен для эндпоинтов рендер-ноды (/last_answer*). Пусто = проверка
-    # выключена (обратная совместимость). Если задан — нода должна слать его в
-    # заголовке X-Aidos-Token (см. unreal/aidos_editor.py, env AIDOS_TOKEN).
+    # Общий токен для эндпоинтов аватар-клиента (/last_answer*). Пусто = проверка
+    # выключена (обратная совместимость). Если задан — клиент (Windows-ПК с
+    # аватаром, см. AVATAR.md) шлёт его в заголовке X-Aidos-Token.
     last_answer_token: str = ""
 
     @property

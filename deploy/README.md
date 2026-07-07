@@ -55,7 +55,6 @@ sudo systemctl stop ai-dos-f5        # остановить сервис
 - **Офлайн**: `HF_HUB_OFFLINE=1` уже в юнитах — модели должны быть скачаны заранее (DEPLOY.md).
 - **Обновил код/базу?** `sudo systemctl restart ai-dos-api` (и/или нужный сервис).
   После правки `rag/data/` — пересобери индекс (`ingest`) и `restart ai-dos-rag`.
-- **Рендер-нода (Windows/Unreal) — отдельная история**: её 24/7 обеспечивают
-  `unreal/init_unreal.py` + `unreal/watchdog.ps1` (см. `unreal/README.md`,
-  раздел «Работа 24/7»). Жива ли нода, видно в `curl localhost:8000/health` →
+- **Аватар-клиент (Windows-ПК) — отдельная история** (разрабатывается вне этого
+  репо, см. `AVATAR.md`). Жив ли он, видно в `curl localhost:8000/health` →
   поле `node.watching`.

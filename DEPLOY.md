@@ -231,12 +231,10 @@ curl -X POST http://localhost:8000/speak -H 'Content-Type: application/json' \
 
 ## Работа 24/7
 
-`run_api.sh` — для отладки; для боевого режима:
-- **бэкенд**: systemd-юниты + сторож `/health` — [deploy/README.md](deploy/README.md)
-  (автозапуск при загрузке, рестарт при падении и при зависании);
-- **рендер-нода** (Windows/Unreal): `init_unreal.py` + `watchdog.ps1` —
-  [unreal/README.md](unreal/README.md), раздел «Работа 24/7»;
-- жива ли нода — `curl http://СЕРВЕР:8000/health` → `node.watching: true`.
+`run_api.sh` — для отладки; для боевого режима — systemd-юниты + сторож `/health`:
+[deploy/README.md](deploy/README.md) (автозапуск при загрузке, рестарт при падении
+и при зависании). Жив ли аватар-клиент (Windows-ПК) — `curl http://СЕРВЕР:8000/health`
+→ `node.watching: true`.
 
 ---
 
