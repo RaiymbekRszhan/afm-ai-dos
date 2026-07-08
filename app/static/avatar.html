@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ai-dos — цифровой офицер АФМ</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --accent:#3b62f6; --muted:#94a3b8; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg);
+           color: #e2e8f0; display: flex; flex-direction: column; }
+    header { padding: 10px 18px; font-size: 16px; font-weight: 600; background: var(--card); }
+    header span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 10px; }
+    #stage { flex: 1; position: relative; background: #000; }
+    #stream { width: 100%; height: 100%; border: 0; }
+    #noStream { position: absolute; inset: 0; display: flex; align-items: center;
+                justify-content: center; flex-direction: column; gap: 12px; text-align: center;
+                padding: 20px; }
+    #noStream input { width: min(480px, 90%); background: #0f172a; color: #e2e8f0;
+                border: 1px solid #334155; border-radius: 8px; padding: 10px; font-size: 14px; }
+    #bar { display: flex; gap: 12px; align-items: center; padding: 14px 18px;
+           background: var(--card); flex-wrap: wrap; }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 10px;
+             padding: 12px 22px; font-size: 16px; cursor: pointer; }
+    button.rec { background: #ef4444; }
+    select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155;
+             border-radius: 8px; padding: 10px; font-size: 15px; }
+    #status { color: var(--muted); font-size: 14px; }
+    #out { padding: 0 18px 14px; background: var(--card); font-size: 14px;
+           white-space: pre-wrap; color: #cbd5e1; max-height: 130px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <header>🇰🇿 Ai-dos — цифровой офицер АФМ <span>задайте вопрос голосом — аватар ответит</span></header>
+
+  <div id="stage">
+    <iframe id="stream" allow="autoplay; fullscreen" hidden></iframe>
+    <div id="noStream">
+      <div>Укажите адрес видеотрансляции аватара (Windows-нода с Unreal):</div>
+      <input id="streamUrl" placeholder="http://192.168.23.55  (IP ноута, Viewer Port 80)">
+      <button onclick="setStream()">Подключить</button>
+      <div style="color:#64748b;font-size:12px">адрес запомнится в этом браузере</div>
+    </div>
+  </div>
+
+  <div id="bar">
+    <button id="rec">🎙 Задать вопрос</button>
+    <select id="lang">
+      <option value="russian">Русский</option>
+      <option value="kazakh">Қазақша</option>
+    </select>
+    <span id="status">готов</span>
+  </div>
+  <div id="out"></div>
+
+<script>
+// ---------- окно стрима (Pixel Streaming на Windows-ноде) ----------
+// Разрешаем только адреса внутренней сети (LAN-нода) или same-origin: иначе
+// ?stream=http://evil из подсунутой ссылки навсегда покажет чужой контент
+// (фишинг) внутри официальной страницы АФМ — и запомнится в localStorage.
+function isAllowedStream(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;  // не javascript:/data:
+  const h = u.hostname;
+  if (h === location.hostname || h === "localhost") return true;
+  return /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(h);  // приватные диапазоны LAN
+}
+function setStream(url) {
+  url = url || document.getElementById("streamUrl").value.trim();
+  if (!url) return;
+  if (!/^https?:\/\//.test(url)) url = "http://" + url;
+  if (!isAllowedStream(url)) {
+    document.getElementById("status").textContent =
+      "адрес трансляции должен быть во внутренней сети — публичные адреса отклонены";
+    return;
+  }
+  localStorage.setItem("aidos_stream", url);
+  const f = document.getElementById("stream");
+  f.src = url; f.hidden = false;
+  document.getElementById("noStream").style.display = "none";
+}
+const saved = new URLSearchParams(location.search).get("stream")
+              || localStorage.getItem("aidos_stream");
+if (saved) setStream(saved);
+
+// ---------- запись с микрофона (как в index.html, 16кГц WAV) ----------
+const TARGET_SR = 16000;
+function encodeWav(float32, sampleRate) {
+  let peak = 0;
+  for (let i = 0; i < float32.length; i++) { const a = Math.abs(float32[i]); if (a > peak) peak = a; }
+  const gain = peak > 0.01 ? Math.min(4, 0.97 / peak) : 1;
+  const ratio = sampleRate / TARGET_SR;
+  const outLen = Math.floor(float32.length / ratio);
+  const pcm = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const start = Math.floor(i * ratio), end = Math.min(float32.length, Math.floor((i + 1) * ratio));
+    let sum = 0, cnt = 0;
+    for (let j = start; j < end; j++) { sum += float32[j]; cnt++; }
+    let s = (cnt ? sum / cnt : 0) * gain;
+    s = Math.max(-1, Math.min(1, s));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE");
+  w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, TARGET_SR, true); v.setUint32(28, TARGET_SR * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+const btn = document.getElementById("rec"), st = document.getElementById("status"),
+      out = document.getElementById("out");
+let ctx, stream, proc, src, chunks = [], recording = false;
+
+btn.onclick = async () => {
+  if (!recording) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) { st.textContent = "нет доступа к микрофону: " + e.message; return; }
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    src = ctx.createMediaStreamSource(stream);
+    proc = ctx.createScriptProcessor(4096, 1, 1);
+    chunks = [];
+    proc.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    src.connect(proc); proc.connect(ctx.destination);
+    recording = true; btn.classList.add("rec"); btn.textContent = "⏹ Готово, отправить";
+    st.textContent = "говорите...";
+  } else {
+    recording = false; btn.classList.remove("rec"); btn.textContent = "🎙 Задать вопрос";
+    proc.disconnect(); src.disconnect(); stream.getTracks().forEach(t => t.stop());
+    const len = chunks.reduce((a, c) => a + c.length, 0);
+    const flat = new Float32Array(len);
+    let off = 0; for (const c of chunks) { flat.set(c, off); off += c.length; }
+    const wav = encodeWav(flat, ctx.sampleRate);
+    ctx.close();
+    st.textContent = "обрабатываю вопрос (2–4 минуты) — аватар ответит сам...";
+    btn.disabled = true;
+    const fd = new FormData();
+    fd.append("data", wav, "q.wav");
+    fd.append("language", document.getElementById("lang").value);
+    try {
+      const r = await fetch("/voice", { method: "POST", body: fd });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+      const q = decodeURIComponent(r.headers.get("x-question") || "");
+      const a = decodeURIComponent(r.headers.get("x-answer") || "");
+      out.textContent = (q ? "Вопрос: " + q : "") + (a ? "\nОтвет: " + a : "");
+      st.textContent = "ответ готов — аватар сейчас заговорит";
+    } catch (e) {
+      out.textContent = "Ошибка: " + e.message;
+      st.textContent = "ошибка";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+};
+</script>
+</body>
+</html>

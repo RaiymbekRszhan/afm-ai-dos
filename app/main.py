@@ -88,6 +88,14 @@ async def ui():
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
 
 
+@app.get("/avatar", include_in_schema=False)
+async def avatar_ui():
+    """Страница «видео + микрофон»: встраивает Pixel Streaming-поток с
+    Windows-ПК (адрес вводится на самой странице) рядом с кнопкой вопроса.
+    Сам бэкенд видео не отдаёт — только голосовой пайплайн."""
+    return FileResponse(os.path.join(_STATIC_DIR, "avatar.html"))
+
+
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     """Иконка вкладки — чтобы браузер не сыпал 404 на /favicon.ico."""
