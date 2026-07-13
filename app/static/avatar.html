@@ -52,6 +52,9 @@
        Полностью чёрное уйдёт, только когда UE рендерит вертикально (см. заметку). */
     body.kiosk #stage { flex: none; width: 100%;
            aspect-ratio: var(--stage-ar, 5 / 4); height: auto; }
+    /* Тач/клики/скролл по видео НЕ доходят до Unreal — посетитель не может крутить
+       камеру в потоке (взаимодействие не нужно: вопрос задаётся кнопкой микрофона). */
+    body.kiosk #stream { pointer-events: none; }
     body.kiosk #langBadge { display: flex; }               /* бейдж языка на видео */
     body.kiosk #out { order: 2; flex: 1; margin: 16px; padding: 26px 30px; overflow: auto;
            background: var(--card); border-radius: 20px; max-height: none; }
