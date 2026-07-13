@@ -29,6 +29,45 @@
     #status { color: var(--muted); font-size: 14px; }
     #out { padding: 0 18px 14px; background: var(--card); font-size: 14px;
            white-space: pre-wrap; color: #cbd5e1; max-height: 130px; overflow: auto; }
+
+    /* Панель ответа LLM под аватаром: строка вопроса + крупный текст ответа. */
+    #out .qline { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    #out .aline { white-space: pre-wrap; }
+    #out.idle { color: var(--muted); font-style: italic; }
+
+    /* Круглый бейдж языка (RU/ҚАЗ) поверх видео, как в макете. Виден в киоске;
+       в обычном режиме язык переключается селектом внизу. */
+    #langBadge { position: absolute; bottom: 22px; right: 22px; z-index: 4; display: none;
+           align-items: center; justify-content: center; border: 0; cursor: pointer;
+           width: clamp(72px, 9vh, 150px); height: clamp(72px, 9vh, 150px);
+           border-radius: 50%; background: var(--accent); color: #fff;
+           box-shadow: 0 4px 16px rgba(0,0,0,.45);
+           font-weight: 600; font-size: clamp(22px, 2.4vh, 52px); }
+
+    /* ---- Режим киоска (?kiosk=1): DigiTouch DS-65T, вертикальный 65", тонкий
+       клиент. Видео сверху, карточка ответа посередине, кнопка вопроса снизу. ---- */
+    body.kiosk header { display: none; }
+    /* Область видео = пропорция рендера UE, чтобы вокруг аватара НЕ было чёрных
+       полос. Подгони --stage-ar под аспект рендера ноды (ширина/высота).
+       Полностью чёрное уйдёт, только когда UE рендерит вертикально (см. заметку). */
+    body.kiosk #stage { flex: none; width: 100%;
+           aspect-ratio: var(--stage-ar, 5 / 4); height: auto; }
+    body.kiosk #langBadge { display: flex; }               /* бейдж языка на видео */
+    body.kiosk #out { order: 2; flex: 1; margin: 16px; padding: 26px 30px; overflow: auto;
+           background: var(--card); border-radius: 20px; max-height: none; }
+    /* Пока ответа нет — карточка не пустая, а приветствие по центру (не «чёрная дыра»). */
+    body.kiosk #out.idle { display: flex; align-items: center; justify-content: center;
+           text-align: center; font-size: clamp(22px, 2vh, 48px); }
+    /* Шрифты масштабируются от высоты экрана: на тесте ~как раньше, на большом
+       вертикальном 65" автоматически крупнее (clamp держит разумные границы). */
+    body.kiosk #out .qline { font-size: clamp(16px, 1.2vh, 34px); margin-bottom: 14px; }
+    body.kiosk #out .aline { font-size: clamp(26px, 2vh, 56px); line-height: 1.42; }
+    body.kiosk #bar { order: 1; justify-content: center; padding: 18px 18px 26px; gap: 20px; }
+    body.kiosk #bar select { display: none; }              /* язык — через круглый бейдж */
+    body.kiosk button#rec { font-size: clamp(24px, 1.7vh, 46px); padding: 22px 48px; border-radius: 16px; }
+    body.kiosk select { font-size: clamp(18px, 1.4vh, 36px); padding: 16px; }
+    body.kiosk #status { font-size: clamp(15px, 1.2vh, 30px); }
+    body.kiosk #noStream { font-size: 20px; }
   </style>
 </head>
 <body>
@@ -36,6 +75,7 @@
 
   <div id="stage">
     <iframe id="stream" allow="autoplay; fullscreen" hidden></iframe>
+    <button id="langBadge" title="Сменить язык">RU</button>
     <div id="noStream">
       <div>Укажите адрес видеотрансляции аватара (Windows-нода с Unreal):</div>
       <input id="streamUrl" placeholder="http://192.168.23.55  (IP ноута, Viewer Port 80)">
@@ -55,7 +95,35 @@
   <div id="out"></div>
 
 <script>
+// ---------- режим киоска (?kiosk=1) ----------
+// DS-65T — тонкий клиент (i5, без GPU): только показывает поток и пишет микрофон.
+// Открывать в браузере киоска как:
+//   /avatar?kiosk=1&stream=http://<IP-рендер-ноды>
+const params = new URLSearchParams(location.search);
+if (params.get("kiosk") === "1") document.body.classList.add("kiosk");
+// Пропорция области видео (ширина/высота рендера UE), чтобы не было чёрных полос.
+// Пример: ?ar=1/1 (квадрат), ?ar=9/16 (вертикаль), ?ar=16/9 (гориз.). Подбирай на глаз.
+const ar = params.get("ar");
+if (ar && /^[\d.]+\/[\d.]+$|^[\d.]+$/.test(ar))
+  document.body.style.setProperty("--stage-ar", ar.replace("/", " / "));
+
 // ---------- окно стрима (Pixel Streaming на Windows-ноде) ----------
+// Параметры плеера Pixel Streaming, которые дописываем к URL потока:
+//   MatchViewportRes — UE рендерит в разрешении экрана киоска (это и есть
+//     «разрешение трансляции»: на вертикальном 65" поток идёт в его пикселях,
+//     без растяжения/леттербокса; кадр UE-камеры должен быть в портрете).
+//   AutoConnect/AutoPlayVideo/StartVideoMuted — киоск сам подключается и
+//     проигрывает со звуком, без «нажмите чтобы начать».
+const PS_PARAMS = { AutoConnect: "true", AutoPlayVideo: "true",
+                    StartVideoMuted: "false", MatchViewportRes: "true" };
+function withStreamParams(url) {
+  try {
+    const u = new URL(url);
+    for (const [k, v] of Object.entries(PS_PARAMS))
+      if (!u.searchParams.has(k)) u.searchParams.set(k, v);  // не затираем ручные
+    return u.toString();
+  } catch (e) { return url; }
+}
 // Разрешаем только адреса внутренней сети (LAN-нода) или same-origin: иначе
 // ?stream=http://evil из подсунутой ссылки навсегда покажет чужой контент
 // (фишинг) внутри официальной страницы АФМ — и запомнится в localStorage.
@@ -79,7 +147,7 @@ function setStream(url) {
   }
   localStorage.setItem("aidos_stream", url);
   const f = document.getElementById("stream");
-  f.src = url; f.hidden = false;
+  f.src = withStreamParams(url); f.hidden = false;
   document.getElementById("noStream").style.display = "none";
 }
 const saved = new URLSearchParams(location.search).get("stream")
@@ -119,6 +187,32 @@ const btn = document.getElementById("rec"), st = document.getElementById("status
       out = document.getElementById("out");
 let ctx, stream, proc, src, chunks = [], recording = false;
 
+// Панель ответа под аватаром. Вопрос гражданина вставляем ТОЛЬКО через textContent
+// (речь произвольная — innerHTML был бы XSS на публичном экране).
+function setIdle() {
+  out.className = "idle";
+  out.textContent = "Задайте вопрос голосом — цифровой офицер ответит по базе законов РК.";
+}
+function showQA(q, a) {
+  out.className = "";
+  out.textContent = "";
+  if (q) { const d = document.createElement("div"); d.className = "qline";
+           d.textContent = "Вопрос: " + q; out.appendChild(d); }
+  if (a) { const d = document.createElement("div"); d.className = "aline";
+           d.textContent = a; out.appendChild(d); }
+}
+setIdle();
+
+// Круглый бейдж языка (RU/ҚАЗ) поверх видео — дублирует нижний селект для киоска.
+const langSel = document.getElementById("lang");
+const langBadge = document.getElementById("langBadge");
+function syncBadge() { langBadge.textContent = langSel.value === "kazakh" ? "ҚАЗ" : "RU"; }
+langBadge.onclick = () => {
+  langSel.value = langSel.value === "kazakh" ? "russian" : "kazakh";
+  syncBadge();
+};
+syncBadge();
+
 btn.onclick = async () => {
   if (!recording) {
     try {
@@ -151,9 +245,10 @@ btn.onclick = async () => {
       if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
       const q = decodeURIComponent(r.headers.get("x-question") || "");
       const a = decodeURIComponent(r.headers.get("x-answer") || "");
-      out.textContent = (q ? "Вопрос: " + q : "") + (a ? "\nОтвет: " + a : "");
+      showQA(q, a);
       st.textContent = "ответ готов — аватар сейчас заговорит";
     } catch (e) {
+      out.className = "";
       out.textContent = "Ошибка: " + e.message;
       st.textContent = "ошибка";
     } finally {
