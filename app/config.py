@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # аватаром, см. AVATAR.md) шлёт его в заголовке X-Aidos-Token.
     last_answer_token: str = ""
 
+    # Pixel Streaming: render-ПК с Unreal (встроенный сигналинг). Плеер PS мы
+    # отдаём сами (маршрут /player, тот же origin, что /avatar), а движковый
+    # фронтенд player.js и WebSocket-сигналинг игроков берём с этого хоста
+    # (HTTP + сигналинг на порту 80, id стримера Editor). Один адрес — на случай
+    # смены ноды: правится ТОЛЬКО здесь (или через RENDER_PC_HOST в .env).
+    render_pc_host: str = "192.168.22.101"
+
     @property
     def tts_enabled(self) -> bool:
         if self.tts_provider == "openai":

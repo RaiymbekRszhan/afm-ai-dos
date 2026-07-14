@@ -82,12 +82,7 @@
   <div id="stage">
     <iframe id="stream" allow="autoplay; fullscreen" hidden></iframe>
     <button id="langBadge" title="Сменить язык">RU</button>
-    <div id="noStream">
-      <div>Укажите адрес видеотрансляции аватара (Windows-нода с Unreal):</div>
-      <input id="streamUrl" placeholder="http://192.168.23.55  (IP ноута, Viewer Port 80)">
-      <button onclick="setStream()">Подключить</button>
-      <div style="color:#64748b;font-size:12px">адрес запомнится в этом браузере</div>
-    </div>
+    <div id="noStream"><div>Подключаю видеотрансляцию аватара…</div></div>
   </div>
 
   <div id="bar">
@@ -103,8 +98,8 @@
 <script>
 // ---------- режим киоска (?kiosk=1) ----------
 // DS-65T — тонкий клиент (i5, без GPU): только показывает поток и пишет микрофон.
-// Открывать в браузере киоска как:
-//   /avatar?kiosk=1&stream=http://<IP-рендер-ноды>
+// Открывать в браузере киоска как: /avatar?kiosk=1  (адрес render-ПК — на бэкенде,
+// настройка render_pc_host; плеер отдаёт сам бэкенд по /player, тот же origin).
 const params = new URLSearchParams(location.search);
 if (params.get("kiosk") === "1") document.body.classList.add("kiosk");
 // Пропорция области видео (ширина/высота рендера UE), чтобы не было чёрных полос.
@@ -113,8 +108,11 @@ const ar = params.get("ar");
 if (ar && /^[\d.]+\/[\d.]+$|^[\d.]+$/.test(ar))
   document.body.style.setProperty("--stage-ar", ar.replace("/", " / "));
 
-// ---------- окно стрима (Pixel Streaming на Windows-ноде) ----------
-// Параметры плеера Pixel Streaming, которые дописываем к URL потока:
+// ---------- окно стрима (наш плеер Pixel Streaming, тот же origin) ----------
+// Плеер PS теперь отдаёт САМ бэкенд по /player (same-origin) — рядом с движковым
+// фронтендом там же грузится aidos-audio.js и без CORS ловит aidos_speak, играя
+// звук синхронно с губами. Адрес render-ПК задаётся на бэкенде (render_pc_host);
+// сюда передаём только параметры плеера, ss подставит /player.
 //   MatchViewportRes — UE рендерит в разрешении экрана киоска (это и есть
 //     «разрешение трансляции»: на вертикальном 65" поток идёт в его пикселях,
 //     без растяжения/леттербокса; кадр UE-камеры должен быть в портрете).
@@ -122,43 +120,22 @@ if (ar && /^[\d.]+\/[\d.]+$|^[\d.]+$/.test(ar))
 //     проигрывает со звуком, без «нажмите чтобы начать».
 const PS_PARAMS = { AutoConnect: "true", AutoPlayVideo: "true",
                     StartVideoMuted: "false", MatchViewportRes: "true" };
-function withStreamParams(url) {
-  try {
-    const u = new URL(url);
-    for (const [k, v] of Object.entries(PS_PARAMS))
-      if (!u.searchParams.has(k)) u.searchParams.set(k, v);  // не затираем ручные
-    return u.toString();
-  } catch (e) { return url; }
-}
-// Разрешаем только адреса внутренней сети (LAN-нода) или same-origin: иначе
-// ?stream=http://evil из подсунутой ссылки навсегда покажет чужой контент
-// (фишинг) внутри официальной страницы АФМ — и запомнится в localStorage.
-function isAllowedStream(url) {
-  let u;
-  try { u = new URL(url); } catch (e) { return false; }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return false;  // не javascript:/data:
-  const h = u.hostname;
-  if (h === location.hostname || h === "localhost") return true;
-  return /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)
-      || /^172\.(1[6-9]|2\d|3[01])\./.test(h);  // приватные диапазоны LAN
-}
-function setStream(url) {
-  url = url || document.getElementById("streamUrl").value.trim();
-  if (!url) return;
-  if (!/^https?:\/\//.test(url)) url = "http://" + url;
-  if (!isAllowedStream(url)) {
-    document.getElementById("status").textContent =
-      "адрес трансляции должен быть во внутренней сети — публичные адреса отклонены";
-    return;
-  }
-  localStorage.setItem("aidos_stream", url);
-  const f = document.getElementById("stream");
-  f.src = withStreamParams(url); f.hidden = false;
+const playerFrame = document.getElementById("stream");
+(function initStream() {
+  playerFrame.src = "/player?" + new URLSearchParams(PS_PARAMS).toString();
+  playerFrame.hidden = false;
   document.getElementById("noStream").style.display = "none";
+})();
+
+// Разблокировка звука в плеере по жесту пользователя. /player — тот же origin,
+// что avatar.html, поэтому родитель может вызвать функцию внутри iframe напрямую.
+// Autoplay-политика требует жеста — снимаем блок при первом тапе/нажатии и явно
+// в начале «Задать вопрос»; видимой плашки в плеере больше нет.
+function aidosUnlockPlayer() {
+  try { playerFrame.contentWindow?.aidosUnlock?.(); } catch (e) {}
 }
-const saved = new URLSearchParams(location.search).get("stream")
-              || localStorage.getItem("aidos_stream");
-if (saved) setStream(saved);
+window.addEventListener("pointerdown", aidosUnlockPlayer, { once: true, capture: true });
+window.addEventListener("keydown", aidosUnlockPlayer, { once: true, capture: true });
 
 // ---------- запись с микрофона (как в index.html, 16кГц WAV) ----------
 const TARGET_SR = 16000;
@@ -285,7 +262,7 @@ async function stopAndSend() {
   }
 }
 
-btn.onclick = () => { if (recording) stopAndSend(); else startRecording(); };
+btn.onclick = () => { aidosUnlockPlayer(); if (recording) stopAndSend(); else startRecording(); };
 </script>
 </body>
 </html>

@@ -2,12 +2,13 @@ import asyncio
 import logging
 import os
 import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import service
@@ -24,6 +25,17 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _last_answer: dict = {}
 # long-poll: /last_answer/wait висит на этом событии до появления нового ответа
 _answer_event = asyncio.Event()
+# Кэш последних ответов по id: зрительский фронт (страница плеера Pixel Streaming)
+# по событию aidos_speak забирает КОНКРЕТНЫЙ WAV через GET /answer/<id>.wav.
+_answers_by_id: "OrderedDict[str, dict]" = OrderedDict()
+_ANSWERS_CACHE_MAX = 32
+# Страница плеера Pixel Streaming отдаётся с сигналинг-сервера — это другой origin,
+# поэтому WAV ответа отдаём с разрешающими CORS-заголовками (X-Id должен быть виден
+# из JS, иначе браузер скроет его при кросс-доменном запросе).
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Expose-Headers": "X-Id, X-Question, X-Answer",
+}
 # Метка последнего опроса аватар-клиентом (/last_answer*). Клиент опрашивает
 # /wait каждые ≤30 с, поэтому долгая тишина = аватар упал/завис. По этой метке
 # /health показывает состояние аватара — и человеку, и watchdog'у на ПК.
@@ -90,10 +102,40 @@ async def ui():
 
 @app.get("/avatar", include_in_schema=False)
 async def avatar_ui():
-    """Страница «видео + микрофон»: встраивает Pixel Streaming-поток с
-    Windows-ПК (адрес вводится на самой странице) рядом с кнопкой вопроса.
-    Сам бэкенд видео не отдаёт — только голосовой пайплайн."""
+    """Страница «видео + микрофон»: встраивает наш плеер Pixel Streaming
+    (iframe → /player, тот же origin) рядом с кнопкой вопроса. Видео идёт от UE
+    на render-ПК (render_pc_host); бэкенд отдаёт лишь плеер и голосовой пайплайн."""
     return FileResponse(os.path.join(_STATIC_DIR, "avatar.html"))
+
+
+# Плеер Pixel Streaming, который бэкенд отдаёт САМ (тот же origin, что /avatar).
+# Раньше /avatar встраивала iframe прямо на http://<render-ПК>/ (кросс-origin) — и
+# aidos-audio.js туда было не внедрить. Теперь движковый фронтенд player.js грузим
+# кросс-origin с render-ПК, а свой aidos-audio.js — с этого же origin: он без CORS
+# ловит data-канальное событие aidos_speak и играет звук синхронно с губами.
+# {host} — render_pc_host (см. config); фигурных скобок в остальном HTML нет.
+_PLAYER_HTML = """<!doctype html><html style="width:100%;height:100%"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Aidos Player</title>
+<script defer src="http://{host}/player.js"></script>
+<script defer src="/static/aidos-audio.js"></script>
+</head><body style="width:100vw;height:100svh;overflow:hidden;margin:0;background:#000"></body></html>"""
+
+
+@app.get("/player", include_in_schema=False)
+async def player(request: Request):
+    """Страница плеера Pixel Streaming (тот же origin, что /avatar). Параметры
+    плеера (AutoConnect, MatchViewportRes, …) передаёт iframe в query и их читает
+    движковый фронтенд из своего location.search. `ss` (адрес сигналинга) по
+    умолчанию — сам render-ПК, поэтому IP живёт ТОЛЬКО в настройке render_pc_host,
+    а не дублируется в avatar.html."""
+    host = settings.render_pc_host
+    params = dict(request.query_params)
+    if "ss" not in params:
+        params["ss"] = f"ws://{host}:80"
+        return RedirectResponse(url="/player?" + urlencode(params))
+    return HTMLResponse(_PLAYER_HTML.format(host=host))
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -247,8 +289,10 @@ async def voice_endpoint(
             except Exception as e:
                 log.warning("TTS error [%s]: %r", lang, e)
                 raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
+            answer_id = str(time.time())
             _last_answer.update(audio=out_audio, question=question, answer=answer,
-                                id=str(time.time()))
+                                id=answer_id)
+            _remember_answer(answer_id, out_audio, question, answer)
             _answer_event.set()  # разбудить висящие long-poll'ы аватара
             return Response(
                 content=out_audio,
@@ -262,6 +306,13 @@ async def voice_endpoint(
             )
 
         return {"question": question, "answer": answer, "sources": result["sources"]}
+
+
+def _remember_answer(answer_id: str, audio: bytes, question: str, answer: str) -> None:
+    """Кладём ответ в кэш по id (для GET /answer/<id>.wav), держим последние N."""
+    _answers_by_id[answer_id] = {"audio": audio, "question": question, "answer": answer}
+    while len(_answers_by_id) > _ANSWERS_CACHE_MAX:
+        _answers_by_id.popitem(last=False)
 
 
 def _check_node_token(token: str | None) -> None:
@@ -324,8 +375,29 @@ async def last_answer(x_aidos_token: str | None = Header(default=None)):
         content=_last_answer["audio"],
         media_type=f"audio/{settings.tts_format}",
         headers={
+            **_CORS_HEADERS,
             "X-Question": quote(_last_answer["question"]),
             "X-Answer": quote(_last_answer["answer"]),
             "X-Id": _last_answer["id"],
+        },
+    )
+
+
+@app.get("/answer/{answer_id}.wav")
+async def answer_wav(answer_id: str):
+    """Конкретный озвученный ответ по id (WAV) — зрительский фронт Pixel Streaming
+    берёт ровно тот файл, что указан в событии aidos_speak. CORS открыт: страница
+    плеера живёт на другом origin (сигналинг-сервер)."""
+    item = _answers_by_id.get(answer_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Нет ответа с таким id")
+    return Response(
+        content=item["audio"],
+        media_type=f"audio/{settings.tts_format}",
+        headers={
+            **_CORS_HEADERS,
+            "X-Id": answer_id,
+            "X-Question": quote(item["question"]),
+            "X-Answer": quote(item["answer"]),
         },
     )
