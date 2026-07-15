@@ -14,13 +14,9 @@
     header span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 10px; }
     #stage { flex: 1; position: relative; background: #000; overflow: hidden; }
     /* Два ролика лежат друг на друге; переключаем прозрачностью — без перезагрузки
-       <video> и без чёрного мига между idle и «говорит».
-       object-fit: contain — кадр виден ЦЕЛИКОМ при любой форме окна (по бокам могут
-       быть чёрные поля — фон #000, выглядит как леттербокс). cover заполнял бы область
-       без полей, но срезал бы лицо аватара, если аспект окна не совпал с роликом.
-       Чтобы полей не было — подгони область под аспект ролика через ?ar= (см. README). */
+       <video> и без чёрного мига между idle и «говорит». */
     #stage video { position: absolute; inset: 0; width: 100%; height: 100%;
-                   object-fit: contain; transition: opacity .25s ease; }
+                   object-fit: cover; transition: opacity .25s ease; }
     #talk { opacity: 0; }
     #talk.on { opacity: 1; }
     #idle.off { opacity: 0; }
