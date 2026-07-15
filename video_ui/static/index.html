@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ai-dos — цифровой офицер АФМ (вариант 2: видео)</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --accent:#3b62f6; --muted:#94a3b8; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg);
+           color: #e2e8f0; display: flex; flex-direction: column; }
+    header { padding: 10px 18px; font-size: 16px; font-weight: 600; background: var(--card); }
+    header span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 10px; }
+    #stage { flex: 1; position: relative; background: #000; overflow: hidden; }
+    /* Два ролика лежат друг на друге; переключаем прозрачностью — без перезагрузки
+       <video> и без чёрного мига между idle и «говорит». */
+    #stage video { position: absolute; inset: 0; width: 100%; height: 100%;
+                   object-fit: cover; transition: opacity .25s ease; }
+    #talk { opacity: 0; }
+    #talk.on { opacity: 1; }
+    #idle.off { opacity: 0; }
+    #noVid { position: absolute; inset: 0; display: none; align-items: center;
+             justify-content: center; flex-direction: column; gap: 10px; text-align: center;
+             padding: 20px; font-size: 15px; color: var(--muted); }
+    #noVid code { color: #e2e8f0; }
+    #bar { display: flex; gap: 12px; align-items: center; padding: 14px 18px;
+           background: var(--card); flex-wrap: wrap; }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 10px;
+             padding: 12px 22px; font-size: 16px; cursor: pointer; }
+    button.rec { background: #ef4444; }
+    select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155;
+             border-radius: 8px; padding: 10px; font-size: 15px; }
+    #status { color: var(--muted); font-size: 14px; }
+    #out { padding: 0 18px 14px; background: var(--card); font-size: 14px;
+           white-space: pre-wrap; color: #cbd5e1; max-height: 130px; overflow: auto; }
+
+    #out .qline { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    #out .aline { white-space: pre-wrap; }
+    #out.idle { color: var(--muted); font-style: italic; }
+
+    #langBadge { position: absolute; bottom: 22px; right: 22px; z-index: 4; display: none;
+           align-items: center; justify-content: center; border: 0; cursor: pointer;
+           width: clamp(72px, 9vh, 150px); height: clamp(72px, 9vh, 150px);
+           border-radius: 50%; background: var(--accent); color: #fff;
+           box-shadow: 0 4px 16px rgba(0,0,0,.45);
+           font-weight: 600; font-size: clamp(22px, 2.4vh, 52px); }
+
+    /* ---- Режим киоска (?kiosk=1) — раскладка 1-в-1 с вариантом 1 (/avatar),
+       чтобы сравнивать варианты честно: отличается только источник картинки. ---- */
+    body.kiosk header { display: none; }
+    body.kiosk #stage { flex: none; width: 100%;
+           aspect-ratio: var(--stage-ar, 5 / 4); height: auto; }
+    body.kiosk #langBadge { display: flex; }
+    body.kiosk #out { order: 2; flex: 1; margin: 14px 20px 20px; padding: 30px 40px; overflow: auto;
+           background: var(--card); border-radius: 22px; max-height: none; }
+    body.kiosk #out.idle { display: flex; align-items: center; justify-content: center;
+           text-align: center; font-size: clamp(22px, 2vh, 48px); }
+    body.kiosk #out .qline { font-size: clamp(22px, 1.7vh, 44px); color: #e6edf6;
+           font-weight: 600; text-align: center; margin-bottom: 20px; padding-bottom: 16px;
+           border-bottom: 1px solid #334155; }
+    body.kiosk #out .aline { font-size: clamp(26px, 2vh, 52px); line-height: 1.55;
+           color: #e6edf6; letter-spacing: .2px; }
+    body.kiosk #bar { order: 1; justify-content: center; padding: 18px 18px 26px; gap: 20px; }
+    body.kiosk #bar select { display: none; }
+    body.kiosk button#rec { font-size: clamp(24px, 1.7vh, 46px); padding: 22px 48px; border-radius: 16px; }
+    body.kiosk #status { display: none; }
+  </style>
+</head>
+<body>
+  <header>🇰🇿 Ai-dos — цифровой офицер АФМ
+    <span>вариант 2: записанное видео (без Unreal) — задайте вопрос голосом</span></header>
+
+  <div id="stage">
+    <!-- muted+autoplay+playsinline: немое видео браузер пускает БЕЗ жеста пользователя,
+         поэтому idle крутится сразу. Звук ответа — отдельный <audio> (нужен жест). -->
+    <video id="idle" src="/static/video/idle.mp4" muted loop playsinline autoplay preload="auto"></video>
+    <video id="talk" src="/static/video/talk.mp4" muted loop playsinline preload="auto"></video>
+    <button id="langBadge" title="Сменить язык">RU</button>
+    <div id="noVid">
+      <div>Нет роликов аватара.</div>
+      <div>Положи <code>idle.mp4</code> и <code>talk.mp4</code> в <code>video_ui/static/video/</code></div>
+    </div>
+  </div>
+
+  <div id="bar">
+    <button id="rec">🎙 Задать вопрос</button>
+    <select id="lang">
+      <option value="russian">Русский</option>
+      <option value="kazakh">Қазақша</option>
+    </select>
+    <span id="status">готов</span>
+  </div>
+  <div id="out"></div>
+
+<script>
+// ---------- режим киоска (?kiosk=1) ----------
+const params = new URLSearchParams(location.search);
+if (params.get("kiosk") === "1") document.body.classList.add("kiosk");
+// Пропорция области видео под аспект роликов (?ar=9/16, 1/1, 16/9) — чтобы не резало кадр.
+const ar = params.get("ar");
+if (ar && /^[\d.]+\/[\d.]+$|^[\d.]+$/.test(ar))
+  document.body.style.setProperty("--stage-ar", ar.replace("/", " / "));
+
+// ---------- ролики аватара (вместо Pixel Streaming) ----------
+// idle — аватар стоит (крутится всегда); talk — аватар говорит, БЕЗ звука, зациклен
+// на длину аудио-ответа. Липсинк не важен: talk — просто «говорящая» подложка.
+const idleV = document.getElementById("idle");
+const talkV = document.getElementById("talk");
+const noVid = document.getElementById("noVid");
+
+function showTalking() {
+  try { talkV.currentTime = 0; } catch (e) { /* метаданные ещё не готовы */ }
+  talkV.play().catch(function () {});   // немое видео жеста не требует
+  talkV.classList.add("on");
+  idleV.classList.add("off");
+}
+function showIdle() {
+  talkV.classList.remove("on");
+  idleV.classList.remove("off");
+  try { talkV.pause(); } catch (e) {}
+}
+// Ролика нет / битый файл — говорим прямо, а не показываем чёрный экран.
+idleV.addEventListener("error", function () { noVid.style.display = "flex"; });
+
+// ---------- звук ответа ----------
+// Тишина-заглушка: проигрываем её ВНУТРИ жеста (клик по кнопке), чтобы снять
+// autoplay-блокировку — тогда WAV, пришедший через несколько секунд, уже сыграет.
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+const answerAudio = new Audio();
+let answerUrl = null, audioPrimed = false;
+
+answerAudio.addEventListener("ended", showIdle);
+answerAudio.addEventListener("error", showIdle);
+
+function primeAudio() {
+  if (audioPrimed) return;
+  audioPrimed = true;
+  try { answerAudio.src = SILENT_WAV; answerAudio.play().catch(function () {}); } catch (e) {}
+}
+
+function playAnswer(blob) {
+  if (answerUrl) URL.revokeObjectURL(answerUrl);
+  answerUrl = URL.createObjectURL(blob);
+  answerAudio.src = answerUrl;
+  showTalking();
+  answerAudio.play().catch(function (e) {
+    st.textContent = "звук заблокирован браузером: " + e.message;
+    showIdle();
+  });
+}
+
+// ---------- запись с микрофона (как в варианте 1, 16кГц WAV) ----------
+const TARGET_SR = 16000;
+function encodeWav(float32, sampleRate) {
+  let peak = 0;
+  for (let i = 0; i < float32.length; i++) { const a = Math.abs(float32[i]); if (a > peak) peak = a; }
+  const gain = peak > 0.01 ? Math.min(4, 0.97 / peak) : 1;
+  const ratio = sampleRate / TARGET_SR;
+  const outLen = Math.floor(float32.length / ratio);
+  const pcm = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const start = Math.floor(i * ratio), end = Math.min(float32.length, Math.floor((i + 1) * ratio));
+    let sum = 0, cnt = 0;
+    for (let j = start; j < end; j++) { sum += float32[j]; cnt++; }
+    let s = (cnt ? sum / cnt : 0) * gain;
+    s = Math.max(-1, Math.min(1, s));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE");
+  w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, TARGET_SR, true); v.setUint32(28, TARGET_SR * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+const btn = document.getElementById("rec"), st = document.getElementById("status"),
+      out = document.getElementById("out");
+let ctx, stream, proc, src, chunks = [], recording = false;
+
+// Вопрос гражданина вставляем ТОЛЬКО через textContent (речь произвольная — innerHTML
+// был бы XSS на публичном экране).
+function setIdle() {
+  out.className = "idle";
+  out.textContent = "Задайте вопрос голосом — цифровой офицер ответит по базе законов РК.";
+}
+function showQA(q, a) {
+  out.className = "";
+  out.textContent = "";
+  if (q) { const d = document.createElement("div"); d.className = "qline";
+           d.textContent = "Вопрос: " + q; out.appendChild(d); }
+  if (a) { const d = document.createElement("div"); d.className = "aline";
+           d.textContent = a; out.appendChild(d); }
+  out.scrollTop = 0;
+}
+function showProcessing() {
+  out.className = "idle";
+  out.textContent = "Обрабатываю запрос…";
+}
+setIdle();
+
+const langSel = document.getElementById("lang");
+const langBadge = document.getElementById("langBadge");
+function syncBadge() { langBadge.textContent = langSel.value === "kazakh" ? "ҚАЗ" : "RU"; }
+langBadge.onclick = () => {
+  langSel.value = langSel.value === "kazakh" ? "russian" : "kazakh";
+  syncBadge();
+};
+syncBadge();
+
+// Авто-стоп: тишина дольше SILENCE_MS после речи — завершаем запись сами.
+const SILENCE_PEAK = 0.015;
+const SILENCE_MS = 3000;
+let hasSpoken = false, lastVoiceMs = 0, stopping = false;
+
+async function startRecording() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) { st.textContent = "нет доступа к микрофону: " + e.message; return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  src = ctx.createMediaStreamSource(stream);
+  proc = ctx.createScriptProcessor(4096, 1, 1);
+  chunks = []; hasSpoken = false; stopping = false;
+  proc.onaudioprocess = e => {
+    const buf = e.inputBuffer.getChannelData(0);
+    chunks.push(new Float32Array(buf));
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i]); if (v > peak) peak = v; }
+    const now = performance.now();
+    if (peak > SILENCE_PEAK) { hasSpoken = true; lastVoiceMs = now; }
+    else if (hasSpoken && now - lastVoiceMs > SILENCE_MS) { stopAndSend(); }
+  };
+  src.connect(proc); proc.connect(ctx.destination);
+  recording = true; btn.classList.add("rec"); btn.textContent = "⏹ Готово, отправить";
+  st.textContent = "говорите...";
+}
+
+async function stopAndSend() {
+  if (!recording || stopping) return;
+  stopping = true; recording = false;
+  btn.classList.remove("rec"); btn.textContent = "🎙 Задать вопрос";
+  proc.disconnect(); src.disconnect(); stream.getTracks().forEach(t => t.stop());
+  const len = chunks.reduce((a, c) => a + c.length, 0);
+  const flat = new Float32Array(len);
+  let off = 0; for (const c of chunks) { flat.set(c, off); off += c.length; }
+  const wav = encodeWav(flat, ctx.sampleRate);
+  ctx.close();
+  showProcessing();
+  st.textContent = "обрабатываю вопрос...";
+  btn.disabled = true;
+  const fd = new FormData();
+  fd.append("data", wav, "q.wav");
+  fd.append("language", langSel.value);
+  try {
+    // /voice тут — прокси на рабочий бэкенд (:8000), контракт тот же: WAV + заголовки.
+    const r = await fetch("/voice", { method: "POST", body: fd });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+    const q = decodeURIComponent(r.headers.get("x-question") || "");
+    const a = decodeURIComponent(r.headers.get("x-answer") || "");
+    showQA(q, a);
+    st.textContent = "ответ готов";
+    playAnswer(await r.blob());   // звук + ролик «говорит», по окончании — idle
+  } catch (e) {
+    out.className = "";
+    out.textContent = "Ошибка: " + e.message;
+    st.textContent = "ошибка";
+    showIdle();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+btn.onclick = () => {
+  primeAudio();                    // снимаем autoplay-блок внутри жеста
+  if (recording) stopAndSend(); else startRecording();
+};
+</script>
+</body>
+</html>
