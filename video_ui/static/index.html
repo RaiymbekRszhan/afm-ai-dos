@@ -14,9 +14,14 @@
     header span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 10px; }
     #stage { flex: 1; position: relative; background: #000; overflow: hidden; }
     /* Два ролика лежат друг на друге; переключаем прозрачностью — без перезагрузки
-       <video> и без чёрного мига между idle и «говорит». */
+       <video> и без чёрного мига между idle и «говорит».
+       contain — кадр виден ЦЕЛИКОМ при любой форме окна (по бокам могут быть чёрные
+       поля, фон #000 — выглядит как леттербокс). cover заполнил бы область без полей,
+       но в окне, чей аспект не совпал с роликом, срезал бы аватара по краям (вплоть до
+       лица). Когда область подогнана под аспект ролика (киоск + --stage-ar / ?ar),
+       contain и cover дают ОДИНАКОВУЮ картинку — полей нет и резать нечего. */
     #stage video { position: absolute; inset: 0; width: 100%; height: 100%;
-                   object-fit: cover; transition: opacity .25s ease; }
+                   object-fit: contain; transition: opacity .25s ease; }
     #talk { opacity: 0; }
     #talk.on { opacity: 1; }
     #idle.off { opacity: 0; }
@@ -49,8 +54,11 @@
     /* ---- Режим киоска (?kiosk=1) — раскладка 1-в-1 с вариантом 1 (/avatar),
        чтобы сравнивать варианты честно: отличается только источник картинки. ---- */
     body.kiosk header { display: none; }
+    /* Дефолт 15/16 = аспект наших роликов (1080×1152) — тогда область точно повторяет
+       кадр: ни полей, ни обрезки, и ?ar помнить не надо. Заменишь ролики другим
+       аспектом — поправь тут или передай ?ar=<ш>/<в>. */
     body.kiosk #stage { flex: none; width: 100%;
-           aspect-ratio: var(--stage-ar, 5 / 4); height: auto; }
+           aspect-ratio: var(--stage-ar, 15 / 16); height: auto; }
     body.kiosk #langBadge { display: flex; }
     body.kiosk #out { order: 2; flex: 1; margin: 14px 20px 20px; padding: 30px 40px; overflow: auto;
            background: var(--card); border-radius: 22px; max-height: none; }
