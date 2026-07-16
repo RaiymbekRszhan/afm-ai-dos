@@ -135,12 +135,15 @@ idleV.addEventListener("error", function () { noVid.style.display = "flex"; });
 // Тишина-заглушка: проигрываем её ВНУТРИ жеста (клик по кнопке), чтобы снять
 // autoplay-блокировку — тогда WAV, пришедший через несколько секунд, уже сыграет.
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
-// Темп проговаривания ответа. Казахский Spark говорит медленно, а его собственная
-// шкала SPARK_SPEED даёт всего ~10% на ступень — этого мало. playbackRate ускоряет
-// ровно во столько раз, сколько задано, и ничего не стоит (звук уже готов).
-// preservesPitch держит тембр: голос не «мультяшный», просто говорит быстрее.
-// 1.0 = как синтезировал Spark; 1.2–1.35 звучит естественно; выше — тараторит.
-const SPEECH_RATE = 1.25;
+// Темп проговаривания ответа — СВОЙ НА КАЖДЫЙ ЯЗЫК, у них разные движки TTS.
+// kazakh (Spark): говорит медленно, а его шкала SPARK_SPEED даёт лишь ~10% на
+//   ступень — добираем плеером. playbackRate ускоряет ровно во столько, сколько
+//   задано, и ничего не стоит (звук уже готов); preservesPitch держит тембр.
+//   1.2–1.35 звучит естественно, выше — тараторит.
+// russian (F5): темп нормальный, ускорять НЕ надо — 1.0. Если покажется медленным,
+//   правильнее сменить референс (refs/ref_ru_f5.wav): F5 клонирует голос вместе с
+//   темпом, и это звучит естественнее, чем растягивание плеером.
+const SPEECH_RATE = { kazakh: 1.25, russian: 1.0 };
 const answerAudio = new Audio();
 let answerUrl = null, audioPrimed = false;
 
@@ -153,7 +156,7 @@ function primeAudio() {
   try { answerAudio.src = SILENT_WAV; answerAudio.play().catch(function () {}); } catch (e) {}
 }
 
-function playAnswer(blob) {
+function playAnswer(blob, lang) {
   if (answerUrl) URL.revokeObjectURL(answerUrl);
   answerUrl = URL.createObjectURL(blob);
   answerAudio.src = answerUrl;
@@ -161,7 +164,9 @@ function playAnswer(blob) {
   // preservesPitch — дефолт true в современных браузерах, но задаём явно
   // (webkit* — для Safari, где свойство до сих пор с префиксом).
   try { answerAudio.preservesPitch = true; answerAudio.webkitPreservesPitch = true; } catch (e) {}
-  answerAudio.playbackRate = SPEECH_RATE;
+  // Язык берём тот, на котором СПРАШИВАЛИ, а не текущий в селекте: пока шёл
+  // синтез, посетитель мог переключить язык — темп поехал бы не тот.
+  answerAudio.playbackRate = SPEECH_RATE[lang] || 1.0;
   showTalking();
   answerAudio.play().catch(function (e) {
     st.textContent = "звук заблокирован браузером: " + e.message;
@@ -274,8 +279,9 @@ async function stopAndSend() {
   st.textContent = "обрабатываю вопрос...";
   btn.disabled = true;
   const fd = new FormData();
+  const askedLang = langSel.value;   // фиксируем: ответ придёт через секунды, селект мог смениться
   fd.append("data", wav, "q.wav");
-  fd.append("language", langSel.value);
+  fd.append("language", askedLang);
   try {
     // /voice тут — прокси на рабочий бэкенд (:8000), контракт тот же: WAV + заголовки.
     const r = await fetch("/voice", { method: "POST", body: fd });
@@ -284,7 +290,7 @@ async function stopAndSend() {
     const a = decodeURIComponent(r.headers.get("x-answer") || "");
     showQA(q, a);
     st.textContent = "ответ готов";
-    playAnswer(await r.blob());   // звук + ролик «говорит», по окончании — idle
+    playAnswer(await r.blob(), askedLang);   // звук + ролик «говорит», по окончании — idle
   } catch (e) {
     out.className = "";
     out.textContent = "Ошибка: " + e.message;
