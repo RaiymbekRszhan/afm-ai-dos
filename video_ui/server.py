@@ -41,9 +41,17 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 def _videos_present() -> dict:
-    """Лежат ли ролики на месте — частая причина «чёрного экрана» на демо."""
-    return {name: os.path.exists(os.path.join(_VIDEO_DIR, name))
-            for name in ("idle.mp4", "talk.mp4")}
+    """Лежат ли ролики на месте — частая причина «чёрного экрана» на демо.
+
+    Сверяем имена ТОЧНО (listdir), а не через os.path.exists: на macOS файловая
+    система регистро-независимая, и exists("idle.mp4") вернёт True для лежащего
+    рядом "Idle.mp4". На Linux регистр важен — браузер получит 404, и проверка,
+    прошедшая на маке, промолчала бы ровно там, где ломается (сервер АФМ)."""
+    try:
+        real = set(os.listdir(_VIDEO_DIR))
+    except OSError:
+        real = set()
+    return {name: name in real for name in ("idle.mp4", "talk.mp4")}
 
 
 @app.get("/", include_in_schema=False)
