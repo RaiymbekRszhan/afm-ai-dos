@@ -555,14 +555,44 @@ def _has_speech(text: str) -> bool:
     return bool(_HAS_LETTER.search(text))
 
 
+# Знаки конца клаузы: после них в живой речи и так пауза, поэтому оборвать
+# длинное предложение здесь — естественно.
+_CLAUSE_BREAK = re.compile(r"[,;:—–]")
+
+
+def _break_at_clause(chunk: str) -> tuple[str, str]:
+    """Делит накопленный кусок по ПОСЛЕДНЕЙ клаузе: (до знака, остаток).
+
+    Знак у самого начала не берём (остаток был бы почти целым куском и всё
+    равно поехал бы дальше) — тогда возвращаем кусок как есть.
+    """
+    best = -1
+    for m in _CLAUSE_BREAK.finditer(chunk):
+        best = m.end()
+    if best > len(chunk) // 2:
+        return chunk[:best].strip(), chunk[best:].strip()
+    return chunk, ""
+
+
 def _hard_split(sentence: str, max_chars: int) -> list[str]:
-    """Слишком длинное предложение режем по словам, не превышая лимит."""
+    """Слишком длинное предложение режем на куски не длиннее лимита.
+
+    Режем ПО ГРАНИЦЕ КЛАУЗЫ (запятая/тире/двоеточие), а не строго по словам:
+    кусок, оборванный посреди фразы, TTS озвучивает как законченную реплику —
+    даёт падающую интонацию и комкает хвост на ровном месте. По запятой конец
+    куска попадает туда, где пауза уместна, и шов не слышен. Если знаков нет
+    (длинное перечисление одними словами) — прежний словесный фолбэк.
+
+    Увеличивать max_chars вместо этого нельзя: время синтеза растёт квадратично
+    (замер на Spark: 100 симв. -> 18 c, 330 симв. -> 117 c).
+    """
     parts: list[str] = []
     cur = ""
     for word in sentence.split():
         if cur and len(cur) + 1 + len(word) > max_chars:
-            parts.append(cur)
-            cur = word
+            head, tail = _break_at_clause(cur)
+            parts.append(head)
+            cur = f"{tail} {word}".strip() if tail else word
         else:
             cur = f"{cur} {word}" if cur else word
     if cur:
@@ -654,11 +684,18 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
     if settings.tts_format != "wav":
         return await _synthesize_one(text, language)
     # F5 сам делит текст на предложения — отдаём крупные куски (меньше швов).
-    # Прочие провайдеры (spark) — прежними мелкими кусками.
-    group = (settings.tts_group_chars
-             if _provider_for(language) == "f5"
-             else settings.tts_max_chars)
-    parts = _split_for_tts(text, settings.tts_max_chars, group)
+    # Spark своей нарезки не имеет: режем сами, но его предел (3000) куда выше
+    # F5-шных 180, поэтому даём предложению запас — чтобы разрез попал на запятую,
+    # а не в середину фразы (иначе Spark комкает хвост огрызка).
+    if _provider_for(language) == "spark":
+        sent_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
+        group = sent_max
+    else:
+        sent_max = settings.tts_max_chars
+        group = (settings.tts_group_chars
+                 if _provider_for(language) == "f5"
+                 else settings.tts_max_chars)
+    parts = _split_for_tts(text, sent_max, group)
     # Выкидываем куски без букв (одни цифры/знаки) — TTS на них падает.
     parts = [p for p in parts if _has_speech(p)]
     if not parts:
