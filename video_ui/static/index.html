@@ -135,6 +135,12 @@ idleV.addEventListener("error", function () { noVid.style.display = "flex"; });
 // Тишина-заглушка: проигрываем её ВНУТРИ жеста (клик по кнопке), чтобы снять
 // autoplay-блокировку — тогда WAV, пришедший через несколько секунд, уже сыграет.
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+// Темп проговаривания ответа. Казахский Spark говорит медленно, а его собственная
+// шкала SPARK_SPEED даёт всего ~10% на ступень — этого мало. playbackRate ускоряет
+// ровно во столько раз, сколько задано, и ничего не стоит (звук уже готов).
+// preservesPitch держит тембр: голос не «мультяшный», просто говорит быстрее.
+// 1.0 = как синтезировал Spark; 1.2–1.35 звучит естественно; выше — тараторит.
+const SPEECH_RATE = 1.25;
 const answerAudio = new Audio();
 let answerUrl = null, audioPrimed = false;
 
@@ -151,6 +157,11 @@ function playAnswer(blob) {
   if (answerUrl) URL.revokeObjectURL(answerUrl);
   answerUrl = URL.createObjectURL(blob);
   answerAudio.src = answerUrl;
+  // Ставим ПОСЛЕ src: смена источника сбрасывает playbackRate на 1.0.
+  // preservesPitch — дефолт true в современных браузерах, но задаём явно
+  // (webkit* — для Safari, где свойство до сих пор с префиксом).
+  try { answerAudio.preservesPitch = true; answerAudio.webkitPreservesPitch = true; } catch (e) {}
+  answerAudio.playbackRate = SPEECH_RATE;
   showTalking();
   answerAudio.play().catch(function (e) {
     st.textContent = "звук заблокирован браузером: " + e.message;
