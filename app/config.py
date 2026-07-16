@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     max_concurrent_voice: int = 2
     # Общий токен для эндпоинтов аватар-клиента (/last_answer*). Пусто = проверка
     # выключена (обратная совместимость). Если задан — клиент (Windows-ПК с
-    # аватаром, см. AVATAR.md) шлёт его в заголовке X-Aidos-Token.
+    # аватаром, см. unreal/AVATAR.md) шлёт его в заголовке X-Aidos-Token.
     last_answer_token: str = ""
 
     # Pixel Streaming: render-ПК с Unreal (встроенный сигналинг). Плеер PS мы

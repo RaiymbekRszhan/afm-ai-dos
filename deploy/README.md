@@ -55,6 +55,6 @@ sudo systemctl stop ai-dos-f5        # остановить сервис
 - **Офлайн**: `HF_HUB_OFFLINE=1` уже в юнитах — модели должны быть скачаны заранее (DEPLOY.md).
 - **Обновил код/базу?** `sudo systemctl restart ai-dos-api` (и/или нужный сервис).
   После правки `rag/data/` — пересобери индекс (`ingest`) и `restart ai-dos-rag`.
-- **Аватар-клиент (Windows-ПК) — отдельная история** (разрабатывается вне этого
-  репо, см. `AVATAR.md`). Жив ли он, видно в `curl localhost:8000/health` →
-  поле `node.watching`.
+- **Аватар-клиент Unreal (Windows-ПК) — вариант 1, не выбран на пилоте** (см.
+  `unreal/README.md`). Жив ли он, видно в `curl localhost:8000/health` → поле
+  `node.watching`. На пилоте фронтенд — вариант 2 (`video_ui/`, :8100).
