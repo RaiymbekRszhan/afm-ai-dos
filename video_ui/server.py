@@ -59,6 +59,17 @@ async def root():
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Иконка вкладки — чтобы браузер не сыпал 404 в лог. Берём ту же, что и
+    основной вариант (:8000), иначе 204 «пусто, и не спрашивай больше»."""
+    path = os.path.join(os.path.dirname(_DIR), "app", "static", "swagger-ui",
+                        "favicon-32x32.png")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="image/png")
+    return Response(status_code=204)
+
+
 @app.get("/health")
 async def health():
     """Жив ли демо-сервер, виден ли ему рабочий бэкенд и на месте ли ролики."""
