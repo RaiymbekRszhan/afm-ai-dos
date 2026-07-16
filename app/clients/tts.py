@@ -637,13 +637,31 @@ def _split_for_tts(text: str, sentence_max: int, group_max: int) -> list[str]:
     return chunks
 
 
-def _concat_wav(parts: list[bytes]) -> bytes:
-    """Склеивает несколько WAV-блоков в один, вставляя паузу между предложениями."""
+def _gap_ms_after(text: str) -> int:
+    """Сколько тишины вставить ПОСЛЕ куска — по тому, чем он закончился.
+
+    Куски синтезируются порознь, и TTS подрезает собственный хвост тишины: без
+    зазора следующий кусок «влезает», не дав предыдущему договорить. Но пауза
+    нужна разная: после точки — как между фразами, после запятой — вдвое короче
+    (там середина предложения, полная пауза рвала бы его надвое).
+    """
+    end = text.rstrip()[-1:]
+    if end in ".!?":
+        return settings.tts_gap_ms
+    return settings.tts_gap_ms // 2
+
+
+def _concat_wav(parts: list[bytes], texts: list[str] | None = None) -> bytes:
+    """Склеивает несколько WAV-блоков в один, вставляя паузу между кусками.
+
+    `texts` — исходные тексты кусков (той же длины, что `parts`): по ним пауза
+    подбирается под знак на стыке. Без них — одинаковый зазор, как раньше.
+    """
     if len(parts) == 1:
         return parts[0]
     out = io.BytesIO()
     writer: wave.Wave_write | None = None
-    gap = b""
+
     fmt: tuple[int, int, int] | None = None  # (nchannels, sampwidth, framerate) первого куска
     try:
         for idx, blob in enumerate(parts):
@@ -657,16 +675,18 @@ def _concat_wav(parts: list[bytes]) -> bytes:
                     writer.setnchannels(nch)
                     writer.setsampwidth(sw)
                     writer.setframerate(fr)
-                    n_frames = int(fr * settings.tts_gap_ms / 1000)
-                    gap = b"\x00" * (n_frames * nch * sw)  # тишина нужной длины
                 elif params != fmt:
                     # Куски с разной частотой/каналами склеивать нельзя — иначе
                     # получится ускоренный/искажённый звук БЕЗ ошибки. Падаем явно.
                     raise RuntimeError(
                         f"Несовместимые параметры WAV при склейке: {params} != {fmt}"
                     )
-                if idx and gap:                            # пауза перед каждым, кроме первого
-                    writer.writeframes(gap)
+                if idx:  # пауза перед каждым, кроме первого — по знаку на стыке
+                    ms = (_gap_ms_after(texts[idx - 1]) if texts
+                          else settings.tts_gap_ms)
+                    nch, sw, fr = fmt
+                    n_frames = int(fr * ms / 1000)
+                    writer.writeframes(b"\x00" * (n_frames * nch * sw))
                 writer.writeframes(reader.readframes(reader.getnframes()))
     finally:
         if writer is not None:
@@ -703,7 +723,7 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
     if len(parts) == 1:
         return await _synthesize_one(parts[0], language)
     audios = [await _synthesize_one(part, language) for part in parts]
-    return _concat_wav(audios)
+    return _concat_wav(audios, parts)
 
 
 def _provider_for(language: str | None) -> str:
