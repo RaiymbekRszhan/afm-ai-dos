@@ -53,6 +53,86 @@ def test_normalize_ru_phone_digits():
     assert "один четыре пять восемь" in out
 
 
+@pytest.mark.skipif(tts._num2words is None, reason="num2words не установлен")
+def test_normalize_ru_phone_groups():
+    # Длинный телефон читается ГРУППАМИ через запятую (запятая = пауза в TTS):
+    # группа без ведущего нуля — числом, с ведущим нулём — по цифрам.
+    out = tts._normalize_for_tts("Звоните по номеру 8 800 080 18 90.", "russian")
+    assert "восемь, восемьсот, ноль восемь ноль, восемнадцать, девяносто" in out
+    # +7/8 без слова «номер» — тоже телефон, а не «семь миллиардов…».
+    out2 = tts._normalize_for_tts("Пишите на +7 777 123 45 67.", "russian")
+    assert "плюс семь, семьсот семьдесят семь" in out2
+    # Слитные 10+ цифр — группами, не гигантским числительным.
+    out3 = tts._normalize_for_tts("Сотовый 87001234567.", "russian")
+    assert "миллиард" not in out3 and "восемь, семьсот" in out3
+
+
+@pytest.mark.skipif(tts._num2words is None, reason="num2words не установлен")
+def test_normalize_ru_genitive_after_prepositions():
+    # После «от/до/свыше…» количественные — в родительном падеже (склоняется
+    # каждое слово составного числительного), иначе звучит безграмотно.
+    N = lambda s: tts._normalize_for_tts(s, "russian")
+    assert "от сорока пяти до четырёхсот пятидесяти" in N("от 45 до 450 МРП")
+    assert "до трёх миллионов тенге" in N("до 3 000 000 тенге")
+    assert "свыше пятидесяти тысяч тенге" in N("свыше 50 000 тенге")
+    assert "до двадцати процентов" in N("до 20%")
+    # порядковые контексты предлог не ломает
+    assert "до статьи двести четырнадцатой" in N("до статьи 214")
+    assert "до две тысячи двадцать четвёртого года" in N("до 2024 года")
+
+
+def test_is_affirmative():
+    from app import service
+    assert service.is_affirmative("Да.")
+    assert service.is_affirmative("да, конечно")
+    assert service.is_affirmative("Иә")
+    assert not service.is_affirmative("да как подать заявление")  # это новый вопрос
+    assert not service.is_affirmative("нет")
+    assert not service.is_affirmative("")
+
+
+def test_looks_not_found_and_clarify():
+    from app import service
+    assert service.looks_not_found(
+        "К сожалению, по этому вопросу у меня нет точной информации в базе Агентства.")
+    assert service.looks_not_found("Өкінішке орай, бұл сұрақ бойынша нақты ақпарат жоқ.")
+    assert not service.looks_not_found("Штраф составляет 40 МРП.")
+    ph = service.clarify_phrase("Какие штрафы за неуплату налогов?", "russian")
+    assert "хотели спросить" in ph and "Какие штрафы" in ph
+    assert "иә" in service.clarify_phrase("Айыппұл қандай?", "kazakh")
+
+
+def test_suggest_question(monkeypatch):
+    import asyncio
+    from app import service
+
+    async def fake(messages, max_tokens=None, return_finish=False):
+        return "Какие штрафы за неуплату налогов?"
+    monkeypatch.setattr(service.llm, "chat", fake)
+    out = asyncio.run(service.suggest_question("Две штрафа за неуплату налогов.", "russian"))
+    assert out == "Какие штрафы за неуплату налогов?"
+
+    async def fake_no(messages, max_tokens=None, return_finish=False):
+        return "НЕТ"  # LLM считает вопрос корректным -> не уточняем
+    monkeypatch.setattr(service.llm, "chat", fake_no)
+    assert asyncio.run(service.suggest_question("Как подать обращение?", "russian")) is None
+
+    async def fake_same(messages, max_tokens=None, return_finish=False):
+        return "Как подать обращение?"  # ничего не исправил -> не уточняем
+    monkeypatch.setattr(service.llm, "chat", fake_same)
+    assert asyncio.run(service.suggest_question("Как подать обращение?", "russian")) is None
+
+
+def test_strip_display_blocks():
+    # Экранные таблицы [ТАБЛИЦА]...[/ТАБЛИЦА] в озвучку не идут (их рендерит фронт).
+    text = "Ответ по базе.\n[ТАБЛИЦА]\nКатегория | Штраф\nФизлица | 100 МРП\n[/ТАБЛИЦА]\nЗвоните 1458."
+    out = tts.strip_display_blocks(text)
+    assert "|" not in out and "ТАБЛИЦА" not in out
+    assert "Ответ по базе." in out and "Звоните 1458." in out
+    # Незакрытый блок (LLM оборвался) режется до конца текста.
+    assert tts.strip_display_blocks("Текст.\n[ТАБЛИЦА]\nа | б") == "Текст."
+
+
 def test_normalize_latin_translit():
     # Латиница вне словаря брендов транслитерируется в кириллицу.
     out = tts._normalize_for_tts("Приложение Google доступно.", "russian")
@@ -201,7 +281,10 @@ def test_f5_multipart_contract_when_ref_configured(monkeypatch, tmp_path):
     assert out == b"RIFFwav"
     sent = _FakeClient.sent
     assert sent["json"] is None                       # НЕ JSON-контракт
-    assert sent["data"]["gen_text"] == "Озвучиваемый текст"
+    # gen_text = текст + немой точечный паддинг: прогноз длительности у F5
+    # впритык, без запаса конец последнего слова срезается (см. _f5).
+    assert sent["data"]["gen_text"].startswith("Озвучиваемый текст ")
+    assert sent["data"]["gen_text"].rstrip(" .") == "Озвучиваемый текст"
     assert sent["data"]["ref_text"] == "текст референса"
     assert "ref_audio" in sent["files"]               # референс — файлом
 

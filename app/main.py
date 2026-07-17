@@ -246,10 +246,16 @@ async def speak_endpoint(req: SpeakRequest):
 async def voice_endpoint(
     data: UploadFile = File(...),
     language: str = Form(default=None),
+    suggest: str = Form(default=None),
 ):
     """Полный пайплайн: аудио → STT → RAG+LLM → (TTS).
 
     Возвращает аудио-ответ, если TTS включён; иначе JSON с текстом.
+
+    `suggest` — подсказка с ПРОШЛОГО ответа (заголовок X-Suggest): если STT
+    исказил вопрос и RAG не нашёл ответа, мы предлагаем исправленную
+    формулировку; страница шлёт её со следующим вопросом, и реплика-согласие
+    («да», «иә») означает «отвечай на исправленный вопрос».
     """
     audio = await _read_upload(data)
     lang = language or settings.stt_default_language
@@ -271,6 +277,13 @@ async def voice_endpoint(
         if not question.strip():
             raise HTTPException(status_code=400, detail="Не удалось распознать речь. Повторите вопрос.")
 
+        # «Да» в ответ на наше «возможно, вы хотели спросить …?» — отвечаем на
+        # исправленный вопрос. Любая другая реплика — обычный новый вопрос.
+        suggest_used = False
+        if suggest and service.is_affirmative(question):
+            question = suggest
+            suggest_used = True
+
         service.check_injection(question, lang)  # только логируем, не блокируем
 
         try:
@@ -283,6 +296,15 @@ async def voice_endpoint(
 
         answer = result["answer"]
 
+        # RAG не нашёл ответа — вероятно, STT исказил вопрос. Предлагаем гражданину
+        # исправленную формулировку (доп. LLM-вызов ТОЛЬКО на пути отказа). После
+        # подтверждённой подсказки повторно не уточняем — иначе цикл уточнений.
+        suggestion = None
+        if not suggest_used and service.looks_not_found(answer):
+            suggestion = await service.suggest_question(question, lang)
+            if suggestion:
+                answer = service.clarify_phrase(suggestion, lang)
+
         if settings.tts_enabled:
             try:
                 out_audio = await tts.synthesize(answer, lang)
@@ -294,18 +316,25 @@ async def voice_endpoint(
                                 id=answer_id)
             _remember_answer(answer_id, out_audio, question, answer)
             _answer_event.set()  # разбудить висящие long-poll'ы аватара
+            headers = {
+                # percent-encode: HTTP-заголовки только latin-1, а текст русский/казахский.
+                # UI может показать и вопрос, и текст озвученного ответа.
+                "X-Question": quote(question),
+                "X-Answer": quote(answer),
+            }
+            if suggestion:
+                # страница вернёт это в поле `suggest` следующего запроса
+                headers["X-Suggest"] = quote(suggestion)
             return Response(
                 content=out_audio,
                 media_type=f"audio/{settings.tts_format}",
-                headers={
-                    # percent-encode: HTTP-заголовки только latin-1, а текст русский/казахский.
-                    # UI может показать и вопрос, и текст озвученного ответа.
-                    "X-Question": quote(question),
-                    "X-Answer": quote(answer),
-                },
+                headers=headers,
             )
 
-        return {"question": question, "answer": answer, "sources": result["sources"]}
+        out = {"question": question, "answer": answer, "sources": result["sources"]}
+        if suggestion:
+            out["suggest"] = suggestion
+        return out
 
 
 def _remember_answer(answer_id: str, audio: bytes, question: str, answer: str) -> None:
