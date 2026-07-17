@@ -42,6 +42,9 @@
 
     #out .qline { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
     #out .aline { white-space: pre-wrap; }
+    /* «Караоке»: прочитанные голосом слова подсвечиваются по ходу озвучки */
+    #out .aline .w { transition: color .2s ease; }
+    #out .aline .w.spoken { color: #8fb3ff; }
     #out.idle { color: var(--muted); font-style: italic; }
     /* Ответ с таблицей/графиком (см. answer_render.js) — панели нужно больше места. */
     #out.rich { max-height: 45vh; }
@@ -236,6 +239,7 @@ function playAnswer(blob, lang) {
   if (answerUrl) URL.revokeObjectURL(answerUrl);
   answerUrl = URL.createObjectURL(blob);
   autoScroll = true;                 // новый ответ — прокрутка снова наша
+  initKaraoke();                     // собрать слова свежего ответа
   answerAudio.src = answerUrl;
   // Ставим ПОСЛЕ src: смена источника сбрасывает playbackRate на 1.0.
   // preservesPitch — дефолт true в современных браузерах, но задаём явно
@@ -317,6 +321,37 @@ out.addEventListener("click", e => {
 });
 zoom.addEventListener("click", closeZoom);
 zoomClose.addEventListener("click", closeZoom);
+
+// ---------- «караоке»: подсветка прочитанных слов ----------
+// Слова прозы (спаны .w из answer_render.js) подсвечиваются по мере
+// проговаривания. Точных таймингов у TTS нет, но темп F5 детерминирован длиной
+// озвучиваемого текста, поэтому позиция = доля накопленного ВЕСА слов
+// (вес ≈ длина слова В РЕЧИ: data-w считает answer_render.js — цифры и
+// аббревиатуры голосом длиннее, знаки препинания несут вес пауз).
+let karaokeWords = [], karaokeTotal = 0, karaokeIdx = 0;
+function initKaraoke() {
+  karaokeWords = Array.from(out.querySelectorAll(".aline .w"));
+  karaokeTotal = karaokeWords.reduce((a, w) => a + (parseFloat(w.dataset.w) || 1), 0);
+  karaokeIdx = 0;
+}
+function karaokeTick() {
+  if (!karaokeWords.length || !answerAudio.duration) return;
+  const target = (answerAudio.currentTime / answerAudio.duration) * karaokeTotal;
+  let acc = 0, i = 0;
+  for (; i < karaokeWords.length; i++) {
+    acc += parseFloat(karaokeWords[i].dataset.w) || 1;
+    if (acc > target) break;
+  }
+  // i = первое НЕпрочитанное слово; двигаем классы только на разнице
+  for (let k = karaokeIdx; k < i; k++) karaokeWords[k].classList.add("spoken");
+  for (let k = i; k < karaokeIdx; k++) karaokeWords[k].classList.remove("spoken");
+  karaokeIdx = i;
+}
+answerAudio.addEventListener("timeupdate", karaokeTick);
+answerAudio.addEventListener("ended", () => {   // договорил — подсветить всё
+  karaokeWords.forEach(w => w.classList.add("spoken"));
+  karaokeIdx = karaokeWords.length;
+});
 
 // ---------- автопрокрутка ответа ----------
 // Длинный ответ может не влезать в карточку: прокручиваем её синхронно с

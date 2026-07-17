@@ -286,13 +286,56 @@ function renderChart(rows, numeric) {
   return svg;
 }
 
+// ---------- «караоке»: веса слов для подсветки по ходу озвучки ----------
+// Точных таймингов слов F5 не отдаёт, но его темп детерминирован длиной
+// ОЗВУЧИВАЕМОГО текста (~0.054 c/симв., замер 2026-07-17). Поэтому позицию
+// считаем долей накопленного веса: вес слова ≈ сколько символов оно занимает
+// В РЕЧИ (не на экране!) — цифры и юр-аббревиатуры раскрываются голосом в
+// длинные слова, а знак препинания добавляет вес паузы.
+var W_ABBR = {  // на экране -> примерная длина в речи (символов)
+  "мрп": 30,      // «месячных расчётных показателей»
+  "рк": 22,       // «Республики Казахстан»
+  "коап": 45, "ук": 18, "упк": 34, "гк": 20, "нк": 18,
+  "под/фт": 60, "од/фт": 45, "сфм": 32, "афм": 8, "тг": 6,
+};
+var W_PER_DIGIT = 6;     // «450» -> «четыреста пятьдесят» ~ 6 симв. на цифру
+var W_SENT_PAUSE = 7;    // пауза после .!?… (~0.35 c) в «символах»
+var W_CLAUSE_PAUSE = 3;  // после ,;:—
+
+function wordWeight(token) {
+  var clean = token.toLowerCase().replace(/[«»"'().!?…,;:]+/g, "");
+  var w = W_ABBR[clean];
+  if (w === undefined) {
+    var digits = (clean.match(/\d/g) || []).length;
+    w = (clean.length - digits) + digits * W_PER_DIGIT;
+  }
+  var tail = token.slice(-1);
+  if (".!?…".indexOf(tail) !== -1) w += W_SENT_PAUSE;
+  else if (",;:—".indexOf(tail) !== -1) w += W_CLAUSE_PAUSE;
+  return Math.max(1, w);
+}
+
+// Проза -> div.aline из спанов-слов с data-w (весом) — страница подсвечивает
+// их по ходу звука. Только createElement/textContent (XSS).
+function renderProse(text) {
+  var d = el("div", "aline");
+  text.split(/(\s+)/).forEach(function (tok) {
+    if (!tok) return;
+    if (/^\s+$/.test(tok)) { d.appendChild(document.createTextNode(tok)); return; }
+    var s = el("span", "w", tok);
+    s.dataset.w = wordWeight(tok);
+    d.appendChild(s);
+  });
+  return d;
+}
+
 // Главная точка входа: кладёт разобранный ответ в container.
 // Возвращает true, если был «богатый» контент (таблица/QR) — страница расширит панель.
 function renderAnswer(container, text) {
   var rich = false;
   parseAnswer(text).forEach(function (seg) {
     if (seg.type === "text") {
-      container.appendChild(el("div", "aline", seg.text));
+      container.appendChild(renderProse(seg.text));
       return;
     }
     rich = true;
@@ -317,5 +360,5 @@ function renderAnswer(container, text) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { parseAnswer: parseAnswer, parseNum: parseNum,
                      pickNumericColumn: pickNumericColumn,
-                     extractLinks: extractLinks };
+                     extractLinks: extractLinks, wordWeight: wordWeight };
 }
