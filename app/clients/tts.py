@@ -44,7 +44,9 @@ _NORM_COMMON = [
     (r"https?://", ""),
     (r"\be-?Gov\s+mobile\b", "е-гов мобайл"),
     (r"\be-?Gov\b", "е-гов"),
-    (r"\be-?Otinish\b", "е-Отиниш"),
+    # «е-Отиниш»/«еотиниш» F5 сливал в «ятиниш» (замечание 2026-07-17); раздельное
+    # «е отиниш» убирает слияние — проверено перебором написаний по F5+Whisper.
+    (r"\be-?Otinish\b", "е отиниш"),
     (r"\be-?Salyq-?Azamat\b", "е-салык азамат"),
     (r"\be-?Salyq\b", "е-салык"),
     (r"qamqor\.gov\.kz", "камкор"),
@@ -294,6 +296,64 @@ def _ord_year_sub(m: "re.Match") -> str:
     return f"{_ordinal_ru(int(m.group(1)), gender, case)} {m.group(2)}"
 
 
+# Родительный падеж количественных после «от/до/свыше/…»: «от 45 до 450 МРП» ->
+# «от сорока пяти до четырёхсот пятидесяти…» — именительный («от сорок пять»)
+# звучит безграмотно. В составном числительном склоняется КАЖДОЕ слово; слова
+# вне таблицы (тысяч, миллионов и сами единицы) остаются как есть.
+_RU_CARD_GEN = {
+    "ноль": "нуля", "один": "одного", "одна": "одной", "два": "двух", "две": "двух",
+    "три": "трёх", "четыре": "четырёх", "пять": "пяти", "шесть": "шести",
+    "семь": "семи", "восемь": "восьми", "девять": "девяти", "десять": "десяти",
+    "одиннадцать": "одиннадцати", "двенадцать": "двенадцати",
+    "тринадцать": "тринадцати", "четырнадцать": "четырнадцати",
+    "пятнадцать": "пятнадцати", "шестнадцать": "шестнадцати",
+    "семнадцать": "семнадцати", "восемнадцать": "восемнадцати",
+    "девятнадцать": "девятнадцати", "двадцать": "двадцати", "тридцать": "тридцати",
+    "сорок": "сорока", "пятьдесят": "пятидесяти", "шестьдесят": "шестидесяти",
+    "семьдесят": "семидесяти", "восемьдесят": "восьмидесяти",
+    "девяносто": "девяноста", "сто": "ста", "двести": "двухсот",
+    "триста": "трёхсот", "четыреста": "четырёхсот", "пятьсот": "пятисот",
+    "шестьсот": "шестисот", "семьсот": "семисот", "восемьсот": "восьмисот",
+    "девятьсот": "девятисот", "тысяча": "тысячи", "тысячи": "тысяч",
+    # «миллиона/миллиарда» num2words ставит только после двух/трёх/четырёх ->
+    # в родительном это «миллионов»; после «один» стоит ед. «миллион» -> «миллиона».
+    "миллион": "миллиона", "миллиона": "миллионов",
+    "миллиард": "миллиарда", "миллиарда": "миллиардов",
+}
+# Целое число после предлога. (?!\d) обязателен: без него из «до 20%» регекс
+# откусывал «до 2» (бэктрекинг \d+), а «0%» уходило процентам — «до двухноль
+# процентов». Проценты/десятичные дроби не трогаем (у них свои правила).
+_RU_GEN_PREP_RE = re.compile(
+    r"\b(в размере|от|до|свыше|около|более|менее)\s+"
+    r"(\d{1,3}(?:[  ]\d{3})+|\d+)(?!\d)(?!\s*%)(?!,\d)",
+    re.IGNORECASE)
+
+
+def _ru_gen_prep_sub(m: "re.Match") -> str:
+    core = m.group(2).replace(" ", "").replace(" ", "")
+    try:
+        words = _num2words(int(core), lang="ru").split()
+    except Exception:
+        return m.group(0)
+    return f"{m.group(1)} " + " ".join(_RU_CARD_GEN.get(w, w) for w in words)
+
+
+# Проценты после тех же предлогов — тоже родительный: «до 20%» -> «до двадцати
+# процентов» (обычное правило процентов дало бы именительный «до двадцать»).
+_RU_GEN_PCT_RE = re.compile(
+    r"\b(в размере|от|до|свыше|около|более|менее)\s+(\d+)\s*%", re.IGNORECASE)
+
+
+def _ru_gen_pct_sub(m: "re.Match") -> str:
+    n = int(m.group(2))
+    try:
+        words = [_RU_CARD_GEN.get(w, w) for w in _num2words(n, lang="ru").split()]
+    except Exception:
+        return m.group(0)
+    unit = "процента" if n % 10 == 1 and n % 100 != 11 else "процентов"
+    return f"{m.group(1)} {' '.join(words)} {unit}"
+
+
 def _pct_sub(m: "re.Match") -> str:
     """«20%» -> «двадцать процентов»; «1,5%» -> «одна целая пять десятых процента»."""
     tok = m.group(1)
@@ -303,34 +363,79 @@ def _pct_sub(m: "re.Match") -> str:
     return f"{_num2words(n, lang='ru')} {_ru_plural(n, 'процент', 'процента', 'процентов')}"
 
 
-# Телефоны/горячие линии: «по номеру 1458», «телефон 1414» — читать ПО ЦИФРАМ.
-# 4+ цифр после слова «номер»/«телефон» (короткие «приказ № 55» остаются числом).
+# Телефоны/горячие линии: «по номеру 1458», «телефон 8 800 080 18 90» — читать
+# ГРУППАМИ с паузой-запятой между ними: 11 цифр подряд без пауз сливаются в кашу,
+# и F5 их комкает. Группу без ведущего нуля читаем числом («800» -> «восемьсот»,
+# «18» -> «восемнадцать») — так телефоны диктуют вживую; с ведущим нулём — по
+# цифрам («080» -> «ноль восемь ноль»). Слитную запись (87001234567) группируем
+# сами: 1-3-3-2-2 (11 цифр) / 3-3-2-2 (10) / 3-2-2 (7).
 _RU_DIGIT_WORDS = ["ноль", "один", "два", "три", "четыре", "пять", "шесть",
                    "семь", "восемь", "девять"]
-_RU_PHONE_RE = re.compile(r"\b(номер\w*|тел\.|телефон\w*)\s+(\d[\d\s\-()]{2,17}\d)",
-                          re.IGNORECASE)
+# До двух слов между ключевым словом и цифрами: «по номеру горячей линии 1458»,
+# «телефон доверия 1414» — тоже телефоны.
+_RU_PHONE_RE = re.compile(
+    r"\b((?:номер\w*|тел\.|телефон\w*)(?:\s+[а-яё]+){0,2})\s+(\+?\d[\d\s\-()]{2,17}\d)",
+    re.IGNORECASE)
+# Телефон БЕЗ слова «номер/телефон»: «+7 777 123 45 67», «8 (800) 080-18-90» —
+# префикс +7/8 и 10 цифр группами. Требуем разделитель после префикса, чтобы не
+# трогать обычные числа; слитные 87001234567 ловит правило «10+ цифр подряд».
+_RU_PHONE_BARE_RE = re.compile(
+    r"(?<![\d,])(\+7|8)[\s\-(]+\d{3}[)\s\-]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?!\s?\d)")
+# Слитные коды из 10+ цифр (сотовый без пробелов, ЖСН/БСН) — по цифрам группами.
+# Лукэраунды отсекают продолжение числа и десятичную дробь (3,1415926535…),
+# но НЕ точку конца предложения после номера.
+_RU_LONG_CODE_RE = re.compile(r"(?<!\d)(?<!\d,)\+?\d{10,}(?!\d)(?!,\d)")
 
 
 def _ru_digits(s: str) -> str:
     return " ".join(_RU_DIGIT_WORDS[int(d)] for d in s if d.isdigit())
 
 
+def _ru_phone_group(g: str) -> str:
+    """Одна группа цифр телефона: 2–3 цифры без ведущего нуля — числом, иначе по цифрам."""
+    if _num2words is not None and 2 <= len(g) <= 3 and not g.startswith("0"):
+        return _num2words(int(g), lang="ru")
+    return _ru_digits(g)
+
+
+def _ru_phone_words(raw: str) -> str:
+    """Телефон/код -> слова группами через запятую (запятая даёт паузу в TTS)."""
+    groups = re.findall(r"\d+", raw)
+    if len(groups) == 1:  # слитная запись — группируем сами
+        s = groups[0]
+        if len(s) == 11:
+            groups = [s[:1], s[1:4], s[4:7], s[7:9], s[9:]]
+        elif len(s) == 10:
+            groups = [s[:3], s[3:6], s[6:8], s[8:]]
+        elif len(s) == 7:
+            groups = [s[:3], s[3:5], s[5:]]
+    words = ", ".join(_ru_phone_group(g) for g in groups)
+    return f"плюс {words}" if raw.lstrip().startswith("+") else words
+
+
 def _ru_phone_sub(m: "re.Match") -> str:
-    return f"{m.group(1)} {_ru_digits(m.group(2))}"
+    return f"{m.group(1)} {_ru_phone_words(m.group(2))}"
 
 
 def _ru_numbers(text: str) -> str:
     """Цифры -> слова. В распознанных контекстах — ПОРЯДКОВЫЕ с согласованием по
     роду/падежу (статья 214 -> «двести четырнадцатая»; в 2024 году -> «...четвёртом
-    году»; пунктом 5 -> «пятым»). «Номер/телефон NNNN» — по цифрам. Остальные
+    году»; пунктом 5 -> «пятым»). Телефоны (после «номер/телефон», в форме
+    «+7/8 XXX XXX XX XX» и слитные 10+ цифр) — группами с паузами. Остальные
     числа — количественные; % -> процент(а/ов).
     Без num2words — no-op (числа останутся цифрами).
     """
-    text = _RU_PHONE_RE.sub(_ru_phone_sub, text)   # номера/телефоны -> по цифрам
+    text = _RU_PHONE_RE.sub(_ru_phone_sub, text)   # номера/телефоны -> группами
+    text = _RU_PHONE_BARE_RE.sub(                  # +7/8 ... без слова «номер»
+        lambda m: _ru_phone_words(m.group(0)), text)
+    text = _RU_LONG_CODE_RE.sub(                   # слитные 10+ цифр (сотовый, ЖСН)
+        lambda m: _ru_phone_words(m.group(0)), text)
     if _num2words is None:
         return text
     text = _GOV_RE.sub(_ord_gov_sub, text)         # статья/пункт/часть N -> порядковое
     text = _YEAR_RE.sub(_ord_year_sub, text)       # NNNN год/года/году -> порядковое
+    text = _RU_GEN_PCT_RE.sub(_ru_gen_pct_sub, text)    # от/до N% -> родительный
+    text = _RU_GEN_PREP_RE.sub(_ru_gen_prep_sub, text)  # от/до N -> родительный
     text = re.sub(r"(\d+(?:,\d+)?)\s*%", _pct_sub, text)  # проценты
     return _NUM_RE.sub(_num_repl, text)            # остальные числа -> количественные
 
@@ -543,6 +648,26 @@ def _normalize_for_tts(text: str, language: str | None) -> str:
     return _kk_numbers(text)  # числа -> слова (ПОСЛЕ раскрытия аббревиатур)
 
 
+# --- Экранные блоки: [ТАБЛИЦА]...[/ТАБЛИЦА] -------------------------------
+# RAG может приложить к устному ответу таблицу ДЛЯ ЭКРАНА (правило 7 промпта,
+# рендерит фронтенд video_ui). Голосу она не нужна: TTS читал бы «палки» и
+# цифры кашей. Вырезаем блок и, на всякий случай, бесхозные строки-таблицы
+# с «|» без маркеров (LLM иногда забывает маркеры).
+_TABLE_BLOCK_RE = re.compile(r"\[(ТАБЛИЦА|КЕСТЕ)\].*?(?:\[/\1\]|\Z)",
+                             re.IGNORECASE | re.DOTALL)
+_TABLE_LINE_RE = re.compile(r"^[^\n|]*\|[^\n]*$", re.MULTILINE)
+
+
+def strip_display_blocks(text: str) -> str:
+    """Текст без экранных блоков (таблиц) — то, что реально озвучиваем.
+
+    Полный текст (с таблицей) уходит в X-Answer и на экран как есть.
+    """
+    text = _TABLE_BLOCK_RE.sub(" ", text)
+    text = _TABLE_LINE_RE.sub(" ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 # Граница предложения: после .!?… и переноса строки.
 _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 
@@ -637,28 +762,32 @@ def _split_for_tts(text: str, sentence_max: int, group_max: int) -> list[str]:
     return chunks
 
 
-def _gap_ms_after(text: str) -> int:
+def _gap_ms_after(text: str, base_ms: int) -> int:
     """Сколько тишины вставить ПОСЛЕ куска — по тому, чем он закончился.
 
     Куски синтезируются порознь, и TTS подрезает собственный хвост тишины: без
     зазора следующий кусок «влезает», не дав предыдущему договорить. Но пауза
     нужна разная: после точки — как между фразами, после запятой — вдвое короче
     (там середина предложения, полная пауза рвала бы его надвое).
+    `base_ms` — полная пауза провайдера (у F5 длиннее, см. tts_f5_gap_ms).
     """
     end = text.rstrip()[-1:]
     if end in ".!?":
-        return settings.tts_gap_ms
-    return settings.tts_gap_ms // 2
+        return base_ms
+    return base_ms // 2
 
 
-def _concat_wav(parts: list[bytes], texts: list[str] | None = None) -> bytes:
+def _concat_wav(parts: list[bytes], texts: list[str] | None = None,
+                gap_ms: int | None = None) -> bytes:
     """Склеивает несколько WAV-блоков в один, вставляя паузу между кусками.
 
     `texts` — исходные тексты кусков (той же длины, что `parts`): по ним пауза
     подбирается под знак на стыке. Без них — одинаковый зазор, как раньше.
+    `gap_ms` — полная пауза (по умолчанию tts_gap_ms).
     """
     if len(parts) == 1:
         return parts[0]
+    base_ms = settings.tts_gap_ms if gap_ms is None else gap_ms
     out = io.BytesIO()
     writer: wave.Wave_write | None = None
 
@@ -682,8 +811,7 @@ def _concat_wav(parts: list[bytes], texts: list[str] | None = None) -> bytes:
                         f"Несовместимые параметры WAV при склейке: {params} != {fmt}"
                     )
                 if idx:  # пауза перед каждым, кроме первого — по знаку на стыке
-                    ms = (_gap_ms_after(texts[idx - 1]) if texts
-                          else settings.tts_gap_ms)
+                    ms = _gap_ms_after(texts[idx - 1], base_ms) if texts else base_ms
                     nch, sw, fr = fmt
                     n_frames = int(fr * ms / 1000)
                     writer.writeframes(b"\x00" * (n_frames * nch * sw))
@@ -698,8 +826,15 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
     """Текст -> аудио (WAV-байты). Длинный текст режется и склеивается."""
     if not text.strip():
         raise RuntimeError("Пустой текст для синтеза")
+    # Экранные таблицы не озвучиваем (их рендерит фронтенд). Если ответ состоял
+    # из одной таблицы — киоск не должен получить 5xx: озвучиваем отсылку к экрану.
+    speech = strip_display_blocks(text)
+    if not _has_speech(speech):
+        speech = ("Жауап экранда көрсетілген."
+                  if _resolve_lang(language) == "kk"
+                  else "Ответ показан на экране.")
     # Раскрываем аббревиатуры/латиницу в произносимый вид (только для звука).
-    text = _normalize_for_tts(text, language)
+    text = _normalize_for_tts(speech, language)
     # Склейка реализована для WAV; для иных форматов синтезируем одним куском.
     if settings.tts_format != "wav":
         return await _synthesize_one(text, language)
@@ -723,7 +858,9 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
     if len(parts) == 1:
         return await _synthesize_one(parts[0], language)
     audios = [await _synthesize_one(part, language) for part in parts]
-    return _concat_wav(audios, parts)
+    gap = (settings.tts_f5_gap_ms if _provider_for(language) == "f5"
+           else settings.tts_gap_ms)
+    return _concat_wav(audios, parts, gap)
 
 
 def _provider_for(language: str | None) -> str:
@@ -771,6 +908,51 @@ async def _say(text: str, language: str | None) -> bytes:
 
 
 # ---------- F5-TTS_RUSSIAN (русский, отдельный сервис по HTTP) ----------
+# Тишина по краям куска у F5 ГУЛЯЕТ (замер 2026-07-17: голова 41–157 мс, хвост
+# 45–165 мс). Из-за этого пауза на стыке кусков плавала от 0.5 до 0.7 c (наш
+# зазор + случайные края), а кусок с короткой головой звучал «не с начала».
+# Нормализуем: подрезаем тишину по краям до _EDGE_KEEP_MS — стык становится
+# ровно TTS_F5_GAP_MS (+2×30 мс), одинаковый на каждом шве.
+_EDGE_KEEP_MS = 30
+_EDGE_THRESH = 300  # |int16| ниже — считаем тишиной (тот же порог, что в замерах)
+
+
+def _trim_edge_silence(wav_bytes: bytes) -> bytes:
+    """Ровняет тишину в начале/конце WAV до _EDGE_KEEP_MS.
+
+    Не 16-битный или вовсе не WAV (сервер прислал что-то иное) — отдаём как есть:
+    подрезка — украшение, ронять из-за неё синтез нельзя.
+    """
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as r:
+            nch, sw, fr = r.getnchannels(), r.getsampwidth(), r.getframerate()
+            frames = r.readframes(r.getnframes())
+    except (wave.Error, EOFError):
+        return wav_bytes
+    if sw != 2 or not frames:
+        return wav_bytes
+    import array
+    samples = array.array("h")
+    samples.frombytes(frames)
+    step = nch  # рамка = nch сэмплов; тишина — когда ВСЕ каналы тихие
+    n = len(samples) // step
+    first, last = 0, n - 1
+    while first < n and all(abs(samples[first * step + c]) < _EDGE_THRESH
+                            for c in range(step)):
+        first += 1
+    while last > first and all(abs(samples[last * step + c]) < _EDGE_THRESH
+                               for c in range(step)):
+        last -= 1
+    keep = int(fr * _EDGE_KEEP_MS / 1000)
+    first = max(0, first - keep)
+    last = min(n - 1, last + keep)
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(nch)
+        w.setsampwidth(sw)
+        w.setframerate(fr)
+        w.writeframes(samples[first * step:(last + 1) * step].tobytes())
+    return out.getvalue()
 _f5_ref_cache: dict[str, tuple[bytes, str]] = {}  # путь -> (аудио-байты, ref_text)
 
 
@@ -820,10 +1002,22 @@ async def _f5(text: str, language: str | None) -> bytes:
     async with httpx.AsyncClient(timeout=180) as client:
         if settings.f5_ref_audio:
             audio, ref_text = _f5_reference()
+            # Прогноз длительности у multipart-F5 детерминирован по длине текста
+            # и ВПРИТЫК: звук кончается прямо на последней фонеме (хвост тишины
+            # 0.00 с), конец слова порой срезан, а темп спешит (~18.5 симв/с) —
+            # слова изредка «глотаются» («звонок бесплатны_», «либо подать» →
+            # «попадать»). Немые точки в конце gen_text удлиняют прогноз
+            # (~0.03 с/символ), САМИ НЕ ОЗВУЧИВАЮТСЯ — модель говорит спокойнее
+            # и договаривает. Замер 2026-07-17 (F5 АФМ + STT АФМ).
+            # ПОТОЛОК 10 точек ОБЯЗАТЕЛЕН: без него на длинном куске (577 симв.
+            # -> 48 точек -> +2.6 c бюджета) модель ЗАПОЛНЯЛА лишнее время
+            # «страшным» бормотанием в хвосте (замерено по RMS). Малый запас
+            # (+0.5 c) она отдаёт тишиной, большой — галлюцинирует звуком.
+            pad = " " + ". " * max(4, min(10, len(text) // 12))
             resp = await client.post(
                 settings.f5_url,
                 files={"ref_audio": ("ref.wav", audio, "audio/wav")},
-                data={"ref_text": ref_text, "gen_text": text},
+                data={"ref_text": ref_text, "gen_text": text + pad},
             )
         else:
             resp = await client.post(
@@ -831,6 +1025,9 @@ async def _f5(text: str, language: str | None) -> bytes:
                 json={"text": text, "language": language or "russian"},
             )
         resp.raise_for_status()
+        # Ровняем гуляющие края (только там, где склеиваем WAV сами).
+        if settings.tts_format == "wav":
+            return _trim_edge_silence(resp.content)
         return resp.content
 
 
