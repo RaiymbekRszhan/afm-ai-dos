@@ -111,6 +111,27 @@
     body.kiosk .qr-row { justify-content: center; gap: 22px; }
     body.kiosk .qr-card img { width: clamp(140px, 15vh, 220px); height: clamp(140px, 15vh, 220px); }
     body.kiosk .qr-card .qr-label { font-size: clamp(14px, 1.2vh, 26px); }
+
+    /* ---- Увеличение по тапу (просьба руководителя): таблица/график/QR ---- */
+    #out .aidos-tablewrap, #out .aidos-chart, #out .qr-card { cursor: zoom-in; }
+    #zoom { position: fixed; inset: 0; z-index: 50; display: none;
+            align-items: center; justify-content: center; padding: 3vh 3vw;
+            background: rgba(3, 8, 20, .93); cursor: zoom-out; }
+    #zoom.on { display: flex; }
+    #zoomBody { max-width: 95vw; max-height: 90vh; overflow: auto;
+                background: var(--card); border-radius: 20px; padding: 28px; }
+    #zoomClose { position: fixed; top: 18px; right: 18px; z-index: 51;
+                 width: clamp(48px, 6vh, 88px); height: clamp(48px, 6vh, 88px);
+                 border-radius: 50%; border: 0; background: var(--accent);
+                 color: #fff; font-size: clamp(22px, 2.6vh, 40px); cursor: pointer; }
+    /* увеличенные версии: таблица крупнее, график шире, QR почти во весь экран */
+    #zoomBody .aidos-table { font-size: clamp(20px, 2vh, 42px); margin: 0; }
+    #zoomBody .aidos-table th, #zoomBody .aidos-table td { padding: 14px 20px; }
+    #zoomBody .aidos-table.dense { font-size: clamp(16px, 1.6vh, 34px); }
+    #zoomBody .aidos-chart { width: min(90vw, 1500px); max-width: none; margin: 0; }
+    #zoomBody .qr-card { padding: 4vh 4vw; }
+    #zoomBody .qr-card img { width: min(62vh, 78vw); height: min(62vh, 78vw); }
+    #zoomBody .qr-card .qr-label { font-size: clamp(18px, 2vh, 40px); margin-top: 12px; }
     body.kiosk .aidos-chart { max-width: 900px; margin: 8px auto 0; }
     /* Ответ С ТАБЛИЦЕЙ — чуть плотнее обычного: вопрос + текст + таблица + график
        должны влезать на киоск 1080×1920 ЦЕЛИКОМ, без прокрутки (замерено на demo). */
@@ -144,6 +165,10 @@
     <span id="status">готов</span>
   </div>
   <div id="out"></div>
+
+  <!-- Увеличение таблицы/графика/QR по тапу: клон элемента поверх всего экрана -->
+  <div id="zoom"><div id="zoomBody"></div></div>
+  <button id="zoomClose" hidden>✕</button>
 
 <script src="/static/qrcode.js"></script>
 <script src="/static/answer_render.js"></script>
@@ -262,6 +287,37 @@ let ctx, stream, proc, src, chunks = [], recording = false;
 // уходит полем suggest со следующим запросом, там реплика «да» — согласие.
 let pendingSuggest = null;
 
+// ---------- увеличение по тапу (таблица / график / QR) ----------
+// Клонируем нажатый элемент в полноэкранный оверлей. Закрытие: тап в любом
+// месте, крестик, авто через 45 c (следующий посетитель киоска не должен
+// застать чужое окно) или новый ответ. Делегирование на #out — рендер-код
+// (answer_render.js) ничего про оверлей не знает.
+const zoom = document.getElementById("zoom"),
+      zoomBody = document.getElementById("zoomBody"),
+      zoomClose = document.getElementById("zoomClose");
+let zoomTimer = null;
+
+function closeZoom() {
+  zoom.classList.remove("on");
+  zoomClose.hidden = true;
+  zoomBody.textContent = "";
+  if (zoomTimer) { clearTimeout(zoomTimer); zoomTimer = null; }
+}
+function openZoom(node) {
+  zoomBody.textContent = "";
+  zoomBody.appendChild(node.cloneNode(true)); // клон НАШЕГО DOM — безопасно
+  zoom.classList.add("on");
+  zoomClose.hidden = false;
+  if (zoomTimer) clearTimeout(zoomTimer);
+  zoomTimer = setTimeout(closeZoom, 45000);
+}
+out.addEventListener("click", e => {
+  const target = e.target.closest(".aidos-tablewrap, .aidos-chart, .qr-card");
+  if (target) openZoom(target);
+});
+zoom.addEventListener("click", closeZoom);
+zoomClose.addEventListener("click", closeZoom);
+
 // ---------- автопрокрутка ответа ----------
 // Длинный ответ может не влезать в карточку: прокручиваем её синхронно с
 // озвучкой (проговорено 40% — прокручено ~40%, с небольшим опережением, чтобы
@@ -285,6 +341,7 @@ function setIdle() {
   out.textContent = "Задайте вопрос голосом — цифровой офицер ответит по базе законов РК.";
 }
 function showQA(q, a) {
+  closeZoom();               // новый ответ — увеличенное окно прошлого закрыть
   out.className = "";
   out.textContent = "";
   if (q) { const d = document.createElement("div"); d.className = "qline";
@@ -295,6 +352,7 @@ function showQA(q, a) {
   out.scrollTop = 0;
 }
 function showProcessing() {
+  closeZoom();
   out.className = "idle";
   out.textContent = "Обрабатываю запрос…";
 }
