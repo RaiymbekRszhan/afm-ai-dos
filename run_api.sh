@@ -54,7 +54,11 @@ export TRANSFORMERS_OFFLINE=1
 # снаружи (напр. свой F5_URL или F5_REF_AUDIO). Референс шлётся в каждый запрос.
 export TTS_PROVIDER="${TTS_PROVIDER:-f5}"
 export F5_URL="${F5_URL:-http://192.168.165.2:8991/tts}"
-export F5_REF_AUDIO="${F5_REF_AUDIO:-refs/ref_ru_f5.wav}"
+# _padded: тот же голос + 250/300 мс тишины по краям. Оригинал начинался речью
+# с нулевого сэмпла — F5 клонировал эту манеру и СТАРТОВАЛ РЕЗКО, съедая атаку
+# первого слова («начало куска не с начала», отзыв 2026-07-17). С тишиной в
+# референсе у генерации появился разгон и хвост (замерено по сэмплам).
+export F5_REF_AUDIO="${F5_REF_AUDIO:-refs/ref_ru_f5_padded.wav}"
 export F5_REF_TEXT="${F5_REF_TEXT:-@refs/ref_ru.txt}"
 export TTS_KK_PROVIDER="${TTS_KK_PROVIDER:-spark}"
 export SPARK_URL="${SPARK_URL:-http://localhost:8809/tts}"
