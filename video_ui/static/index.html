@@ -43,6 +43,20 @@
     #out .qline { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
     #out .aline { white-space: pre-wrap; }
     #out.idle { color: var(--muted); font-style: italic; }
+    /* Ответ с таблицей/графиком (см. answer_render.js) — панели нужно больше места. */
+    #out.rich { max-height: 45vh; }
+    #out .aidos-tablewrap { overflow-x: auto; }
+    #out .aidos-table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+    /* 4+ колонок (dense): колонки делят ширину ПОРОВНУ и слова переносятся —
+       таблица никогда не шире карточки (прокрутку на киоске никто не найдёт). */
+    #out .aidos-table.dense { table-layout: fixed; }
+    #out .aidos-table.dense th, #out .aidos-table.dense td { overflow-wrap: break-word; }
+    #out .aidos-table th, #out .aidos-table td { border: 1px solid #334155;
+           padding: 6px 10px; text-align: left; vertical-align: top; }
+    #out .aidos-table th { background: #253347; color: #e6edf6; font-weight: 600; }
+    #out .aidos-table td { color: #cbd5e1; }
+    .aidos-chart { display: block; width: 100%; max-width: 900px; height: auto;
+           margin: 4px 0 10px; }
 
     #langBadge { position: absolute; bottom: 22px; right: 22px; z-index: 4; display: none;
            align-items: center; justify-content: center; border: 0; cursor: pointer;
@@ -54,25 +68,43 @@
     /* ---- Режим киоска (?kiosk=1) — раскладка 1-в-1 с вариантом 1 (/avatar),
        чтобы сравнивать варианты честно: отличается только источник картинки. ---- */
     body.kiosk header { display: none; }
-    /* Дефолт 15/16 = аспект наших роликов (1080×1152) — тогда область точно повторяет
-       кадр: ни полей, ни обрезки, и ?ar помнить не надо. Заменишь ролики другим
-       аспектом — поправь тут или передай ?ar=<ш>/<в>. */
+    /* Кадр наших роликов 1080×1152, но в САМ КАДР вшиты чёрные поля по 150px
+       сверху/снизу — полезный контент 1080×852 (замерено по пикселям, симметрично).
+       Поэтому в киоске область = аспект КОНТЕНТА (1080/852), а видео — cover:
+       он срезает ровно вшитые поля (контент не трогается), на экране ни черноты,
+       ни обрезанного лица, и ниже остаётся больше места под ответ/таблицу.
+       Заменишь ролики — перемерь поля; чистым роликам без вшитых полей ставь
+       аспект их кадра (или передай ?ar=<ш>/<в> — тогда этот дефолт не действует). */
     body.kiosk #stage { flex: none; width: 100%;
-           aspect-ratio: var(--stage-ar, 15 / 16); height: auto; }
+           aspect-ratio: var(--stage-ar, 1080 / 852); height: auto; }
+    body.kiosk #stage video { object-fit: cover; }
     body.kiosk #langBadge { display: flex; }
     body.kiosk #out { order: 2; flex: 1; margin: 14px 20px 20px; padding: 30px 40px; overflow: auto;
            background: var(--card); border-radius: 22px; max-height: none; }
+    /* Размеры текста ответа: были 2vh/52px — на длинном ответе текст «кричал»
+       и заполнял карточку с прокруткой (замечание 2026-07-17). */
     body.kiosk #out.idle { display: flex; align-items: center; justify-content: center;
-           text-align: center; font-size: clamp(22px, 2vh, 48px); }
-    body.kiosk #out .qline { font-size: clamp(22px, 1.7vh, 44px); color: #e6edf6;
-           font-weight: 600; text-align: center; margin-bottom: 20px; padding-bottom: 16px;
+           text-align: center; font-size: clamp(20px, 1.7vh, 40px); }
+    body.kiosk #out .qline { font-size: clamp(18px, 1.4vh, 36px); color: #e6edf6;
+           font-weight: 600; text-align: center; margin-bottom: 16px; padding-bottom: 12px;
            border-bottom: 1px solid #334155; }
-    body.kiosk #out .aline { font-size: clamp(26px, 2vh, 52px); line-height: 1.55;
+    body.kiosk #out .aline { font-size: clamp(20px, 1.6vh, 40px); line-height: 1.5;
            color: #e6edf6; letter-spacing: .2px; }
     body.kiosk #bar { order: 1; justify-content: center; padding: 18px 18px 26px; gap: 20px; }
     body.kiosk #bar select { display: none; }
     body.kiosk button#rec { font-size: clamp(24px, 1.7vh, 46px); padding: 22px 48px; border-radius: 16px; }
     body.kiosk #status { display: none; }
+    body.kiosk #out .aidos-table { font-size: clamp(18px, 1.6vh, 40px); }
+    body.kiosk #out .aidos-table th, body.kiosk #out .aidos-table td { padding: 12px 18px; }
+    /* 4+ колонок: мельче и плотнее, иначе не влезает по ширине карточки */
+    body.kiosk #out .aidos-table.dense { font-size: clamp(14px, 1.15vh, 26px); }
+    body.kiosk #out .aidos-table.dense th, body.kiosk #out .aidos-table.dense td { padding: 8px 10px; }
+    body.kiosk .aidos-chart { max-width: 900px; margin: 8px auto 0; }
+    /* Ответ С ТАБЛИЦЕЙ — чуть плотнее обычного: вопрос + текст + таблица + график
+       должны влезать на киоск 1080×1920 ЦЕЛИКОМ, без прокрутки (замерено на demo). */
+    body.kiosk #out.rich { padding: 22px 32px; margin-top: 10px; }
+    body.kiosk #out.rich .qline { margin-bottom: 12px; padding-bottom: 10px; }
+    body.kiosk #out.rich .aline { font-size: clamp(18px, 1.45vh, 36px); line-height: 1.4; }
   </style>
 </head>
 <body>
@@ -101,6 +133,7 @@
   </div>
   <div id="out"></div>
 
+<script src="/static/answer_render.js"></script>
 <script>
 // ---------- режим киоска (?kiosk=1) ----------
 const params = new URLSearchParams(location.search);
@@ -211,6 +244,9 @@ function encodeWav(float32, sampleRate) {
 const btn = document.getElementById("rec"), st = document.getElementById("status"),
       out = document.getElementById("out");
 let ctx, stream, proc, src, chunks = [], recording = false;
+// Исправленная формулировка вопроса из X-Suggest (STT ошибся, RAG не нашёл ответ):
+// уходит полем suggest со следующим запросом, там реплика «да» — согласие.
+let pendingSuggest = null;
 
 // Вопрос гражданина вставляем ТОЛЬКО через textContent (речь произвольная — innerHTML
 // был бы XSS на публичном экране).
@@ -223,8 +259,9 @@ function showQA(q, a) {
   out.textContent = "";
   if (q) { const d = document.createElement("div"); d.className = "qline";
            d.textContent = "Вопрос: " + q; out.appendChild(d); }
-  if (a) { const d = document.createElement("div"); d.className = "aline";
-           d.textContent = a; out.appendChild(d); }
+  // Ответ рендерит answer_render.js: проза (textContent — XSS-safe) + блоки
+  // [ТАБЛИЦА] из базы таблицей и бар-чартом. Была таблица — панель повыше.
+  if (a) out.classList.toggle("rich", renderAnswer(out, a));
   out.scrollTop = 0;
 }
 function showProcessing() {
@@ -232,6 +269,21 @@ function showProcessing() {
   out.textContent = "Обрабатываю запрос…";
 }
 setIdle();
+
+// ?demo=1 — образец ответа с таблицей и графиком БЕЗ бэкенда: проверка рендера
+// и репетиция показа (видно, как встанут таблица и бар-чарт на этом экране).
+if (params.get("demo") === "1") {
+  showQA("Какой штраф за нарушение требований финансового мониторинга?",
+    "Штраф зависит от категории нарушителя, согласно статье 214 Кодекса об " +
+    "административных правонарушениях. Подробности можно уточнить по номеру 1458.\n" +
+    "[ТАБЛИЦА]\n" +
+    "Категория нарушителя | Штраф\n" +
+    "Физические лица | 100 МРП\n" +
+    "Малое предпринимательство | 200 МРП\n" +
+    "Среднее предпринимательство | 400 МРП\n" +
+    "Крупное предпринимательство | 1 000 МРП\n" +
+    "[/ТАБЛИЦА]");
+}
 
 const langSel = document.getElementById("lang");
 const langBadge = document.getElementById("langBadge");
@@ -287,12 +339,17 @@ async function stopAndSend() {
   const askedLang = langSel.value;   // фиксируем: ответ придёт через секунды, селект мог смениться
   fd.append("data", wav, "q.wav");
   fd.append("language", askedLang);
+  // Подсказка с прошлого ответа («возможно, вы хотели спросить…»): бэкенд по ней
+  // поймёт, что реплика «да» = согласие ответить на исправленный вопрос.
+  if (pendingSuggest) fd.append("suggest", pendingSuggest);
   try {
     // /voice тут — прокси на рабочий бэкенд (:8000), контракт тот же: WAV + заголовки.
     const r = await fetch("/voice", { method: "POST", body: fd });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
     const q = decodeURIComponent(r.headers.get("x-question") || "");
     const a = decodeURIComponent(r.headers.get("x-answer") || "");
+    const sug = r.headers.get("x-suggest");
+    pendingSuggest = sug ? decodeURIComponent(sug) : null;
     showQA(q, a);
     st.textContent = "ответ готов";
     playAnswer(await r.blob(), askedLang);   // звук + ролик «говорит», по окончании — idle

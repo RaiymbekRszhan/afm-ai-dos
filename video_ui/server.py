@@ -84,16 +84,22 @@ async def health():
 
 
 @app.post("/voice")
-async def voice(data: UploadFile = File(...), language: str = Form("russian")):
+async def voice(data: UploadFile = File(...), language: str = Form("russian"),
+                suggest: str = Form(default=None)):
     """Вопрос → рабочий бэкенд (:8000) → WAV ответа + текст в заголовках.
 
     Тело и заголовки прокидываем как есть: страница ждёт тот же контракт, что и
-    /voice варианта 1 (WAV + percent-encoded X-Question/X-Answer)."""
+    /voice варианта 1 (WAV + percent-encoded X-Question/X-Answer; X-Suggest —
+    подсказка «возможно, вы хотели спросить…», страница вернёт её полем suggest
+    со следующим вопросом)."""
     audio = await data.read()
     files = {"data": (data.filename or "q.wav", audio, data.content_type or "audio/wav")}
+    form = {"language": language}
+    if suggest:
+        form["suggest"] = suggest
     try:
         async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as c:
-            r = await c.post(BACKEND + "/voice", files=files, data={"language": language})
+            r = await c.post(BACKEND + "/voice", files=files, data=form)
     except Exception as e:
         raise HTTPException(status_code=502,
                             detail=f"Рабочий бэкенд {BACKEND} недоступен: {e!r}")
@@ -104,7 +110,7 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian")):
             detail = r.text[:200]
         raise HTTPException(status_code=r.status_code, detail=detail)
     headers = {}
-    for h in ("x-question", "x-answer"):
+    for h in ("x-question", "x-answer", "x-suggest"):
         if r.headers.get(h):
             headers[h.title()] = r.headers[h]
     return Response(content=r.content,
