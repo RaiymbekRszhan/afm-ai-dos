@@ -135,6 +135,62 @@ function pickNumericColumn(rows) {
   return null;
 }
 
+// ---------- ссылки -> QR-коды ----------
+// Просьба руководителя (2026-07-17): упомянул ответ портал (e-Otinish, qamqor…)
+// — на экране QR-код, чтобы гражданин снял его телефоном. Именованные порталы —
+// словарь с ПРОВЕРЕННЫМИ адресами (LLM url не пишет, только название); явные
+// домены/URL из текста ловятся регекспом. Генерация QR — vendored qrcode.js
+// (MIT, офлайн — сеть АФМ без интернета).
+
+// [регексп упоминания, канонический URL, подпись под QR]
+var QR_PORTALS = [
+  [/\be-?otinish\b|е[- ]?отиниш/i, "https://eotinish.kz", "e-Otinish"],
+  [/\bqamqor(?:\.gov\.kz)?\b|камкор/i, "https://qamqor.gov.kz", "qamqor.gov.kz"],
+  [/\be-?gov\b|\begov\.kz\b|е-?гов/i, "https://egov.kz", "eGov.kz"],
+  [/сайте?\s+агентства|\bсайт\s+афм\b/i,
+   "https://www.gov.kz/memleket/entities/afm", "Сайт АФМ"],
+];
+// Явный URL или голый домен с путём (минимум одна точка + известная зона).
+var QR_URL_RE = /https?:\/\/[^\s«»"'()<>]+|\b(?:[a-z0-9-]+\.)+(?:gov\.kz|kz|com|org)(?:\/[^\s«»"'()<>]*)?/gi;
+
+function extractLinks(text) {
+  var found = [], seen = {};
+  function push(url, label) {
+    var key = url.replace(/\/+$/, "").toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    found.push({ url: url, label: label });
+  }
+  QR_PORTALS.forEach(function (p) {
+    if (p[0].test(text)) push(p[1], p[2]);
+  });
+  (text.match(QR_URL_RE) || []).forEach(function (m) {
+    var url = m.replace(/[.,;:!?]+$/, "");           // знак конца предложения
+    var label = url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    push(/^https?:/.test(url) ? url : "https://" + url, label);
+  });
+  return found;
+}
+
+function renderQrRow(links) {
+  var row = el("div", "qr-row");
+  links.forEach(function (l) {
+    var card = el("div", "qr-card");
+    try {
+      var qr = qrcode(0, "M");   // 0 = автоверсия под длину URL
+      qr.addData(l.url);
+      qr.make();
+      var img = document.createElement("img");
+      img.src = qr.createDataURL(4, 8);   // данные наши (словарь/URL) — не HTML
+      img.alt = l.url;
+      card.appendChild(img);
+    } catch (e) { return; }               // не вышло — просто без этого QR
+    card.appendChild(el("div", "qr-label", l.label));
+    row.appendChild(card);
+  });
+  return row.children.length ? row : null;
+}
+
 // ---------- рендер (браузер) ----------
 
 var CHART_MAX_ROWS = 10;   // больше строк — только таблица, бар-чарт нечитаем
@@ -231,26 +287,35 @@ function renderChart(rows, numeric) {
 }
 
 // Главная точка входа: кладёт разобранный ответ в container.
-// Возвращает true, если была хоть одна таблица (страница расширит панель).
+// Возвращает true, если был «богатый» контент (таблица/QR) — страница расширит панель.
 function renderAnswer(container, text) {
-  var hadTable = false;
+  var rich = false;
   parseAnswer(text).forEach(function (seg) {
     if (seg.type === "text") {
       container.appendChild(el("div", "aline", seg.text));
       return;
     }
-    hadTable = true;
+    rich = true;
     container.appendChild(renderTable(seg.rows));
     var numeric = pickNumericColumn(seg.rows);
     if (numeric && seg.rows.length - 1 <= CHART_MAX_ROWS) {
       container.appendChild(renderChart(seg.rows, numeric));
     }
   });
-  return hadTable;
+  // QR-коды упомянутых порталов/ссылок — одним рядом под ответом
+  if (typeof qrcode !== "undefined") {
+    var links = extractLinks(text);
+    if (links.length) {
+      var row = renderQrRow(links);
+      if (row) { container.appendChild(row); rich = true; }
+    }
+  }
+  return rich;
 }
 
 /* для node-тестов (в браузере module нет) */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { parseAnswer: parseAnswer, parseNum: parseNum,
-                     pickNumericColumn: pickNumericColumn };
+                     pickNumericColumn: pickNumericColumn,
+                     extractLinks: extractLinks };
 }

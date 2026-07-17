@@ -57,6 +57,15 @@
     #out .aidos-table td { color: #cbd5e1; }
     .aidos-chart { display: block; width: 100%; max-width: 900px; height: auto;
            margin: 4px 0 10px; }
+    /* QR-коды порталов (e-Otinish, qamqor…): белая карточка обязательна —
+       QR на тёмном фоне телефоны читают плохо. */
+    .qr-row { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0 4px; }
+    .qr-card { background: #fff; border-radius: 12px; padding: 10px 12px;
+           text-align: center; }
+    .qr-card img { display: block; width: 128px; height: 128px;
+           image-rendering: pixelated; margin: 0 auto; }
+    .qr-card .qr-label { color: #1e293b; font-size: 13px; font-weight: 600;
+           margin-top: 4px; }
 
     #langBadge { position: absolute; bottom: 22px; right: 22px; z-index: 4; display: none;
            align-items: center; justify-content: center; border: 0; cursor: pointer;
@@ -99,6 +108,9 @@
     /* 4+ колонок: мельче и плотнее, иначе не влезает по ширине карточки */
     body.kiosk #out .aidos-table.dense { font-size: clamp(14px, 1.15vh, 26px); }
     body.kiosk #out .aidos-table.dense th, body.kiosk #out .aidos-table.dense td { padding: 8px 10px; }
+    body.kiosk .qr-row { justify-content: center; gap: 22px; }
+    body.kiosk .qr-card img { width: clamp(140px, 15vh, 220px); height: clamp(140px, 15vh, 220px); }
+    body.kiosk .qr-card .qr-label { font-size: clamp(14px, 1.2vh, 26px); }
     body.kiosk .aidos-chart { max-width: 900px; margin: 8px auto 0; }
     /* Ответ С ТАБЛИЦЕЙ — чуть плотнее обычного: вопрос + текст + таблица + график
        должны влезать на киоск 1080×1920 ЦЕЛИКОМ, без прокрутки (замерено на demo). */
@@ -133,6 +145,7 @@
   </div>
   <div id="out"></div>
 
+<script src="/static/qrcode.js"></script>
 <script src="/static/answer_render.js"></script>
 <script>
 // ---------- режим киоска (?kiosk=1) ----------
@@ -299,7 +312,8 @@ if (params.get("demo") === "1") {
     "Малое предпринимательство | 200 МРП\n" +
     "Среднее предпринимательство | 400 МРП\n" +
     "Крупное предпринимательство | 1 000 МРП\n" +
-    "[/ТАБЛИЦА]");
+    "[/ТАБЛИЦА]\n" +
+    "Подать обращение можно через портал e-Otinish, а заявление о мошенничестве — на qamqor.gov.kz.");
 }
 
 const langSel = document.getElementById("lang");

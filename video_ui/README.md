@@ -104,6 +104,15 @@ bash run_api.sh          # весь стек одной командой, ВКЛ
 
 Проверить без бэкенда: `http://localhost:8100/?demo=1` (и `?demo=1&kiosk=1`).
 
+## QR-коды порталов
+
+Упомянул ответ портал или ссылку — под ответом появляются QR-карточки (гражданин
+сканирует телефоном). Именованные порталы берутся из словаря ПРОВЕРЕННЫХ адресов
+`QR_PORTALS` в `static/answer_render.js` (e-Otinish → eotinish.kz, qamqor.gov.kz,
+eGov, «сайт Агентства» → страница АФМ на gov.kz); явные домены из текста ловятся
+регекспом. Новый портал = одна строка в словаре. Генерация QR — офлайн,
+`static/qrcode.js` (vendored [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator), MIT).
+
 ## Темп речи (`SPEECH_RATE` в `static/index.html`)
 
 ```js
