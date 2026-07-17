@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Запуск ВСЕГО голосового стека одной командой:
-#   spark (8809) + rag (8077) + основной API (8000). Русский TTS — по умолчанию
-#   с GPU-сервера АФМ (F5_URL ниже), локальный f5_server НЕ поднимается.
+# Запуск ВСЕГО пилотного стека ОДНОЙ командой:
 #   bash run_api.sh
+# Поднимает: spark (8809, казахский TTS) + rag (8077) + основной API (8000)
+# + video_ui (8100, вариант 2 «видео-аватар» — выбранный путь пилота).
+# Русский TTS — с GPU-сервера АФМ (F5_URL ниже), локальный f5_server НЕ поднимается.
 # Останавливается по Ctrl-C — гасит все дочерние сервисы.
+#
+# Лишнее отключается флагами (по умолчанию поднимается всё нужное пилоту):
+#   WITH_VIDEO_UI=0 bash run_api.sh   # без страницы видео-аватара (:8100)
+#   WITH_SPARK=0    bash run_api.sh   # без казахского TTS (показ только на русском)
+#   USE_LOCAL_F5=1  bash run_api.sh   # + локальный f5_server (когда GPU АФМ недоступен)
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -21,7 +27,10 @@ trap 'kill 0' EXIT INT TERM
 # f5_server НЕ поднимаем. Чтобы вернуть локальный: USE_LOCAL_F5=1 F5_URL=http://localhost:8810/tts bash run_api.sh
 USE_LOCAL_F5="${USE_LOCAL_F5:-0}"
 if [ "$USE_LOCAL_F5" = "1" ]; then bash f5_server/run.sh & fi
-bash spark_server/run.sh &
+# Казахский TTS. WITH_SPARK=0 — не поднимать (демо только на русском): модель
+# Spark грузится долго и ест память, вхолостую её держать незачем.
+WITH_SPARK="${WITH_SPARK:-1}"
+if [ "$WITH_SPARK" = "1" ]; then bash spark_server/run.sh & fi
 
 # RAG (8077) — ОТДЕЛЬНЫЙ venv (lightrag/torch конфликтуют с голосовым слоем).
 # Подоболочка, чтобы активация его venv не протекла в основной shell.
@@ -52,5 +61,11 @@ export SPARK_URL="${SPARK_URL:-http://localhost:8809/tts}"
 
 # Источник ответа — внешний RAG-сервис
 export RAG_URL="${RAG_URL:-http://localhost:8077/ask}"
+
+# Вариант 2 «видео-аватар» (:8100) — ВЫБРАННЫЙ путь пилота, поэтому поднимаем
+# вместе со стеком (страница проксирует вопросы на :8000, отдельный терминал
+# больше не нужен). WITH_VIDEO_UI=0 — не поднимать.
+WITH_VIDEO_UI="${WITH_VIDEO_UI:-1}"
+if [ "$WITH_VIDEO_UI" = "1" ]; then bash video_ui/run.sh & fi
 
 uvicorn app.main:app --host 0.0.0.0 --port 8000
