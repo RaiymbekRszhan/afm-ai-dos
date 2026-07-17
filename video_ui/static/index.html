@@ -197,6 +197,7 @@ function primeAudio() {
 function playAnswer(blob, lang) {
   if (answerUrl) URL.revokeObjectURL(answerUrl);
   answerUrl = URL.createObjectURL(blob);
+  autoScroll = true;                 // новый ответ — прокрутка снова наша
   answerAudio.src = answerUrl;
   // Ставим ПОСЛЕ src: смена источника сбрасывает playbackRate на 1.0.
   // preservesPitch — дефолт true в современных браузерах, но задаём явно
@@ -247,6 +248,22 @@ let ctx, stream, proc, src, chunks = [], recording = false;
 // Исправленная формулировка вопроса из X-Suggest (STT ошибся, RAG не нашёл ответ):
 // уходит полем suggest со следующим запросом, там реплика «да» — согласие.
 let pendingSuggest = null;
+
+// ---------- автопрокрутка ответа ----------
+// Длинный ответ может не влезать в карточку: прокручиваем её синхронно с
+// озвучкой (проговорено 40% — прокручено ~40%, с небольшим опережением, чтобы
+// читаемая строка не упиралась в нижний край). Тронул карточку пальцем/колесом
+// — до конца ЭТОГО ответа больше не вмешиваемся (посетитель читает сам).
+let autoScroll = true;
+["touchstart", "wheel", "pointerdown"].forEach(ev =>
+  out.addEventListener(ev, () => { autoScroll = false; }, { passive: true }));
+answerAudio.addEventListener("timeupdate", () => {
+  if (!autoScroll || !answerAudio.duration) return;
+  const max = out.scrollHeight - out.clientHeight;
+  if (max <= 0) return;
+  const frac = answerAudio.currentTime / answerAudio.duration;
+  out.scrollTop = Math.min(max, frac * max * 1.15);
+});
 
 // Вопрос гражданина вставляем ТОЛЬКО через textContent (речь произвольная — innerHTML
 // был бы XSS на публичном экране).
