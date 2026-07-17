@@ -915,10 +915,21 @@ async def _say(text: str, language: str | None) -> bytes:
 # ровно TTS_F5_GAP_MS (+2×30 мс), одинаковый на каждом шве.
 _EDGE_KEEP_MS = 30
 _EDGE_THRESH = 300  # |int16| ниже — считаем тишиной (тот же порог, что в замерах)
+# «Хвост-сирота»: короткий всплеск в САМОМ конце, оторванный от речи заметной
+# тишиной, — галлюцинация модели в бюджете паддинга («страшный звук» с демо).
+# Живая речь куска — один сплошной сегмент (паузы внутри < _BLOB_JOIN_MS);
+# замер 2026-07-17: артефакт 270–360 мс через >=200 мс тишины, 2 куска из 9.
+_BLOB_JOIN_MS = 180    # тишина короче — внутри речи, сегменты склеиваются
+_BLOB_GAP_MS = 200     # всплеск оторван от речи такой тишиной -> кандидат
+                       # (замер: артефакт отрывается на 200–230 мс, естественные
+                       # паузы внутри речи — до ~190 мс; граница тонкая, поэтому
+                       # вдобавок blob<=500 мс и >=1.5 c речи до него)
+_BLOB_MAX_MS = 500     # длиннее — это речь, не трогаем
+_BLOB_MIN_SPEECH_MS = 1500  # режем хвост только у куска с полноценной речью
 
 
 def _trim_edge_silence(wav_bytes: bytes) -> bytes:
-    """Ровняет тишину в начале/конце WAV до _EDGE_KEEP_MS.
+    """Ровняет тишину по краям WAV до _EDGE_KEEP_MS и режет «хвосты-сироты».
 
     Не 16-битный или вовсе не WAV (сервер прислал что-то иное) — отдаём как есть:
     подрезка — украшение, ронять из-за неё синтез нельзя.
@@ -934,18 +945,39 @@ def _trim_edge_silence(wav_bytes: bytes) -> bytes:
     import array
     samples = array.array("h")
     samples.frombytes(frames)
-    step = nch  # рамка = nch сэмплов; тишина — когда ВСЕ каналы тихие
+    step = nch  # рамка = nch сэмплов; громкая — когда громкий ЛЮБОЙ канал
     n = len(samples) // step
-    first, last = 0, n - 1
-    while first < n and all(abs(samples[first * step + c]) < _EDGE_THRESH
-                            for c in range(step)):
-        first += 1
-    while last > first and all(abs(samples[last * step + c]) < _EDGE_THRESH
-                               for c in range(step)):
-        last -= 1
+    # сегменты речи (паузы короче _BLOB_JOIN_MS склеиваются в один сегмент)
+    join = int(fr * _BLOB_JOIN_MS / 1000)
+    segs: list[tuple[int, int]] = []
+    start = last_loud = None
+    for i in range(n):
+        loud = any(abs(samples[i * step + c]) >= _EDGE_THRESH for c in range(step))
+        if loud:
+            if start is None:
+                start = i
+            last_loud = i
+        elif start is not None and i - last_loud > join:
+            segs.append((start, last_loud))
+            start = None
+    if start is not None:
+        segs.append((start, last_loud))
+    if not segs:
+        return wav_bytes
+    # отрезаем хвосты-сироты (может быть и не один)
+    while len(segs) > 1:
+        bs, be = segs[-1]
+        blob_ms = (be - bs) / fr * 1000
+        gap_ms = (bs - segs[-2][1]) / fr * 1000
+        speech_ms = sum(e - s for s, e in segs[:-1]) / fr * 1000
+        if (blob_ms <= _BLOB_MAX_MS and gap_ms >= _BLOB_GAP_MS
+                and speech_ms >= _BLOB_MIN_SPEECH_MS):
+            segs.pop()
+        else:
+            break
     keep = int(fr * _EDGE_KEEP_MS / 1000)
-    first = max(0, first - keep)
-    last = min(n - 1, last + keep)
+    first = max(0, segs[0][0] - keep)
+    last = min(n - 1, segs[-1][1] + keep)
     out = io.BytesIO()
     with wave.open(out, "wb") as w:
         w.setnchannels(nch)
