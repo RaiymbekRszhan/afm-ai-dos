@@ -10,6 +10,7 @@
 #   WITH_VIDEO_UI=0 bash run_api.sh   # без страницы видео-аватара (:8100)
 #   WITH_SPARK=0    bash run_api.sh   # без казахского TTS (показ только на русском)
 #   USE_LOCAL_F5=1  bash run_api.sh   # + локальный f5_server (когда GPU АФМ недоступен)
+#   USE_ELEVEN=1    bash run_api.sh   # ВЕСЬ TTS (ru+kk) на ElevenLabs — нужен интернет
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -21,6 +22,17 @@ need_venv rag/.venv
 
 # По выходу из скрипта убиваем всю группу процессов (дочерние сервисы).
 trap 'kill 0' EXIT INT TERM
+
+# USE_ELEVEN=1 — весь TTS (русский И казахский) на ElevenLabs (облако, НУЖЕН
+# ИНТЕРНЕТ). Ключ и голос — в .env (ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID,
+# один голос на оба языка). Гасит Spark и не зовёт F5 GPU — они не нужны.
+# Ставим ДО экспортов TTS_PROVIDER/WITH_SPARK ниже, чтобы их ${VAR:-...} увидели.
+USE_ELEVEN="${USE_ELEVEN:-0}"
+if [ "$USE_ELEVEN" = "1" ]; then
+  export TTS_PROVIDER="${TTS_PROVIDER:-eleven}"
+  export TTS_KK_PROVIDER="${TTS_KK_PROVIDER:-eleven}"
+  WITH_SPARK="${WITH_SPARK:-0}"
+fi
 
 # Казахский TTS (Spark, 8809) — свой venv, запускаем в фоне.
 # Русский TTS по умолчанию берём с GPU-сервера АФМ (F5_URL ниже), локальный
