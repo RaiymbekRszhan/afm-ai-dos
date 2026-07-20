@@ -1,6 +1,7 @@
 """Синтез речи (TTS). Один интерфейс synthesize(), провайдеры:
   - f5     : русский (F5-TTS-сервер по HTTP) — с ударениями (RUAccent)
   - spark  : казахский (Spark-сервер по HTTP)
+  - eleven : ElevenLabs (облако) — казахский на eleven_v3 чистый; НУЖЕН ИНТЕРНЕТ
   - say    : системный голос macOS, только для локальной отладки
   - openai : внешний OpenAI-совместимый /audio/speech сервер
 Провайдер выбирается в .env: TTS_PROVIDER / TTS_KK_PROVIDER.
@@ -842,7 +843,11 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
     # Spark своей нарезки не имеет: режем сами, но его предел (3000) куда выше
     # F5-шных 180, поэтому даём предложению запас — чтобы разрез попал на запятую,
     # а не в середину фразы (иначе Spark комкает хвост огрызка).
-    if _provider_for(language) == "spark":
+    if _provider_for(language) == "eleven":
+        # eleven держит длинный текст сам — крупные куски, минимум швов.
+        sent_max = settings.elevenlabs_max_chars
+        group = sent_max
+    elif _provider_for(language) == "spark":
         sent_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
         group = sent_max
     else:
@@ -879,6 +884,8 @@ async def _synthesize_one(text: str, language: str | None = None) -> bytes:
         return await _f5(text, language)
     if provider == "spark":
         return await _spark(text, language)
+    if provider == "eleven":
+        return await _eleven(text, language)
     raise RuntimeError(f"Неизвестный TTS-провайдер: {provider!r}")
 
 
@@ -1090,6 +1097,39 @@ async def _spark(text: str, language: str | None) -> bytes:
                                  json={"text": text, "language": language or "kazakh"})
         resp.raise_for_status()
         return resp.content
+
+
+# ---------- ElevenLabs (облако, казахский) ----------
+async def _eleven(text: str, language: str | None) -> bytes:
+    """ElevenLabs TTS. Просим PCM и оборачиваем в WAV (пайплайн склеивает WAV).
+
+    ⚠️ Ходит в интернет (api.elevenlabs.io) — в сети АФМ без доступа наружу не
+    заработает. Ключ/голос/модель — в .env (ELEVENLABS_*).
+    """
+    import httpx
+    if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id):
+        raise RuntimeError(
+            "TTS=eleven, но не заданы ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID в .env."
+        )
+    sr = 24000  # PCM 16-бит моно; частоту фиксируем — куски склеиваются одинаковыми
+    url = (f"{settings.elevenlabs_url.rstrip('/')}"
+           f"/text-to-speech/{settings.elevenlabs_voice_id}?output_format=pcm_{sr}")
+    async with httpx.AsyncClient(timeout=180) as client:
+        resp = await client.post(
+            url,
+            headers={"xi-api-key": settings.elevenlabs_api_key},
+            json={"text": text, "model_id": settings.elevenlabs_model,
+                  "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}},
+        )
+        resp.raise_for_status()
+        pcm = resp.content
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm)
+    return buf.getvalue()
 
 
 # ---------- OpenAI-совместимый внешний сервер ----------

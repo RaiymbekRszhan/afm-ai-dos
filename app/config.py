@@ -36,11 +36,23 @@ class Settings(BaseSettings):
     # TTS — каждый язык на своём сервере (по HTTP). Провайдеры:
     #   f5     — русский (F5-TTS_RUSSIAN, F5_URL) — с ударениями (RUAccent)
     #   spark  — казахский (Spark-сервер, SPARK_URL)
+    #   eleven — ElevenLabs (облако, ELEVENLABS_*) — казахский на eleven_v3 звучит
+    #            чисто; ⚠️ НУЖЕН ИНТЕРНЕТ (в сети АФМ его нет — только если IT
+    #            откроют доступ к api.elevenlabs.io), платно по символам
     #   say    — системный голос macOS (только локальная отладка)
     #   openai — внешний OpenAI-совместимый /audio/speech сервер
-    tts_provider: str = "f5"        # русский/по умолчанию: f5 | say | openai
-    tts_kk_provider: str = "spark"  # казахский: spark | say | openai
+    tts_provider: str = "f5"        # русский/по умолчанию: f5 | say | openai | eleven
+    tts_kk_provider: str = "spark"  # казахский: spark | eleven | say | openai
     f5_url: str = ""  # HTTP-эндпоинт F5-TTS-сервера (русский TTS)
+    # ElevenLabs (провайдер eleven). Ключ — из .env, в git не попадает. voice_id
+    # выбирается в аккаунте (мужской для офицера). eleven_v3 — самая многоязычная
+    # модель (казахский чистый); если недоступна на тарифе — eleven_multilingual_v2.
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    elevenlabs_model: str = "eleven_v3"
+    elevenlabs_url: str = "https://api.elevenlabs.io/v1"
+    # eleven сам держит длинный текст — не рубим на мелкие куски, как F5 (меньше швов).
+    elevenlabs_max_chars: int = 800
     # Клиентский референс для F5-серверов, которые ждут ref_audio+ref_text в КАЖДОМ
     # запросе (multipart /tts — напр. GPU-сервер АФМ на :8991). Если f5_ref_audio
     # задан — шлём multipart {ref_audio, ref_text, gen_text}; иначе — прежний
