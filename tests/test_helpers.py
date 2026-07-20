@@ -102,6 +102,30 @@ def test_looks_not_found_and_clarify():
     assert "иә" in service.clarify_phrase("Айыппұл қандай?", "kazakh")
 
 
+def test_detect_print_templates():
+    assert service.detect_print_templates("Как подать заявление?") == ["fl", "ul"]
+    assert service.detect_print_templates("Запишитесь на личный приём") == ["priem"]
+    assert service.detect_print_templates("Жеке қабылдауға өтініш беріңіз") == ["fl", "ul", "priem"]
+    assert service.detect_print_templates("Порог контроля — 7 000 000 тенге") == []
+    # НЕ путать личный приём с приёмом документов / часами работы.
+    assert service.detect_print_templates("Приём документов ведётся с 9 до 18.") == []
+    # Каз. «қабылдау» в смысле «принять решение/закон» — НЕ бланк приёма.
+    assert service.detect_print_templates("Шешім қабылдау тәртібі белгіленген.") == []
+    assert service.detect_print_templates("Заң 2009 жылы қабылданды.") == []
+
+
+def test_with_print_offer_speakable_and_before_table():
+    # Приглашение дописано, аватар его проговорит (остаётся после strip таблицы).
+    a = service.with_print_offer("Можно подать обращение через e-Otinish.", "russian")
+    assert "Распечатать образец" in a
+    # Вставляется ПЕРЕД [ТАБЛИЦА], иначе strip_display_blocks срежет его с таблицей.
+    t = service.with_print_offer("Штраф зависит.\n[ТАБЛИЦА]\nA | B\n[/ТАБЛИЦА]", "russian")
+    assert t.index("Распечатать образец") < t.index("[ТАБЛИЦА]")
+    assert "распечатать образец" in tts.strip_display_blocks(t).lower()
+    # Казахский вариант.
+    assert "басып шығару" in service.with_print_offer("Өтініш беріңіз", "kazakh").lower()
+
+
 def test_suggest_question(monkeypatch):
     import asyncio
     from app import service

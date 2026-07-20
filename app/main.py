@@ -233,6 +233,16 @@ async def voice_endpoint(
             if suggestion:
                 answer = service.clarify_phrase(suggestion, lang)
 
+        # Печать образцов: ответ про подачу заявления/жалобы/приём → предлагаем
+        # распечатать бланк. Приглашение ДОПИСЫВАЕМ в ответ (аватар проговорит +
+        # уйдёт в X-Answer на экран), id образцов — в заголовок X-Print. На пути
+        # уточнения (suggestion) не предлагаем — там ещё не ответ по существу.
+        print_ids: list[str] = []
+        if not suggestion:
+            print_ids = service.detect_print_templates(answer)
+            if print_ids:
+                answer = service.with_print_offer(answer, lang)
+
         if settings.tts_enabled:
             try:
                 out_audio = await tts.synthesize(answer, lang)
@@ -248,6 +258,9 @@ async def voice_endpoint(
             if suggestion:
                 # страница вернёт это в поле `suggest` следующего запроса
                 headers["X-Suggest"] = quote(suggestion)
+            if print_ids:
+                # страница покажет кнопку печати и построит меню образцов
+                headers["X-Print"] = ",".join(print_ids)
             return Response(
                 content=out_audio,
                 media_type=f"audio/{settings.tts_format}",
@@ -257,4 +270,6 @@ async def voice_endpoint(
         out = {"question": question, "answer": answer, "sources": result["sources"]}
         if suggestion:
             out["suggest"] = suggestion
+        if print_ids:
+            out["print"] = print_ids
         return out

@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ai-dos — цифровой офицер АФМ</title>
   <style>
-    :root { --bg:#0f172a; --card:#1e293b; --accent:#3b62f6; --muted:#94a3b8; }
+    /* Фон и «карточки» — чёрные: на киоске так текст читается контрастнее, а
+       белые QR-карточки на чёрном подсвечиваются ярче (просьба 2026-07-20; было
+       --bg:#0f172a / --card:#1e293b — слейт-синий, «кричал» бликом на экране). */
+    :root { --bg:#000; --card:#000; --accent:#3b62f6; --muted:#94a3b8; }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg);
@@ -110,9 +113,19 @@
     /* 4+ колонок: мельче и плотнее, иначе не влезает по ширине карточки */
     body.kiosk #out .aidos-table.dense { font-size: clamp(14px, 1.15vh, 26px); }
     body.kiosk #out .aidos-table.dense th, body.kiosk #out .aidos-table.dense td { padding: 8px 10px; }
-    body.kiosk .qr-row { justify-content: center; gap: 22px; }
-    body.kiosk .qr-card img { width: clamp(140px, 15vh, 220px); height: clamp(140px, 15vh, 220px); }
-    body.kiosk .qr-card .qr-label { font-size: clamp(14px, 1.2vh, 26px); }
+    /* QR-код показываем ПОВЕРХ видео — на груди/галстуке аватара (как на старом
+       киоске: гражданин снимает код, не теряя аватара из виду), умеренного
+       размера, а не отдельным блоком под ответом. Overlay живёт внутри #stage,
+       виден только когда в ответе есть ссылка (.on). pointer-events:none — не
+       перехватывает тап/жест (fullscreen, «Задать вопрос»). Размер задаём в vw
+       (=ширина кадра в киоске) — привязан к аватару, не к высоте экрана. */
+    #qrOverlay { position: absolute; left: 0; right: 0; bottom: 7%;
+           z-index: 3; display: none; pointer-events: none; }
+    #qrOverlay.on { display: block; }
+    #qrOverlay .qr-row { margin: 0; gap: 18px; justify-content: center; }
+    #qrOverlay .qr-card { padding: 12px 14px; box-shadow: 0 6px 26px rgba(0,0,0,.55); }
+    #qrOverlay .qr-card img { width: clamp(150px, 23vw, 260px); height: clamp(150px, 23vw, 260px); }
+    #qrOverlay .qr-card .qr-label { font-size: clamp(13px, 1.5vw, 20px); margin-top: 6px; }
 
     /* ---- Увеличение по тапу (просьба руководителя): таблица/график/QR ---- */
     #out .aidos-tablewrap, #out .aidos-chart, #out .qr-card { cursor: zoom-in; }
@@ -140,6 +153,34 @@
     body.kiosk #out.rich { padding: 22px 32px; margin-top: 10px; }
     body.kiosk #out.rich .qline { margin-bottom: 12px; padding-bottom: 10px; }
     body.kiosk #out.rich .aline { font-size: clamp(18px, 1.45vh, 36px); line-height: 1.4; }
+
+    /* ---- Печать образцов заявлений (кнопка + меню вариантов) ----
+       Когда ответ про подачу заявления/жалобы или запись на приём (заголовок
+       X-Print с бэкенда), рядом с «Задать вопрос» встаёт зелёная кнопка печати.
+       Само приглашение аватар ПРОГОВАРИВАЕТ и оно уже в тексте ответа (бэкенд
+       дописал) — отдельной плашки нет. Клик открывает меню выбора образца;
+       печать — form.html в скрытом iframe (с Chrome --kiosk-printing уходит на
+       принтер без диалога). */
+    #printBtn { background: #15925a; }
+    #printBtn[hidden] { display: none; }
+    body.kiosk button#printBtn { font-size: clamp(20px, 1.5vh, 42px); padding: 22px 40px; border-radius: 16px; }
+
+    #printMenu { position: fixed; inset: 0; z-index: 60; display: none;
+           align-items: center; justify-content: center; padding: 4vh 4vw;
+           background: rgba(3, 8, 20, .94); }
+    #printMenu.on { display: flex; }
+    #printCard { background: var(--card); border: 1px solid #334155; border-radius: 22px;
+           padding: 30px 28px; width: min(680px, 92vw); text-align: center; }
+    #printCard h2 { margin: 0 0 6px; font-size: clamp(22px, 2.2vh, 40px); color: #e6edf6; }
+    #printCard .sub { color: var(--muted); font-size: clamp(15px, 1.4vh, 26px); margin-bottom: 18px; }
+    .print-lang { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
+    .print-lang button { background: #0f172a; border: 1px solid #334155; color: #cbd5e1;
+           font-size: clamp(16px, 1.5vh, 28px); padding: 10px 24px; }
+    .print-lang button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .print-opts { display: flex; flex-direction: column; gap: 14px; }
+    .print-opts button { background: var(--accent); font-size: clamp(18px, 1.7vh, 34px); padding: 20px; width: 100%; }
+    #printCancel { margin-top: 18px; background: transparent; border: 1px solid #475569;
+           color: #cbd5e1; font-size: clamp(15px, 1.4vh, 26px); }
   </style>
 </head>
 <body>
@@ -152,6 +193,9 @@
     <video id="idle" src="/static/video/idle.mp4" muted loop playsinline autoplay preload="auto"></video>
     <video id="talk" src="/static/video/talk.mp4" muted loop playsinline preload="auto"></video>
     <button id="langBadge" title="Сменить язык">RU</button>
+    <!-- QR-коды порталов «висят» здесь — поверх видео, на груди/галстуке аватара
+         (см. #qrOverlay в CSS). Наполняет answer_render.js, показ — класс .on. -->
+    <div id="qrOverlay"></div>
     <div id="noVid">
       <div>Нет роликов аватара.</div>
       <div>Положи <code>idle.mp4</code> и <code>talk.mp4</code> в <code>video_ui/static/video/</code></div>
@@ -160,6 +204,9 @@
 
   <div id="bar">
     <button id="rec">🎙 Задать вопрос</button>
+    <!-- Появляется, когда ответ про подачу заявления/приём (см. JS). Печать —
+         через скрытый iframe #printFrame. -->
+    <button id="printBtn" hidden>🖨 Распечатать образец</button>
     <select id="lang">
       <option value="russian">Русский</option>
       <option value="kazakh">Қазақша</option>
@@ -172,12 +219,56 @@
   <div id="zoom"><div id="zoomBody"></div></div>
   <button id="zoomClose" hidden>✕</button>
 
-<script src="/static/qrcode.js"></script>
-<script src="/static/answer_render.js"></script>
+  <!-- Меню выбора образца заявления (открывает кнопка «Распечатать образец»).
+       Кнопки строит JS из подошедших образцов; печать — form.html в iframe. -->
+  <div id="printMenu">
+    <div id="printCard">
+      <h2 id="printTitle">Распечатать образец</h2>
+      <div class="sub" id="printSub">Выберите документ — киоск его распечатает</div>
+      <div class="print-lang">
+        <button data-l="ru">Рус</button>
+        <button data-l="kz">Қаз</button>
+      </div>
+      <div class="print-opts" id="printOpts"></div>
+      <button id="printCancel">Отмена</button>
+    </div>
+  </div>
+  <!-- Скрытый лист для печати: сюда грузится form.html, по нему вызываем print(). -->
+  <iframe id="printFrame" title="печать образца"
+          style="position:fixed; left:-9999px; width:0; height:0; border:0;"></iframe>
+
+<!-- ?v — метка версии: меняешь answer_render.js — поменяй и её. Тогда браузер
+     киоска (даже с закэшированным старьём) увидит НОВЫЙ адрес и скачает свежий
+     файл по ОБЫЧНОЙ кнопке перезагрузки, без Ctrl+Shift+R (на киоске нет
+     клавиатуры). Дальше свежесть держит no-cache из video_ui/server.py. -->
+<script src="/static/qrcode.js?v=20260720"></script>
+<script src="/static/answer_render.js?v=20260720b"></script>
 <script>
 // ---------- режим киоска (?kiosk=1) ----------
 const params = new URLSearchParams(location.search);
-if (params.get("kiosk") === "1") document.body.classList.add("kiosk");
+const KIOSK = params.get("kiosk") === "1";
+if (KIOSK) document.body.classList.add("kiosk");
+
+// ---------- полный экран (?kiosk=1) ----------
+// Прячем адресную строку и хром браузера, чтобы киоск не выглядел как вкладка.
+// Fullscreen API работает ТОЛЬКО из жеста пользователя, поэтому уходим в полный
+// экран на первом же тапе по экрану (кнопка «Задать вопрос» тоже жест — событие
+// всплывает сюда). Надёжнее в проде — запускать Chrome с флагом --kiosk (см.
+// README), но этот путь работает и без него.
+//
+// ⚠️ НЕ включаем Fullscreen API, если окно и так во весь экран (Chrome --kiosk):
+// печать (print()) СБРАСЫВАЕТ Fullscreen API, и киоск «выпадал» из полного экрана.
+// Под --kiosk окно фуллскрин само собой — JS-фуллскрин не нужен и только мешает.
+function browserAlreadyFullscreen() {
+  return window.innerHeight >= screen.height - 2;   // нет хрома → это --kiosk/F11
+}
+function enterFullscreen() {
+  if (!KIOSK || document.fullscreenElement || browserAlreadyFullscreen()) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+  if (req) { try { req.call(el); } catch (e) { /* браузер отказал вне жеста */ } }
+}
+if (KIOSK) document.addEventListener("click", enterFullscreen);
 // Пропорция области видео под аспект роликов (?ar=9/16, 1/1, 16/9) — чтобы не резало кадр.
 const ar = params.get("ar");
 if (ar && /^[\d.]+\/[\d.]+$|^[\d.]+$/.test(ar))
@@ -189,6 +280,9 @@ if (ar && /^[\d.]+\/[\d.]+$|^[\d.]+$/.test(ar))
 const idleV = document.getElementById("idle");
 const talkV = document.getElementById("talk");
 const noVid = document.getElementById("noVid");
+// QR-overlay поверх видео (на груди аватара). Наполняет renderAnswer, прячем сами.
+const qrOverlay = document.getElementById("qrOverlay");
+function hideQr() { qrOverlay.classList.remove("on"); qrOverlay.textContent = ""; }
 
 function showTalking() {
   try { talkV.currentTime = 0; } catch (e) { /* метаданные ещё не готовы */ }
@@ -368,25 +462,118 @@ answerAudio.addEventListener("timeupdate", () => {
   out.scrollTop = Math.min(max, frac * max * 1.15);
 });
 
+// ---------- печать образцов заявлений ----------
+// Когда ответ про подачу заявления/жалобы или запись на приём
+// (detectPrintTemplates из answer_render.js), рядом с «Задать вопрос» встаёт
+// зелёная кнопка печати, а под ответом — приглашение аватара. Клик открывает
+// меню выбора образца; печать — form.html (static/templates/) в скрытом iframe.
+// На киоске Chrome запускают с --kiosk-printing → лист уходит на принтер БЕЗ
+// диалога (см. README). Без флага открывается обычный диалог печати браузера.
+const printBtn = document.getElementById("printBtn");
+const printMenu = document.getElementById("printMenu");
+const printOpts = document.getElementById("printOpts");
+const printFrame = document.getElementById("printFrame");
+const printTitle = document.getElementById("printTitle");
+const printSub = document.getElementById("printSub");
+
+const TEMPLATE_LABELS = {
+  fl:    { ru: "Для физических лиц",     kz: "Жеке тұлғаларға" },
+  ul:    { ru: "Для юридических лиц",    kz: "Заңды тұлғаларға" },
+  priem: { ru: "Запись на личный приём", kz: "Жеке қабылдауға жазылу" },
+};
+const PRINT_BTN_LABEL = { ru: "🖨 Распечатать образец", kz: "🖨 Үлгіні басып шығару" };
+const PRINT_MENU_T = {
+  ru: { title: "Распечатать образец", sub: "Выберите документ — киоск его распечатает" },
+  kz: { title: "Үлгіні басып шығару", sub: "Құжатты таңдаңыз — киоск оны басып шығарады" },
+};
+
+let currentTemplates = [];   // подошедшие к ответу образцы (id-шники fl/ul/priem)
+let printLang = "ru";        // язык печатаемого бланка (по языку ответа, переключаем в меню)
+
+function langCode(lang) { return (lang === "kazakh" || lang === "kz") ? "kz" : "ru"; }
+
+// Кнопка печати в баре. Список образцов — точный из заголовка X-Print (бэкенд),
+// иначе (демо без бэкенда) — детект по тексту ответа. Приглашение НЕ рисуем: его
+// аватар проговаривает и оно уже в тексте ответа (бэкенд дописал, органично).
+function updatePrintButton(printIds, text, lang) {
+  currentTemplates = (printIds && printIds.length)
+    ? printIds
+    : ((typeof detectPrintTemplates === "function") ? detectPrintTemplates(text || "") : []);
+  if (!currentTemplates.length) { printBtn.hidden = true; return; }
+  printLang = langCode(lang);
+  printBtn.hidden = false;
+  printBtn.textContent = PRINT_BTN_LABEL[printLang];
+}
+
+// Меню выбора образца на языке printLang (кнопки — из подошедших образцов).
+function renderPrintMenu() {
+  const t = PRINT_MENU_T[printLang];
+  printTitle.textContent = t.title;
+  printSub.textContent = t.sub;
+  printMenu.querySelectorAll(".print-lang button").forEach(b =>
+    b.classList.toggle("active", b.dataset.l === printLang));
+  printOpts.textContent = "";
+  currentTemplates.forEach(id => {
+    const b = document.createElement("button");
+    b.textContent = TEMPLATE_LABELS[id][printLang];
+    b.onclick = () => doPrint(id, printLang);
+    printOpts.appendChild(b);
+  });
+}
+function openPrintMenu() { renderPrintMenu(); printMenu.classList.add("on"); }
+function closePrintMenu() { printMenu.classList.remove("on"); }
+
+// Печать: грузим form.html в iframe и по загрузке вызываем его print(). Нонс в
+// URL — чтобы повторная печать того же бланка снова триггерила onload.
+function doPrint(type, lang) {
+  const url = "/static/templates/form.html?type=" + type + "&lang=" + lang + "&_=" + Date.now();
+  printFrame.onload = function () {
+    setTimeout(function () {
+      try { printFrame.contentWindow.focus(); printFrame.contentWindow.print(); }
+      catch (e) { st.textContent = "печать недоступна: " + e.message; }
+    }, 200);   // дать раскладке/шрифтам дорисоваться
+  };
+  printFrame.src = url;
+  closePrintMenu();
+}
+
+function hidePrint() { printBtn.hidden = true; closePrintMenu(); currentTemplates = []; }
+
+printBtn.onclick = openPrintMenu;
+document.getElementById("printCancel").onclick = closePrintMenu;
+printMenu.addEventListener("click", e => { if (e.target === printMenu) closePrintMenu(); });
+printMenu.querySelectorAll(".print-lang button").forEach(b =>
+  b.onclick = () => { printLang = b.dataset.l; renderPrintMenu(); });
+
 // Вопрос гражданина вставляем ТОЛЬКО через textContent (речь произвольная — innerHTML
 // был бы XSS на публичном экране).
 function setIdle() {
+  hideQr();                  // покоя ждём без QR на аватаре
+  hidePrint();               // и без кнопки печати
   out.className = "idle";
   out.textContent = "Задайте вопрос голосом — цифровой офицер ответит по базе законов РК.";
 }
-function showQA(q, a) {
+function showQA(q, a, lang, printIds) {
   closeZoom();               // новый ответ — увеличенное окно прошлого закрыть
+  closePrintMenu();
+  hideQr();                  // QR прошлого ответа убрать (новый его пере-наполнит)
   out.className = "";
   out.textContent = "";
   if (q) { const d = document.createElement("div"); d.className = "qline";
            d.textContent = "Вопрос: " + q; out.appendChild(d); }
   // Ответ рендерит answer_render.js: проза (textContent — XSS-safe) + блоки
-  // [ТАБЛИЦА] из базы таблицей и бар-чартом. Была таблица — панель повыше.
-  if (a) out.classList.toggle("rich", renderAnswer(out, a));
+  // [ТАБЛИЦА] из базы таблицей и бар-чартом. QR-коды порталов — в overlay поверх
+  // видео (qrOverlay, на груди аватара). Была таблица — панель повыше.
+  // Приглашение распечатать бланк уже ВНУТРИ a (бэкенд дописал) — рендерится
+  // прозой как часть ответа, аватар его проговаривает.
+  if (a) out.classList.toggle("rich", renderAnswer(out, a, qrOverlay));
+  updatePrintButton(printIds, a || "", lang);   // нужен ли бланк — только кнопка
   out.scrollTop = 0;
 }
 function showProcessing() {
   closeZoom();
+  hideQr();
+  hidePrint();
   out.className = "idle";
   out.textContent = "Обрабатываю запрос…";
 }
@@ -405,7 +592,10 @@ if (params.get("demo") === "1") {
     "Среднее предпринимательство | 400 МРП\n" +
     "Крупное предпринимательство | 1 000 МРП\n" +
     "[/ТАБЛИЦА]\n" +
-    "Подать обращение можно через портал e-Otinish, а заявление о мошенничестве — на qamqor.gov.kz.");
+    "Подать обращение можно через портал e-Otinish, а заявление о мошенничестве — на qamqor.gov.kz. " +
+    // В реальном потоке это приглашение дописывает бэкенд (service.with_print_offer)
+    // и аватар его проговаривает; в демо добавляем строкой — показать, как читается.
+    "Если хотите, я могу распечатать образец заявления — нажмите кнопку «Распечатать образец».");
 }
 
 const langSel = document.getElementById("lang");
@@ -473,7 +663,11 @@ async function stopAndSend() {
     const a = decodeURIComponent(r.headers.get("x-answer") || "");
     const sug = r.headers.get("x-suggest");
     pendingSuggest = sug ? decodeURIComponent(sug) : null;
-    showQA(q, a);
+    // X-Print — какие образцы предложить (fl/ul/priem), решил бэкенд по ответу.
+    const printHdr = r.headers.get("x-print");
+    const printIds = printHdr ? printHdr.split(",").filter(Boolean) : null;
+    showQA(q, a, askedLang, printIds);   // askedLang — язык вопроса: на нём кнопка/бланк
+
     st.textContent = "ответ готов";
     playAnswer(await r.blob(), askedLang);   // звук + ролик «говорит», по окончании — idle
   } catch (e) {

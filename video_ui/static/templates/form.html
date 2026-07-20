@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Образец заявления — АФМ РК</title>
+<!--
+  Печатные образцы заявлений киоска Ai-dos. Один параметризованный документ на
+  все шесть форм: ?type=fl|ul|priem & lang=ru|kz. Открывается в скрытом iframe
+  на киоск-странице, которая вызывает print() (см. video_ui/static/index.html).
+  Тексты — из официальных .docx (Downloads/Образцы), воспроизведены как чистый
+  печатный HTML (LibreOffice в сети АФМ нет; HTML печатается браузером нативно и
+  тихо с Chrome --kiosk-printing). Query-параметры только ВЫБИРАЮТ форму из
+  фиксированной карты — в разметку не подставляются (без инъекций).
+-->
+<style>
+  @page { size: A4; margin: 15mm 18mm 14mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: "Times New Roman", "PT Serif", Georgia, serif;
+         font-size: 13.5pt; line-height: 1.4; color: #000; }
+  .sheet { }
+  .to { margin-left: 48%; white-space: pre-line; margin-bottom: 12px; }
+  .field { display: flex; align-items: flex-end; gap: 6px; margin: 4px 0; }
+  .field > span:not(.fill) { white-space: nowrap; }
+  .fill { flex: 1 1 auto; min-width: 40px; border-bottom: 1px solid #000; height: 1.25em; }
+  .cap { font-size: 9pt; line-height: 1.15; text-align: center; margin: 0 0 7px; }
+  .cap.left { text-align: left; }
+  .plain { margin: 4px 0; }
+  .title { text-align: center; font-weight: bold; letter-spacing: 4px; margin: 18px 0 12px; }
+  .ln { border-bottom: 1px solid #000; height: 1.7em; margin: 3px 0; }
+  .attach { margin-top: 12px; }
+  .attach .head { margin-bottom: 4px; }
+  .bul { display: flex; align-items: flex-end; gap: 6px; margin: 5px 0 5px 20px; }
+  .bul::before { content: "•"; }
+  .num { display: flex; align-items: flex-end; gap: 6px; margin: 6px 0 6px 40px; }
+  .sig { margin-top: 30px; }
+  .sigline { width: 46%; height: 1.4em; border-bottom: 1px solid #000; }
+  .sigcap { width: 46%; text-align: center; font-size: 9pt; }
+  #err { padding: 40px; font-family: sans-serif; color: #900; }
+  /* Экранный предпросмотр — как лист бумаги (при печати фон/тень убираем). */
+  @media screen {
+    body { background: #4b4f52; padding: 22px 0; }
+    .sheet { width: 210mm; min-height: 297mm; margin: 0 auto;
+             padding: 15mm 18mm; background: #fff; box-shadow: 0 2px 18px rgba(0,0,0,.55); }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ---- строительные блоки (все тексты — мои константы, не из query) ----
+function esc(s){ return String(s); }               // тексты статические, но пусть будет
+function to(lang){
+  return lang === "kz"
+    ? "ҚР Қаржылық мониторинг агенттігінің\nтөрағасы Ж.Қ. Элимановқа"
+    : "Председателю Агентства РК\nпо финансовому мониторингу\nЭлиманову Ж.К.";
+}
+function field(label){ return '<div class="field"><span>'+label+'</span><span class="fill"></span></div>'; }
+function twoField(a,b){ return '<div class="field"><span>'+a+'</span><span class="fill"></span>'+
+                               '<span>'+b+'</span><span class="fill"></span></div>'; }
+function cap(t){ return '<div class="cap">'+t+'</div>'; }
+function capBlank(t){ return '<div class="ln"></div>'+cap(t); }   // подчёркнутое поле + подпись под ним
+function title(t){ return '<div class="title">'+t+'</div>'; }
+function lines(n){ var s=""; for(var i=0;i<n;i++) s+='<div class="ln"></div>'; return s; }
+function bullet(pre){ return '<div class="bul">'+(pre?'<span>'+pre+'</span>':'')+'<span class="fill"></span></div>'; }
+function num(n){ return '<div class="num"><span>'+n+')</span><span class="fill"></span></div>'; }
+function sig(t){ return '<div class="sig"><div class="sigline"></div><div class="sigcap">'+t+'</div></div>'; }
+
+// адресный блок заявителя
+function addrRu(){
+  return field('город') + field('улица') +
+    '<div class="field"><span>дом</span><span class="fill"></span>' +
+    '<span>, кв.</span><span class="fill" style="flex:0 0 30%"></span></div>' +
+    field('тел/сот.:') + field('почт. адрес:');
+}
+function addrKz(){
+  return twoField('қала','көше') +
+    '<div class="field"><span>үй</span><span class="fill"></span>' +
+    '<span>пәтер</span><span class="fill" style="flex:0 0 34%"></span></div>' +
+    field('тел/сот.') + field('пошталық мекенжайы:');
+}
+
+// ---- шесть форм ----
+var FORMS = {
+  "fl-ru": function(){ return (
+    '<div class="to">'+to("ru")+'</div>' +
+    '<div class="field"><span>от</span><span class="fill"></span></div>' + cap('(ФИО заявителя)') +
+    field('ИИН') +
+    '<div class="plain">адрес фактического проживания:</div>' + addrRu() +
+    title('ЗАЯВЛЕНИЕ') + lines(12) +
+    '<div class="attach"><div class="head">Перечень прилагаемых документов (копии):</div>' + lines(3) + '</div>' +
+    sig('(дата, подпись)') ); },
+
+  "fl-kz": function(){ return (
+    '<div class="to">'+to("kz")+'</div>' +
+    capBlank('(арыз иесінің ТАӘ)') +
+    field('ЖСН') +
+    '<div class="plain">нақты тұратын мекенжайы:</div>' + addrKz() +
+    title('АРЫЗ') + lines(12) +
+    '<div class="attach"><div class="head">Қосымша: қоса берілетін құжаттардың тізбесі (көшірмелері)</div>' + lines(3) + '</div>' +
+    sig('(күні, қолы)') ); },
+
+  "ul-ru": function(){ return (
+    '<div class="to">'+to("ru")+'</div>' +
+    '<div class="field"><span>от</span><span class="fill"></span></div>' + cap('(наименование юр.лица либо ФИО представителя)') +
+    field('БИН/ИИН') +
+    '<div class="plain">местонахождение юр. лица / адрес проживания:</div>' + addrRu() +
+    title('ЗАЯВЛЕНИЕ') + lines(11) +
+    '<div class="attach"><div class="head">Перечень прилагаемых документов (копии):</div>' +
+    bullet('Доверенность на представителя') + bullet('') + bullet('') + bullet('') + bullet('') + '</div>' +
+    sig('(дата, подпись, печать юр. лица, при наличии)') ); },
+
+  "ul-kz": function(){ return (
+    '<div class="to">'+to("kz")+'</div>' +
+    capBlank('(заңды тұлғаның атауы не өкілінің ТАӘ)') +
+    field('БСН/ЖСН') +
+    '<div class="plain">заңды тұлғаның орналасқан жері / тұратын мекенжайы:</div>' + addrKz() +
+    title('АРЫЗ') + lines(11) +
+    '<div class="attach"><div class="head">Қосымша: қоса берілетін құжаттардың тізбесі (көшірмелері)</div>' +
+    bullet('Өкілге арналған уәкілеттік') + bullet('') + bullet('') + bullet('') + bullet('') + '</div>' +
+    sig('(күні, қолы, заңды тұлғаның мөрі, бар болса)') ); },
+
+  "priem-ru": function(){ return (
+    '<div class="to">'+to("ru")+'</div>' +
+    '<div class="field"><span>от</span><span class="fill"></span></div>' + cap('(ФИО заявителя)') +
+    field('ИИН') +
+    '<div class="plain">адрес фактического проживания:</div>' + addrRu() +
+    title('ЗАЯВЛЕНИЕ') +
+    '<div class="field"><span>Прошу записать меня на личный прием к</span><span class="fill"></span></div>' +
+    '<div class="ln"></div>' + cap('(указать ФИО должностного лица, к которому желаете записаться на прием)') +
+    '<div class="field"><span>по следующему вопросу</span><span class="fill"></span></div>' +
+    cap('(изложить суть обращения, требований, предложений и другие обстоятельства, наименование органа,<br>должностного лица, чьи административный акт, действие (бездействие) оспариваются)') +
+    lines(6) +
+    '<div class="attach"><div class="head">Приложение: перечень прилагаемых документов (копии)</div>' +
+    num(1) + num(2) + num(3) + '</div>' +
+    sig('(дата, подпись)') ); },
+
+  "priem-kz": function(){ return (
+    '<div class="to">'+to("kz")+'</div>' +
+    capBlank('(арыз иесінің ТАӘ)') +
+    field('ЖСН') +
+    '<div class="plain">нақты тұратын мекенжайы:</div>' + addrKz() +
+    title('АРЫЗ') +
+    '<div class="field"><span>Мені</span><span class="fill"></span></div>' +
+    cap('(қабылдауға жазылғыңыз келетін лауазымды тұлғаның толық аты-жөнін көрсетіңіз)') +
+    '<div class="field"><span>жеке қабылдауға жазып беруді сұраймын, келесі мәселе бойынша</span><span class="fill"></span></div>' +
+    cap('(өтініш, талаптар, ұсыныстардың мәнін және басқа да жағдайларды, әкімшілік актісі,<br>әкімшілік әрекеті (әрекетсіздігі) оспаланып жатқан органның, лауазымды тұлғаның атауын баяндау)') +
+    lines(6) +
+    '<div class="attach"><div class="head">Қосымша: қоса берілетін құжаттардың тізбесі (көшірмелері)</div>' +
+    num(1) + num(2) + num(3) + '</div>' +
+    sig('(күні, қолы)') ); },
+};
+
+// ---- выбор формы по query (валидируем, в разметку не подставляем) ----
+var p = new URLSearchParams(location.search);
+var type = p.get("type"), lang = (p.get("lang") === "kz") ? "kz" : "ru";
+var key = (["fl","ul","priem"].indexOf(type) !== -1 ? type : "fl") + "-" + lang;
+var root = document.getElementById("root");
+if (FORMS[key]) {
+  root.className = "sheet";
+  root.innerHTML = FORMS[key]();   // содержимое — только мои константы
+  document.title = "Образец — " + key;
+} else {
+  root.innerHTML = '<div id="err">Неизвестный образец: ' + key + '</div>';
+}
+</script>
+</body>
+</html>

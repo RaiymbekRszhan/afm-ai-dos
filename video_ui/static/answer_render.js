@@ -135,6 +135,24 @@ function pickNumericColumn(rows) {
   return null;
 }
 
+// ---------- когда предлагать печать образца заявления ----------
+// По смыслу ответа решаем, нужны ли гражданину бумажные образцы (подать
+// заявление/жалобу физ- или юрлицом; записаться на личный приём). Триггеры — по
+// словам ответа, как у QR-порталов: без изменений в бэкенде/RAG. Возвращаем
+// id-шники образцов ("fl"/"ul"/"priem") в порядке показа; пусто — печати нет.
+// Печатает их video_ui/static/templates/form.html (?type=&lang=).
+var PRINT_RE_APP = /заявлени|обращени|жалоб|пожалов|ходатайств|подать|подаёт|податч|подач|арыз|шағым|өтініш/i;
+// «Приём» — только личный приём. Голое каз. «қабылдау» не берём (значит и
+// «принять» — шешім/заң қабылдау). Синхронно с service.py на бэкенде.
+var PRINT_RE_PRIEM = /личн\w*\s+при[еёи]м|на\s+при[еёи]м|запис\w*[^.]{0,40}при[еёи]м|при[еёи]м\w*\s+граждан|жеке\s+қабылдау|қабылдауға\s+жаз/i;
+
+function detectPrintTemplates(text) {
+  var t = text || "", out = [];
+  if (PRINT_RE_APP.test(t)) { out.push("fl"); out.push("ul"); }
+  if (PRINT_RE_PRIEM.test(t)) out.push("priem");
+  return out;
+}
+
 // ---------- ссылки -> QR-коды ----------
 // Просьба руководителя (2026-07-17): упомянул ответ портал (e-Otinish, qamqor…)
 // — на экране QR-код, чтобы гражданин снял его телефоном. Именованные порталы —
@@ -144,7 +162,7 @@ function pickNumericColumn(rows) {
 
 // [регексп упоминания, канонический URL, подпись под QR]
 var QR_PORTALS = [
-  [/\be-?otinish\b|е[- ]?отиниш/i, "https://eotinish.kz", "e-Otinish"],
+  [/\be-?otinish\b|е[- ]?отиниш/i, "https://eotinish.kz", "eotinish.kz"],
   [/\bqamqor(?:\.gov\.kz)?\b|камкор/i, "https://qamqor.gov.kz", "qamqor.gov.kz"],
   [/\be-?gov\b|\begov\.kz\b|е-?гов/i, "https://egov.kz", "eGov.kz"],
   [/сайте?\s+агентства|\bсайт\s+афм\b/i,
@@ -330,8 +348,12 @@ function renderProse(text) {
 }
 
 // Главная точка входа: кладёт разобранный ответ в container.
-// Возвращает true, если был «богатый» контент (таблица/QR) — страница расширит панель.
-function renderAnswer(container, text) {
+// qrContainer (необязателен) — куда положить QR-коды. Если задан (киоск: overlay
+// поверх видео, на груди аватара), QR идут туда; иначе — под ответом (старое
+// поведение / dev). Возвращает true, если в container попал «богатый» контент
+// (таблица) — страница расширит панель. QR в overlay на richness НЕ влияет:
+// ответ-отказ «обратитесь на eotinish.kz» остаётся обычным текстом.
+function renderAnswer(container, text, qrContainer) {
   var rich = false;
   parseAnswer(text).forEach(function (seg) {
     if (seg.type === "text") {
@@ -345,20 +367,25 @@ function renderAnswer(container, text) {
       container.appendChild(renderChart(seg.rows, numeric));
     }
   });
-  // QR-коды упомянутых порталов/ссылок — одним рядом под ответом
+  // QR-коды упомянутых порталов/ссылок. В overlay (qrContainer) — очищаем и
+  // показываем/прячем его классом .on; без overlay — рядом под ответом.
+  var qrTarget = qrContainer || container, hasQr = false;
+  if (qrContainer) qrContainer.textContent = "";
   if (typeof qrcode !== "undefined") {
     var links = extractLinks(text);
     if (links.length) {
       var row = renderQrRow(links);
-      if (row) { container.appendChild(row); rich = true; }
+      if (row) { qrTarget.appendChild(row); hasQr = true; }
     }
   }
-  return rich;
+  if (qrContainer) { qrContainer.classList.toggle("on", hasQr); return rich; }
+  return rich || hasQr;
 }
 
 /* для node-тестов (в браузере module нет) */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { parseAnswer: parseAnswer, parseNum: parseNum,
                      pickNumericColumn: pickNumericColumn,
-                     extractLinks: extractLinks, wordWeight: wordWeight };
+                     extractLinks: extractLinks, wordWeight: wordWeight,
+                     detectPrintTemplates: detectPrintTemplates };
 }

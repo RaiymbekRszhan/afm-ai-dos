@@ -33,6 +33,25 @@ BACKEND = os.environ.get("AIDOS_BACKEND", "http://localhost:8000").rstrip("/")
 BACKEND_TIMEOUT = float(os.environ.get("AIDOS_BACKEND_TIMEOUT", "300"))
 
 app = FastAPI(title="Ai-dos — киоск «видео-аватар»", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def _no_stale_assets(request, call_next):
+    """Страница и её код (html/js/css) — всегда свежие, без ручной очистки кэша.
+
+    StaticFiles не шлёт Cache-Control, поэтому браузер эвристически кэшировал
+    старый answer_render.js и по F5 его НЕ перечитывал — правки (QR над аватаром)
+    на киоске «не применялись». `no-cache` заставляет браузер каждый раз
+    сверяться с сервером (ETag → 304, если не менялся: дёшево, файлы локальные) и
+    подхватывать новую версию сразу. Ролики (.mp4) НЕ трогаем — они тяжёлые,
+    пусть кэшируются, иначе перекачивались бы на каждой загрузке страницы."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith((".html", ".js", ".css")):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
@@ -106,7 +125,7 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
             detail = r.text[:200]
         raise HTTPException(status_code=r.status_code, detail=detail)
     headers = {}
-    for h in ("x-question", "x-answer", "x-suggest"):
+    for h in ("x-question", "x-answer", "x-suggest", "x-print"):
         if r.headers.get(h):
             headers[h.title()] = r.headers[h]
     return Response(content=r.content,
