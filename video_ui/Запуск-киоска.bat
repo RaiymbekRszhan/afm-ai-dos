@@ -18,8 +18,12 @@ if not exist "%CHROME%" (
   exit /b 1
 )
 
-rem --kiosk              - полный экран без адресной строки
-rem --kiosk-printing     - печать сразу на принтер по умолчанию, без диалога
-rem --unsafely-...secure - разрешить микрофон на http-адресе киоска
-rem --user-data-dir      - отдельный чистый профиль (нужен для флага микрофона)
-start "" "%CHROME%" --kiosk --kiosk-printing --unsafely-treat-insecure-origin-as-secure="http://192.168.18.42:8100" --user-data-dir="C:\aidos-kiosk" "%URL%"
+rem --kiosk                       - полный экран без адресной строки
+rem --kiosk-printing              - печать сразу на принтер по умолчанию, без диалога
+rem --use-fake-ui-for-media-stream- ВЫДАЁТ доступ к микрофону автоматически (в
+rem                                 режиме --kiosk окно разрешения не всплывает,
+rem                                 иначе микрофон не включить). Берётся микрофон
+rem                                 по умолчанию из Windows (Параметры - Звук - Ввод).
+rem --unsafely-...secure          - разрешить микрофон на http-адресе киоска
+rem --user-data-dir               - отдельный чистый профиль (нужен для флагов выше)
+start "" "%CHROME%" --kiosk --kiosk-printing --use-fake-ui-for-media-stream --unsafely-treat-insecure-origin-as-secure="http://192.168.18.42:8100" --user-data-dir="C:\aidos-kiosk" "%URL%"
