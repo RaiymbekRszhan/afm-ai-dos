@@ -173,7 +173,7 @@ function makeRecorder(btn, statusEl, onReady) {
   };
 }
 
-// показать ссылку «скачать WAV» — чтобы забрать ответ в Unreal (MetaHuman Performance)
+// показать ссылку «скачать WAV» — удобно забрать озвученный ответ файлом
 // Прежний object-URL освобождаем: иначе за долгую киоск-сессию память вкладки растёт.
 function offerDownload(linkId, blob, name) {
   const a = document.getElementById(linkId);

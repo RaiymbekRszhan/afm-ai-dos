@@ -233,8 +233,7 @@ curl -X POST http://localhost:8000/speak -H 'Content-Type: application/json' \
 
 `run_api.sh` — для отладки; для боевого режима — systemd-юниты + сторож `/health`:
 [deploy/README.md](deploy/README.md) (автозапуск при загрузке, рестарт при падении
-и при зависании). Жив ли аватар-клиент (Windows-ПК) — `curl http://СЕРВЕР:8000/health`
-→ `node.watching: true`.
+и при зависании).
 
 ---
 
