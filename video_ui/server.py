@@ -26,13 +26,13 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_DIR = os.path.join(_DIR, "static")
 _VIDEO_DIR = os.path.join(_STATIC_DIR, "video")
 
-# Рабочий бэкенд (вариант 1), куда проксируем вопросы.
+# Рабочий бэкенд (:8000), куда проксируем вопросы.
 BACKEND = os.environ.get("AIDOS_BACKEND", "http://localhost:8000").rstrip("/")
 # /voice — самый долгий путь (STT + RAG + TTS). На GPU ~секунды, на CPU-TTS — минуты,
 # поэтому таймаут щедрый: лучше подождать, чем оборвать ответ на демонстрации.
 BACKEND_TIMEOUT = float(os.environ.get("AIDOS_BACKEND_TIMEOUT", "300"))
 
-app = FastAPI(title="Ai-dos — вариант 2 (видео-аватар)", docs_url=None, redoc_url=None)
+app = FastAPI(title="Ai-dos — киоск «видео-аватар»", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
@@ -84,8 +84,8 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
                 suggest: str = Form(default=None)):
     """Вопрос → рабочий бэкенд (:8000) → WAV ответа + текст в заголовках.
 
-    Тело и заголовки прокидываем как есть: страница ждёт тот же контракт, что и
-    /voice варианта 1 (WAV + percent-encoded X-Question/X-Answer; X-Suggest —
+    Тело и заголовки прокидываем как есть: контракт /voice бэкенда —
+    WAV + percent-encoded X-Question/X-Answer (X-Suggest —
     подсказка «возможно, вы хотели спросить…», страница вернёт её полем suggest
     со следующим вопросом)."""
     audio = await data.read()
