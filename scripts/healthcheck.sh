@@ -63,7 +63,9 @@ check_health(){ # check_health "Имя" URL  — ждёт {"status":"ok"} на /
 
 check_ask(){ # check_ask lang "вопрос"  — ждёт СОДЕРЖАТЕЛЬНЫЙ ответ RAG по базе
   local lang="$1" q="$2" body ans
-  body="$(curl -s --max-time "${RAG_TIMEOUT:-180}" -X POST "$RAG/ask" \
+  # По умолчанию > LLM_TIMEOUT в rag/ragsvc/config.py (240 с) — иначе curl обрывает
+  # раньше, чем RAG-сервис успевает сам честно дождаться LLM (ложный FAIL).
+  body="$(curl -s --max-time "${RAG_TIMEOUT:-260}" -X POST "$RAG/ask" \
         -H 'Content-Type: application/json' \
         --data "$(payload question "$q" lang "$lang" with_sources false)")" || true
   ans="$(printf '%s' "$body" | jget answer)"

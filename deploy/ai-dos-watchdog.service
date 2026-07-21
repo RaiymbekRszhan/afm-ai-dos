@@ -2,6 +2,10 @@
 Description=Ai-dos сторож: /health оркестратора не отвечает -> restart ai-dos-api
 # oneshot, запускается по ai-dos-watchdog.timer. Работает от root: нужен
 # systemctl restart. Сам скрипт только читает /health и пишет счётчик в /run.
+# Не блокирует пилот, но для боевой эксплуатации root шире, чем нужно (скрипт
+# делает ровно один systemctl restart ai-dos-api) — узкий sudoers-рецепт,
+# сужающий это до непривилегированного пользователя, см. deploy/README.md
+# «Сужение прав watchdog».
 
 [Service]
 Type=oneshot

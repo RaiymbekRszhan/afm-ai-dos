@@ -57,3 +57,25 @@ sudo systemctl stop ai-dos-f5        # остановить сервис
   После правки `rag/data/` — пересобери индекс (`ingest`) и `restart ai-dos-rag`.
 - Фронтенд пилота — киоск-страница `video_ui/` (:8100), поднимается вместе со
   стеком (`run_api.sh`) или отдельным юнитом при желании.
+
+## Сужение прав watchdog (перед боевой эксплуатацией)
+`ai-dos-watchdog.service` сейчас работает от root (нужен `systemctl restart`).
+Для пилота это не блокер, но для 24/7-эксплуатации лучше не держать root ради
+одной команды. Вариант — запускать сторож от того же пользователя `ai-dos`, что
+и остальные сервисы, и выдать ему через sudoers только этот один рестарт:
+
+```bash
+# /etc/sudoers.d/ai-dos-watchdog (0440, редактировать через visudo -f)
+ai-dos ALL=(root) NOPASSWD: /usr/bin/systemctl restart ai-dos-api
+```
+
+Затем в `ai-dos-watchdog.service` добавить `User=ai-dos` и `[Service]` секцию,
+а в `scripts/api_watchdog.sh` заменить `systemctl restart "$UNIT"` на
+`sudo systemctl restart "$UNIT"`. `/run/ai-dos-watchdog.fails` (счётчик неудач)
+при этом нужно перенести из `/run` (root-only на запись) в каталог, который
+systemd создаст для пользователя `ai-dos` — добавь в юнит
+`RuntimeDirectory=ai-dos-watchdog` и поменяй `STATE` в скрипте на
+`/run/ai-dos-watchdog/fails`. Это стоит проверить руками на самом сервере
+(`sudo -u ai-dos sudo systemctl restart ai-dos-api` должен пройти без пароля,
+любая другая команда через `sudo -u ai-dos sudo ...` — нет) перед тем, как
+полагаться на это в бою.

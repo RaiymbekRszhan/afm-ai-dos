@@ -16,5 +16,10 @@ dependencies = [
     "python-dotenv",
 ]
 
+[project.optional-dependencies]
+# Юнит-тесты чистых функций (chunking, rag_engine._for_tts) — офлайн, без
+# LLM/эмбеддингов/сети. Установка: pip install -e ".[dev]"
+dev = ["pytest"]
+
 [tool.uv]
 package = false

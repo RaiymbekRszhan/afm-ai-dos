@@ -3,10 +3,15 @@ rem ============================================================
 rem  Ai-dos - запуск киоска (видео-аватар АФМ) в один двойной клик
 rem
 rem  Бэкенд крутится на МАКЕ по адресу 192.168.18.42:8100.
-rem  Если IP Мака поменяется - поправьте его в ДВУХ местах ниже.
+rem  Если IP Мака поменяется - поправьте его ТОЛЬКО здесь, в HOST_IP
+rem  (раньше адрес дублировался ещё и во флаге Chrome ниже отдельным
+rem  литералом - при правке одного, но не другого, микрофон молча
+rem  переставал работать: origin флага не совпадал с адресом страницы).
 rem ============================================================
 
-set "URL=http://192.168.18.42:8100/?kiosk=1"
+set "HOST_IP=192.168.18.42"
+set "ORIGIN=http://%HOST_IP%:8100"
+set "URL=%ORIGIN%/?kiosk=1"
 
 rem --- ищем Chrome в обеих стандартных папках ---
 set "CHROME=C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -26,4 +31,4 @@ rem                                 иначе микрофон не включ�
 rem                                 по умолчанию из Windows (Параметры - Звук - Ввод).
 rem --unsafely-...secure          - разрешить микрофон на http-адресе киоска
 rem --user-data-dir               - отдельный чистый профиль (нужен для флагов выше)
-start "" "%CHROME%" --kiosk --kiosk-printing --use-fake-ui-for-media-stream --unsafely-treat-insecure-origin-as-secure="http://192.168.18.42:8100" --user-data-dir="C:\aidos-kiosk" "%URL%"
+start "" "%CHROME%" --kiosk --kiosk-printing --use-fake-ui-for-media-stream --unsafely-treat-insecure-origin-as-secure="%ORIGIN%" --user-data-dir="C:\aidos-kiosk" "%URL%"

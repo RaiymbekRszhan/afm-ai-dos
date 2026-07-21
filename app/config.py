@@ -103,7 +103,25 @@ class Settings(BaseSettings):
 
     # RAG: внешний сервис (ragsvc на :8077, свой venv) — основной источник ответа.
     rag_url: str = "http://localhost:8077/ask"
-    rag_timeout: float = 120.0
+    # ДОЛЖЕН быть >= LLM_TIMEOUT в rag/ragsvc/config.py (по умолчанию там 240 с) +
+    # запас на эмбеддинг/rerank/сеть. Раньше здесь стояло 120 — короче внутреннего
+    # таймаута RAG-сервиса: при медленном LLM АФМ httpx на этой стороне обрывал
+    # запрос раньше, чем RAG успевал сам честно дождаться ответа, и гражданин
+    # получал 502 там, где терпеливое ожидание дало бы настоящий ответ. Если
+    # меняешь LLM_TIMEOUT в rag/.env — подними и это значение.
+    rag_timeout: float = 260.0
+    # Предел длины вопроса ("/chat"): зеркалит MAX_QUESTION_CHARS в rag/.env, чтобы
+    # оркестратор отклонял слишком длинный вопрос СРАЗУ (400), не тратя HTTP-запрос
+    # к RAG, который его всё равно отклонит (422). Если поменяешь один — поменяй и
+    # второй (rag/ragsvc/config.py MAX_QUESTION_CHARS), иначе оркестратор может
+    # пропускать то, что RAG потом отклонит с менее понятным для клиента 422.
+    max_question_chars: int = 2000
+    # Предел длины текста на "/speak" (прямой синтез без RAG) — раньше был не
+    # ограничен вовсе: _split_for_tts резал на куски без потолка на их число, и
+    # запрос мог надолго занять единственный TTS/GPU-ресурс без семафора (тот
+    # защищает только /voice). Голосовой ответ на практике укладывается в пару
+    # тысяч символов (llm_max_tokens=512); 4000 — заметный запас сверху.
+    max_speak_chars: int = 4000
 
     # Загрузка аудио: предел размера файла (защита от перегруза памяти).
     max_upload_mb: int = 25
@@ -111,11 +129,24 @@ class Settings(BaseSettings):
     # путь (Whisper + до 10 вызовов TTS, минуты CPU/GPU); без лимита пачка
     # параллельных запросов кладёт TTS/GPU-ноду. Остальные ждут в очереди.
     max_concurrent_voice: int = 2
+    # Известные провайдеры TTS без спец-проверки конфига (openai проверяется отдельно).
+    _KNOWN_TTS_PROVIDERS = ("f5", "spark", "say", "eleven")
+
+    def _provider_configured(self, provider: str) -> bool:
+        if provider == "openai":
+            return bool(self.tts_base_url and self.tts_model)
+        if provider == "eleven":
+            return bool(self.elevenlabs_api_key and self.elevenlabs_voice_id)
+        return provider in self._KNOWN_TTS_PROVIDERS
+
     @property
     def tts_enabled(self) -> bool:
-        if self.tts_provider == "openai":
-            return bool(self.tts_base_url and self.tts_model)
-        return self.tts_provider in ("f5", "spark", "say")
+        # Оба языковых провайдера (ru: tts_provider, kk: tts_kk_provider) должны
+        # быть валидны — иначе /voice может молча остаться без звука для одного
+        # из языков, а settings.tts_enabled это не поймает.
+        return self._provider_configured(self.tts_provider) and self._provider_configured(
+            self.tts_kk_provider
+        )
 
 
 settings = Settings()

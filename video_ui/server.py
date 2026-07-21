@@ -30,7 +30,16 @@ _VIDEO_DIR = os.path.join(_STATIC_DIR, "video")
 BACKEND = os.environ.get("AIDOS_BACKEND", "http://localhost:8000").rstrip("/")
 # /voice — самый долгий путь (STT + RAG + TTS). На GPU ~секунды, на CPU-TTS — минуты,
 # поэтому таймаут щедрый: лучше подождать, чем оборвать ответ на демонстрации.
-BACKEND_TIMEOUT = float(os.environ.get("AIDOS_BACKEND_TIMEOUT", "300"))
+# ДОЛЖЕН быть заметно больше app.config.settings.rag_timeout (260 с) — иначе этот
+# прокси-таймаут срабатывает раньше, чем бэкенд успевает честно дождаться RAG, и
+# гражданин получает обрыв здесь вместо ответа. Запас (300 -> 450) сохраняет тот
+# же бюджет на STT+TTS сверх RAG, что был при старом rag_timeout=120.
+BACKEND_TIMEOUT = float(os.environ.get("AIDOS_BACKEND_TIMEOUT", "450"))
+# video_ui слушает 0.0.0.0 (см. run.sh) — тот же уровень сетевой доступности, что
+# и бэкенд на :8000, у которого уже есть свой лимит (app/config.py max_upload_mb).
+# Без своего лимита здесь любой клиент в сети киоска мог целиком забуферить
+# многогигабайтное тело в память ДО того, как бэкенд успеет его отклонить.
+MAX_UPLOAD_MB = float(os.environ.get("AIDOS_MAX_UPLOAD_MB", "25"))
 
 app = FastAPI(title="Ai-dos — киоск «видео-аватар»", docs_url=None, redoc_url=None)
 
@@ -107,7 +116,19 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
     WAV + percent-encoded X-Question/X-Answer (X-Suggest —
     подсказка «возможно, вы хотели спросить…», страница вернёт её полем suggest
     со следующим вопросом)."""
+    limit = int(MAX_UPLOAD_MB * 1024 * 1024)
+
+    def _too_big(n: int) -> HTTPException:
+        return HTTPException(
+            status_code=413,
+            detail=f"Файл больше {MAX_UPLOAD_MB:g} МБ ({n // (1024 * 1024)} МБ)",
+        )
+
+    if data.size is not None and data.size > limit:
+        raise _too_big(data.size)
     audio = await data.read()
+    if len(audio) > limit:
+        raise _too_big(len(audio))
     files = {"data": (data.filename or "q.wav", audio, data.content_type or "audio/wav")}
     form = {"language": language}
     if suggest:
@@ -116,8 +137,10 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
         async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as c:
             r = await c.post(BACKEND + "/voice", files=files, data=form)
     except Exception as e:
-        raise HTTPException(status_code=502,
-                            detail=f"Рабочий бэкенд {BACKEND} недоступен: {e!r}")
+        # Клиенту — обобщённо: {e!r} тянет внутренние адреса/детали httpx
+        # (раскрытие топологии сети), полная диагностика — только в лог.
+        print(f"[video_ui] backend {BACKEND} недоступен: {e!r}")
+        raise HTTPException(status_code=502, detail="Рабочий бэкенд недоступен.")
     if r.status_code != 200:
         try:
             detail = r.json().get("detail", r.text[:200])

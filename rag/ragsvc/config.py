@@ -18,6 +18,14 @@ def _int(key: str, default: str) -> int:
         raise RuntimeError(f"Переменная окружения {key}={raw!r} должна быть целым числом.")
 
 
+def _float(key: str, default: str) -> float:
+    raw = os.getenv(key, default).strip()
+    try:
+        return float(raw)
+    except ValueError:
+        raise RuntimeError(f"Переменная окружения {key}={raw!r} должна быть числом.")
+
+
 # Embedding
 EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "http://192.168.165.2:8806/v1")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding-8b")
@@ -43,6 +51,14 @@ CHUNK_OVERLAP = _int("CHUNK_OVERLAP", "100")
 # Сколько кандидатов тянуть из поиска и сколько чанков отдавать в LLM-контекст.
 TOP_K = _int("TOP_K", "40")
 CHUNK_TOP_K = _int("CHUNK_TOP_K", "12")
+# Минимальное косинусное сходство, ниже которого чанк даже не попадёт в контекст
+# LLM. Раньше не переопределялся — держался на дефолте самого LightRAG (0.2),
+# неявно. Задан явно здесь (тот же дефолт 0.2 — поведение не меняем, но теперь
+# это видимый, настраиваемый порог антигаллюцинации, а не спрятанный в библиотеке).
+# Если вопрос гражданина ложится на лексику чужой статьи, но не по смыслу, порог
+# 0.2 может протащить её в контекст — единственная защита тогда системный промпт.
+# Поднимать осторожно и только после проверки на rag/eval (см. dataset.yaml).
+COSINE_THRESHOLD = _float("RAG_COSINE_THRESHOLD", "0.2")
 # Предел длины вопроса (символов): защита от DoS и от ухода мегабайтного текста
 # в эмбеддинг-сервис. Обычный вопрос гражданина — десятки/сотни символов.
 MAX_QUESTION_CHARS = _int("MAX_QUESTION_CHARS", "2000")

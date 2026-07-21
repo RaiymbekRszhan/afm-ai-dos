@@ -23,6 +23,16 @@ need_venv rag/.venv
 # По выходу из скрипта убиваем всю группу процессов (дочерние сервисы).
 trap 'kill 0' EXIT INT TERM
 
+# Офлайн-флаги — ОБЯЗАТЕЛЬНО до любых фоновых `&` (Spark/F5) ниже: bash
+# фиксирует окружение фонового процесса в момент его запуска (fork), а не в
+# момент выполнения его тела, так что export, сделанный ПОСЛЕ `&`, до дочернего
+# процесса не долетает. Раньше это стояло ниже, у активации основного venv, и
+# Spark/локальный F5+RUAccent стартовали без гарантии офлайн-режима.
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+# STT: казахский -> локальный Whisper (из кэша, без интернета)
+export STT_KK_USE_WHISPER=true
+
 # USE_ELEVEN=1 — весь TTS (русский И казахский) на ElevenLabs (облако, НУЖЕН
 # ИНТЕРНЕТ). Ключ и голос — в .env (ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID,
 # один голос на оба языка). Гасит Spark и не зовёт F5 GPU — они не нужны.
@@ -55,11 +65,6 @@ if [ "$WITH_SPARK" = "1" ]; then bash spark_server/run.sh & fi
 
 # Основной оркестратор (8000) — на venv голосового слоя.
 source .venv/bin/activate
-
-# STT: казахский -> локальный Whisper (из кэша, без интернета)
-export STT_KK_USE_WHISPER=true
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
 
 # TTS: русский -> F5 на GPU-сервере АФМ (multipart с клиентским референсом),
 # казахский -> Spark. ${VAR:-...} — любой адрес/референс можно переопределить

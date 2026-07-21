@@ -11,13 +11,13 @@ ELEVENLABS_API_KEY (в git не попадает).
 Запуск:
     cd ~/Downloads/STT
     export ELEVENLABS_API_KEY="ваш_ключ"
-    python tts_try_eleven.py                 # казахская фраза по умолчанию
+    python scripts/dev/tts_try_eleven.py                 # казахская фраза по умолчанию
     open out_eleven.mp3                       # послушать (macOS)
 
     # свой текст и голос (id берётся из списка, который печатает скрипт):
-    python tts_try_eleven.py --voice <VOICE_ID> "Өз мәтініңіз"
+    python scripts/dev/tts_try_eleven.py --voice <VOICE_ID> "Өз мәтініңіз"
     # другая модель:
-    python tts_try_eleven.py --model eleven_turbo_v2_5
+    python scripts/dev/tts_try_eleven.py --model eleven_turbo_v2_5
 
 Модель по умолчанию — eleven_multilingual_v2 (лучшая многоязычная). Казахский у
 ElevenLabs официально не заявлен: слушаем, как он произносит ә, қ, ң, ө, ұ, ү, і.

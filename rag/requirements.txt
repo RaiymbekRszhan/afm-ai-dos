@@ -5,3 +5,6 @@ tiktoken
 fastapi
 uvicorn[standard]
 python-dotenv
+
+# pytest (юнит-тесты tests/) — НЕ здесь, чтобы не тащить тестовый инструмент в
+# прод-venv. Для разработки: pip install pytest (или pyproject.toml extra "dev").

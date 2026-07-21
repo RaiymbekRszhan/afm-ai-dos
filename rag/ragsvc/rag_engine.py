@@ -27,6 +27,9 @@ async def build_rag() -> LightRAG:
         rerank_model_func=get_rerank(),
         chunk_token_size=config.CHUNK_TOKEN_SIZE,
         chunk_overlap_token_size=config.CHUNK_OVERLAP,
+        # Явно (было неявным дефолтом библиотеки) — порог антигаллюцинации
+        # ретривала, см. комментарий у config.COSINE_THRESHOLD.
+        cosine_better_than_threshold=config.COSINE_THRESHOLD,
         # Кэш ответов LLM. Ключ кэша LightRAG НЕ учитывает версию базы, поэтому
         # после переингеста он отдавал бы устаревшие ответы. По умолчанию выкл
         # (LLM_CACHE в config) — «строго по актуальной базе» важнее скорости.
@@ -104,6 +107,12 @@ async def answer(rag: LightRAG, question: str, lang: str | None = None) -> str:
         # на случай stream=True — собираем
         chunks = [c async for c in resp]
         text = _for_tts("".join(chunks))
+    if not text:
+        # Пустой ответ (LLM вернул "" — напр. finish_reason не length, а просто
+        # пустое содержимое) не матчит ни _LC_FALLBACK_RE, ни service.looks_not_found
+        # на стороне оркестратора — раньше это доходило до tts.synthesize("") и
+        # падало 502 "Ошибка синтеза речи", вместо вежливого отказа с номером 1458.
+        return _not_found(lang)
     if _LC_FALLBACK_RE.search(text):
         # Заменяем англ. заглушку LightRAG фирменной фразой отказа на языке вопроса.
         return _not_found(lang)
