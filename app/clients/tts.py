@@ -570,16 +570,59 @@ def _kk_ord_year_sub(m: "re.Match") -> str:
     return f"{_kk_ordinal(int(m.group(1)))} {m.group(2)}"
 
 
-# «1458 нөміріне» / «нөмір 1458» — короткий номер по цифрам.
-_KK_PHONE_RE1 = re.compile(r"\b(\d{4,11})[\s\-]*(нөмір\w*)")
-_KK_PHONE_RE2 = re.compile(r"\b(нөмір\w*|телефон\w*)\s+(\d{4,11})\b")
+# Телефон казахской фразы: как в русском (_ru_phone_words), но ключевое слово
+# «нөмір/телефон» и казахские слова цифр. Телефон СО ПРОБЕЛАМИ/ДЕФИСАМИ
+# («8 800 080 18 90») раньше не ловился (были только слитные \d{4,11} рядом со
+# словом) и уходил в общий _NUM_RE — 11 цифр читались гигантским количественным
+# («жеті миллион…», отзыв 2026-07-21).
+def _kk_phone_group(g: str) -> str:
+    """Группа цифр телефона: 2–3 цифры без ведущего нуля — количественным, иначе по цифрам."""
+    if 2 <= len(g) <= 3 and not g.startswith("0"):
+        c = _kk_cardinal(int(g))
+        if c is not None:
+            return c
+    return _kk_digits(g)
+
+
+def _kk_phone_words(raw: str) -> str:
+    """Телефон/код -> казахские слова группами через запятую (запятая = пауза в TTS)."""
+    groups = re.findall(r"\d+", raw)
+    if len(groups) == 1:  # слитная запись — группируем сами (как _ru_phone_words)
+        s = groups[0]
+        if len(s) == 11:
+            groups = [s[:1], s[1:4], s[4:7], s[7:9], s[9:]]
+        elif len(s) == 10:
+            groups = [s[:3], s[3:6], s[6:8], s[8:]]
+        elif len(s) == 7:
+            groups = [s[:3], s[3:5], s[5:]]
+    words = ", ".join(_kk_phone_group(g) for g in groups)
+    return f"плюс {words}" if raw.lstrip().startswith("+") else words
+
+
+# Ключевое слово ПЕРЕД цифрами: «нөмір 1458», «телефон 8 800 080 18 90» (до двух
+# слов между: «сенім телефоны 1414»). Цифры — слитно \d{4,11} ИЛИ с разделителями.
+_KK_PHONE_KW_RE = re.compile(
+    r"\b((?:нөмір\w*|телефон\w*)(?:\s+[а-яёәіңғүұқөһ]+){0,2})\s+(\+?\d[\d\s\-()]{2,17}\d|\d{4,11})",
+    re.IGNORECASE)
+# Цифры ПЕРЕД ключевым словом: «1458 нөміріне», «8 800 ... нөмірі».
+_KK_PHONE_KW_RE2 = re.compile(
+    r"(\+?\d[\d\s\-()]{2,17}\d|\d{4,11})[\s\-]*(нөмір\w*)", re.IGNORECASE)
 
 
 def _kk_numbers(text: str) -> str:
     """Цифры -> казахские слова. «N-бап»/годы — ПОРЯДКОВЫЕ, проценты -> пайыз,
-    номера телефонов и длинные коды (ЖСН) — по цифрам, остальное — количественные."""
-    text = _KK_PHONE_RE1.sub(lambda m: f"{_kk_digits(m.group(1))} {m.group(2)}", text)
-    text = _KK_PHONE_RE2.sub(lambda m: f"{m.group(1)} {_kk_digits(m.group(2))}", text)
+    номера телефонов и длинные коды (ЖСН) — по цифрам группами, остальное — количественные."""
+    # Телефоны — ДО общего числа: иначе 11 цифр читаются миллиардами. Группами
+    # через запятую (пауза), формат телефонов языконезависим — переиспользуем
+    # русские regex-ы (_RU_PHONE_BARE_RE/_RU_LONG_CODE_RE) с казахскими словами.
+    text = _KK_PHONE_KW_RE.sub(                     # «нөмір/телефон 8 800 ...»
+        lambda m: f"{m.group(1)} {_kk_phone_words(m.group(2))}", text)
+    text = _KK_PHONE_KW_RE2.sub(                    # «1458 нөміріне»
+        lambda m: f"{_kk_phone_words(m.group(1))} {m.group(2)}", text)
+    text = _RU_PHONE_BARE_RE.sub(                   # +7/8 ... без слова «нөмір»
+        lambda m: _kk_phone_words(m.group(0)), text)
+    text = _RU_LONG_CODE_RE.sub(                    # слитные 10+ цифр (сотовый/ЖСН)
+        lambda m: _kk_phone_words(m.group(0)), text)
     text = _KK_ORD_HYPHEN_RE.sub(_kk_ord_hyphen_sub, text)  # N-бап -> порядковое
     text = _KK_YEAR_RE.sub(_kk_ord_year_sub, text)          # NNNN жыл -> порядковое
     text = re.sub(r"(\d+(?:,\d+)?)\s*%", _kk_pct_sub, text)  # проценты -> пайыз
@@ -650,7 +693,7 @@ def _normalize_for_tts(text: str, language: str | None) -> str:
 
 
 # --- Экранные блоки: [ТАБЛИЦА]...[/ТАБЛИЦА] -------------------------------
-# RAG может приложить к устному ответу таблицу ДЛЯ ЭКРАНА (правило 7 промпта,
+# RAG может приложить к устному ответу таблицу ДЛЯ ЭКРАНА (правило о таблице в промпте,
 # рендерит фронтенд video_ui). Голосу она не нужна: TTS читал бы «палки» и
 # цифры кашей. Вырезаем блок и, на всякий случай, бесхозные строки-таблицы
 # с «|» без маркеров (LLM иногда забывает маркеры).

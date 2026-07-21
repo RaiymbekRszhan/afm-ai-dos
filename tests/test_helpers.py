@@ -225,6 +225,20 @@ def test_normalize_kk_long_codes_read_by_digit():
     assert not any(c.isdigit() for c in out)
 
 
+def test_normalize_kk_phone_groups():
+    # Регрессия 2026-07-21: казахский телефон СО ПРОБЕЛАМИ читался гигантским
+    # количественным («жеті миллион…») — теперь ГРУППАМИ через запятую (пауза).
+    N = lambda s: tts._normalize_for_tts(s, "kk")
+    out = N("1458 нөміріне қоңырау шалыңыз.")          # короткий код — по цифрам
+    assert "бір төрт бес сегіз" in out
+    out2 = N("Банк телефоны: 8 800 080 18 90.")        # длинный — группами
+    assert "миллион" not in out2 and "миллиард" not in out2
+    assert "сегіз, сегіз жүз" in out2
+    out3 = N("Ұялы нөмір 87001234567.")                # слитные 11 — тоже группами
+    assert "миллиард" not in out3
+    assert not any(c.isdigit() for c in out3)
+
+
 def test_normalize_kk_number_sign():
     assert "нөмір" in tts._normalize_for_tts("№ 15 бұйрық", "kk")
     assert "номер" in tts._normalize_for_tts("приказ № 15", "russian")
