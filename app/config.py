@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # stt_correction_langs — для каких языков применять ("ru,kk"; пусто = выкл).
     stt_correction: bool = True
     stt_correction_langs: str = "kk"
+    # Казахский STT на УДАЛЁННОМ Whisper-сервере (whisper_kk_server, напр. на GPU
+    # АФМ :8813). Если задан — казахское аудио уходит СЮДА (контракт тот же, что у
+    # stt_url), а НЕ в локальный in-process Whisper: так киоск/оркестратор не тянут
+    # torch/веса. Пусто = локальный Whisper (stt_kk_use_whisper) или сервер АФМ.
+    stt_kk_url: str = ""
     # Казахский STT: локальный Whisper-kk вместо сервера АФМ
     stt_kk_use_whisper: bool = True
     whisper_kk_model: str = "shyngys879/kazakh-whisper-large-v3-turbo"

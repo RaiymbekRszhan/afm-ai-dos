@@ -1,0 +1,28 @@
+[Unit]
+Description=Ai-dos Whisper-kk (казахский STT, порт 8813)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-dos
+WorkingDirectory=/opt/ai-dos
+# GPU: cuda. На CPU убрать строку (run.sh по умолчанию cuda — поправить на cpu).
+Environment=WHISPER_DEVICE=cuda
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStart=/bin/bash whisper_kk_server/run.sh
+Restart=always
+RestartSec=5
+
+# Базовый sandbox. ProtectHome/ProtectSystem=strict НЕ ставим: модели/HF-кэш
+# могут быть в домашнем каталоге пользователя ai-dos.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

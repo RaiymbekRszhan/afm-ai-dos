@@ -34,8 +34,15 @@ async def transcribe(audio_bytes: bytes, filename: str, language: str | None = N
                      content_type: str = "audio/wav") -> str:
     """Аудио -> текст. Маршрутизирует по языку."""
     lang = language or settings.stt_default_language
-    if _is_kk(lang) and settings.stt_kk_use_whisper:
-        return await _whisper_kk(audio_bytes)
+    if _is_kk(lang):
+        # Удалённый Whisper-сервер (на GPU АФМ) приоритетнее локального in-process
+        # Whisper — тогда киоск/оркестратор не тянут torch/веса. Контракт совпадает
+        # со STT-сервером АФМ, поэтому идём тем же _afm, только на свой адрес.
+        if settings.stt_kk_url:
+            return await _afm(audio_bytes, filename, "kazakh", content_type,
+                              url=settings.stt_kk_url)
+        if settings.stt_kk_use_whisper:
+            return await _whisper_kk(audio_bytes)
     return await _afm(audio_bytes, filename, lang, content_type)
 
 
@@ -94,11 +101,13 @@ async def _whisper_kk(audio_bytes: bytes) -> str:
 
 # ---------- Остальные языки: сервер АФМ ----------
 async def _afm(audio_bytes: bytes, filename: str, language: str,
-               content_type: str) -> str:
+               content_type: str, url: str | None = None) -> str:
+    # url=None -> STT-сервер АФМ (settings.stt_url, русский/фолбэк). Для казахского
+    # с удалённым Whisper передаётся settings.stt_kk_url — контракт тот же.
     files = {"data": (filename, audio_bytes, content_type)}
     data = {"language": language}
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(settings.stt_url, files=files, data=data,
+        resp = await client.post(url or settings.stt_url, files=files, data=data,
                                  headers={"accept": "application/json"})
         resp.raise_for_status()
         payload = resp.json()
