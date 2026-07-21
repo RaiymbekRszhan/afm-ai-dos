@@ -448,19 +448,25 @@ answerAudio.addEventListener("ended", () => {   // договорил — под
 });
 
 // ---------- автопрокрутка ответа ----------
-// Длинный ответ может не влезать в карточку: прокручиваем её синхронно с
-// озвучкой (проговорено 40% — прокручено ~40%, с небольшим опережением, чтобы
-// читаемая строка не упиралась в нижний край). Тронул карточку пальцем/колесом
-// — до конца ЭТОГО ответа больше не вмешиваемся (посетитель читает сам).
+// Длинный ответ может не влезать в карточку: держим В ВИДУ слово, которое сейчас
+// читается (караоке-подсветка). Раньше прокрутка шла по ДОЛЕ ВРЕМЕНИ
+// (currentTime/duration) — а слова весят по-разному и строки переносятся, поэтому
+// прокрутка «уезжала» от подсветки и мешала читать. Теперь она идёт ЗА подсветкой:
+// пока текущее слово выше 65% высоты карточки — не трогаем (текст стоит, читать
+// спокойно); опустилось ниже — подматываем так, чтобы встало на ~40%. Только
+// вперёд. Тронул карточку пальцем/колесом — до конца ЭТОГО ответа не вмешиваемся.
 let autoScroll = true;
 ["touchstart", "wheel", "pointerdown"].forEach(ev =>
   out.addEventListener(ev, () => { autoScroll = false; }, { passive: true }));
 answerAudio.addEventListener("timeupdate", () => {
-  if (!autoScroll || !answerAudio.duration) return;
-  const max = out.scrollHeight - out.clientHeight;
-  if (max <= 0) return;
-  const frac = answerAudio.currentTime / answerAudio.duration;
-  out.scrollTop = Math.min(max, frac * max * 1.15);
+  if (!autoScroll || !karaokeWords.length) return;
+  const cur = karaokeWords[Math.min(karaokeIdx, karaokeWords.length - 1)];
+  if (!cur) return;
+  const or = out.getBoundingClientRect(), pos = cur.getBoundingClientRect().top - or.top;
+  if (pos > or.height * 0.65) {
+    const max = out.scrollHeight - out.clientHeight;
+    out.scrollTop = Math.min(max, out.scrollTop + (pos - or.height * 0.40));
+  }
 });
 
 // ---------- печать образцов заявлений ----------
