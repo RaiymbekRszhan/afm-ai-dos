@@ -33,8 +33,11 @@ class Settings(BaseSettings):
     # stt_url), а НЕ в локальный in-process Whisper: так киоск/оркестратор не тянут
     # torch/веса. Пусто = локальный Whisper (stt_kk_use_whisper) или сервер АФМ.
     stt_kk_url: str = ""
-    # Казахский STT: локальный Whisper-kk вместо сервера АФМ
-    stt_kk_use_whisper: bool = True
+    # Казахский STT: по умолчанию — СЕРВЕР АФМ (тот же, что для русского, :8804 —
+    # он тянет и казахский, проверено на ref_kk). False => казахское аудио идёт на
+    # stt_url как русское, torch/Whisper на этой машине НЕ нужны. True => локальный
+    # Whisper-kk (точнее на шумном микрофоне, но грузит torch + модель ~1.6 ГБ).
+    stt_kk_use_whisper: bool = False
     whisper_kk_model: str = "shyngys879/kazakh-whisper-large-v3-turbo"
     whisper_device: str = "auto"  # auto | cpu | mps | cuda
 

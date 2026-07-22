@@ -30,8 +30,10 @@ trap 'kill 0' EXIT INT TERM
 # Spark/локальный F5+RUAccent стартовали без гарантии офлайн-режима.
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-# STT: казахский -> локальный Whisper (из кэша, без интернета)
-export STT_KK_USE_WHISPER=true
+# STT: и русский, И казахский — на STT-сервер АФМ (:8804). Казахский Whisper
+# больше не грузим: torch/модель на этой машине не нужны. Вернуть локальный
+# Whisper для казахского: STT_KK_USE_WHISPER=true bash run_api.sh
+export STT_KK_USE_WHISPER="${STT_KK_USE_WHISPER:-false}"
 
 # USE_ELEVEN=1 — весь TTS (русский И казахский) на ElevenLabs (облако, НУЖЕН
 # ИНТЕРНЕТ). Ключ и голос — в .env (ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID,
