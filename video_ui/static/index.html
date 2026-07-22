@@ -159,8 +159,8 @@
        X-Print с бэкенда), рядом с «Задать вопрос» встаёт зелёная кнопка печати.
        Само приглашение аватар ПРОГОВАРИВАЕТ и оно уже в тексте ответа (бэкенд
        дописал) — отдельной плашки нет. Клик открывает меню выбора образца;
-       печать — form.html в скрытом iframe (с Chrome --kiosk-printing уходит на
-       принтер без диалога). */
+       печать — готовый PDF-бланк в скрытом iframe (с Chrome --kiosk-printing
+       уходит на принтер без диалога). */
     #printBtn { background: #15925a; }
     #printBtn[hidden] { display: none; }
     body.kiosk button#printBtn { font-size: clamp(20px, 1.5vh, 42px); padding: 22px 40px; border-radius: 16px; }
@@ -220,7 +220,7 @@
   <button id="zoomClose" hidden>✕</button>
 
   <!-- Меню выбора образца заявления (открывает кнопка «Распечатать образец»).
-       Кнопки строит JS из подошедших образцов; печать — form.html в iframe. -->
+       Кнопки строит JS из подошедших образцов; печать — PDF-бланк в iframe. -->
   <div id="printMenu">
     <div id="printCard">
       <h2 id="printTitle">Распечатать образец</h2>
@@ -233,9 +233,11 @@
       <button id="printCancel">Отмена</button>
     </div>
   </div>
-  <!-- Скрытый лист для печати: сюда грузится form.html, по нему вызываем print(). -->
+  <!-- Скрытый лист для печати: сюда грузится PDF-бланк, по нему вызываем print().
+       Размер НЕнулевой и офскрин — иначе встроенный PDF-вьюер Chrome не отрисуется
+       и печать выйдет пустой (для HTML было неважно, для PDF критично). -->
   <iframe id="printFrame" title="печать образца"
-          style="position:fixed; left:-9999px; width:0; height:0; border:0;"></iframe>
+          style="position:fixed; left:-9999px; top:0; width:800px; height:1130px; border:0;"></iframe>
 
 <!-- ?v — метка версии: меняешь answer_render.js — поменяй и её. Тогда браузер
      киоска (даже с закэшированным старьём) увидит НОВЫЙ адрес и скачает свежий
@@ -473,7 +475,7 @@ answerAudio.addEventListener("timeupdate", () => {
 // Когда ответ про подачу заявления/жалобы или запись на приём
 // (detectPrintTemplates из answer_render.js), рядом с «Задать вопрос» встаёт
 // зелёная кнопка печати, а под ответом — приглашение аватара. Клик открывает
-// меню выбора образца; печать — form.html (static/templates/) в скрытом iframe.
+// меню выбора образца; печать — PDF-бланк (static/templates/pdf/) в скрытом iframe.
 // На киоске Chrome запускают с --kiosk-printing → лист уходит на принтер БЕЗ
 // диалога (см. README). Без флага открывается обычный диалог печати браузера.
 const printBtn = document.getElementById("printBtn");
@@ -530,15 +532,17 @@ function renderPrintMenu() {
 function openPrintMenu() { renderPrintMenu(); printMenu.classList.add("on"); }
 function closePrintMenu() { printMenu.classList.remove("on"); }
 
-// Печать: грузим form.html в iframe и по загрузке вызываем его print(). Нонс в
-// URL — чтобы повторная печать того же бланка снова триггерила onload.
+// Печать: грузим готовый официальный PDF-бланк в iframe и по загрузке вызываем
+// print() (пиксель-в-пиксель как оригинал, не HTML-реконструкция). Chrome печатает
+// same-origin PDF из iframe так же тихо под --kiosk-printing. Нонс в URL — чтобы
+// повторная печать того же бланка снова триггерила onload.
 function doPrint(type, lang) {
-  const url = "/static/templates/form.html?type=" + type + "&lang=" + lang + "&_=" + Date.now();
+  const url = "/static/templates/pdf/" + type + "-" + lang + ".pdf?_=" + Date.now();
   printFrame.onload = function () {
     setTimeout(function () {
       try { printFrame.contentWindow.focus(); printFrame.contentWindow.print(); }
       catch (e) { st.textContent = "печать недоступна: " + e.message; }
-    }, 200);   // дать раскладке/шрифтам дорисоваться
+    }, 700);   // PDF-вьюеру нужно больше времени отрисоваться, чем HTML
   };
   printFrame.src = url;
   closePrintMenu();
