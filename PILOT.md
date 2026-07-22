@@ -65,17 +65,21 @@ RAG-индекс через `ingest`, `.env`, запуск `HF_HUB_OFFLINE=1 bas
 - **venv НЕ копируем с Mac** — пересоздаём на месте (`.venv`, `rag/.venv`, `.venv-spark`).
 - **`rag/` venv нельзя сливать с основным** — `lightrag`/`torch` конфликтуют.
 - **tiktoken-словарь** — папка `rag/vendor/tiktoken/` обязана приехать, иначе RAG офлайн не стартует.
-- **Whisper-kk** (~1.6 ГБ) качается при первом kk-запросе — на офлайн-сервере нужен HF-кэш.
-- **GPU**: `WHISPER_DEVICE=cuda`, в `spark_server/run.sh` — `SPARK_DEVICE="cuda"`.
+- **Казахский STT — на сервере АФМ** (`STT_KK_USE_WHISPER=false`): локальный Whisper-kk
+  (~1.6 ГБ, torch) на этой машине НЕ нужен. Вернуть его — HF-кэш модели + `STT_KK_USE_WHISPER=true`.
+- **GPU** (для офлайн-фолбэка TTS): в `spark_server/run.sh` — `SPARK_DEVICE="cuda"`.
 
 ## A2. Ключевые настройки `.env` (корень проекта)
 Полный список — DEPLOY.md шаг 6. Обязательные для пилота:
 ```
 LLM_BASE_URL=http://192.168.165.2:8901/v1
-STT_URL=http://192.168.165.2:8804/transcribe     # ru STT (АФМ; kk — локальный Whisper)
-STT_KK_USE_WHISPER=true
-WHISPER_DEVICE=cuda
+STT_URL=http://192.168.165.2:8804/transcribe     # STT АФМ — и русский, И казахский
+STT_KK_USE_WHISPER=false                          # kk STT на сервер АФМ (без Whisper/torch)
 RAG_URL=http://localhost:8077/ask
+# TTS ОСНОВНОЙ — ElevenLabs (⚠️ нужен интернет). Старт: USE_ELEVEN=1 bash run_api.sh
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...
+# TTS ОФЛАЙН-ФОЛБЭК (дефолт run_api.sh без USE_ELEVEN):
 TTS_PROVIDER=f5
 F5_URL=http://192.168.165.2:8991/tts             # ru TTS с GPU-сервера АФМ (~1.5 c)
 F5_REF_AUDIO=refs/ref_ru_f5_padded.wav  # с тишиной по краям — мягкие старты
@@ -93,7 +97,7 @@ bash scripts/healthcheck.sh`.
 
 | Хочу | Крутить | НЕ крутить |
 |---|---|---|
-| Казахский говорит медленно | `SPEECH_RATE.kazakh` в `video_ui/static/index.html` (сейчас 1.4) | ❌ `SPARK_SPEED` |
+| Казахский говорит медленно | `SPEECH_RATE.kazakh` в `video_ui/static/index.html` (сейчас 1.0 — eleven в темпе; для Spark вернуть 1.4) | ❌ `SPARK_SPEED` |
 | Русский говорит не так | референс `F5_REF_AUDIO` + `F5_REF_TEXT` (F5 клонирует голос вместе с темпом) | — |
 | Куски налезают друг на друга | `TTS_GAP_MS` (сейчас 300 мс после точки, половина — после запятой) | — |
 

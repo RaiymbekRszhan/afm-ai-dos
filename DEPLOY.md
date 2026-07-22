@@ -125,10 +125,15 @@ bash f5_server/setup.sh                # .venv-f5 + f5-tts + модель + Voco
 > `torch==2.8.0`/`torchaudio==2.8.0` и убирает torchcodec (иначе ломается аудио без ffmpeg
 > shared-libs). Референс `refs/ref_ru_f5.wav`+`refs/ref_ru.txt` уже в репозитории.
 
-## ШАГ 5. Spark-сервер (казахский TTS)
+## ШАГ 5. Spark-сервер (казахский TTS) — ОФЛАЙН-ФОЛБЭК
+> Нужен только для казахского TTS БЕЗ интернета. Основной путь — ElevenLabs (шаг 6,
+> ключ в `.env`), ему установки не требуется — это облако.
 ```bash
 bash spark_server/setup.sh             # .venv-spark + фреймворк + модель
 ```
+> Опц.: вынести казахский **STT** на GPU АФМ отдельным сервисом (чтобы на этой машине
+> не было torch) — `bash whisper_kk_server/setup.sh` (см. `whisper_kk_server/README.md`),
+> затем `STT_KK_URL=http://192.168.165.2:8813/transcribe`.
 
 ---
 
@@ -143,14 +148,22 @@ LLM_BASE_URL=http://192.168.165.2:8901/v1
 STT_URL=http://192.168.165.2:8804/transcribe   # 2026-07-03: АФМ перенёс STT с 8004 на 8804
 # (эмбеддинги нужны только RAG-сервису — настраиваются в rag/.env, шаг 3, не здесь)
 
-# казахский STT — локальный Whisper на GPU
-STT_KK_USE_WHISPER=true
-WHISPER_DEVICE=cuda
+# казахский STT — на сервер АФМ (:8804 тянет и казахский). Whisper на этой машине
+# не нужен (torch не тянем). Опц. вынести на отдельный Whisper-сервер (GPU АФМ):
+#   STT_KK_URL=http://192.168.165.2:8813/transcribe   (см. whisper_kk_server/README.md)
+STT_KK_USE_WHISPER=false
 
 # источник ответа — RAG-сервис
 RAG_URL=http://localhost:8077/ask
 
-# TTS: казахский Spark локально; русский F5 — с GPU-сервера АФМ (быстро, ~1.5 c)
+# TTS — ОСНОВНОЙ: ElevenLabs (облако, рус+каз одним голосом; ⚠️ НУЖЕН ИНТЕРНЕТ).
+# Ключ/голос — только в .env (в git не идут). Включить весь TTS на eleven: старт
+# с USE_ELEVEN=1 (он выставит TTS_PROVIDER/TTS_KK_PROVIDER=eleven и погасит Spark).
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...
+
+# TTS — ОФЛАЙН-ФОЛБЭК (без интернета): русский F5 (GPU АФМ) + казахский Spark.
+# Это дефолт run_api.sh БЕЗ USE_ELEVEN.
 TTS_PROVIDER=f5
 F5_URL=http://192.168.165.2:8991/tts
 F5_REF_AUDIO=refs/ref_ru_f5.wav      # референс тембра (шлётся в каждый запрос)
