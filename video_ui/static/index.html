@@ -351,6 +351,14 @@ function playAnswer(blob, lang) {
   });
 }
 
+// Прервать текущий ответ (звук + ролик «говорит»): посетитель не хочет дослушивать
+// и жмёт «Задать вопрос» снова. Вызывается в начале новой записи. pause() не
+// триггерит "ended", поэтому возврат в idle делаем сами.
+function stopAnswer() {
+  try { answerAudio.pause(); answerAudio.currentTime = 0; } catch (e) {}
+  showIdle();
+}
+
 // ---------- запись с микрофона (16кГц WAV) ----------
 const TARGET_SR = 16000;
 function encodeWav(float32, sampleRate) {
@@ -624,6 +632,7 @@ const SILENCE_MS = 3000;
 let hasSpoken = false, lastVoiceMs = 0, stopping = false;
 
 async function startRecording() {
+  stopAnswer();   // аватар ещё договаривает прошлый ответ? обрываем — посетитель хочет спросить заново
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: {
       channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
