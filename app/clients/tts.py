@@ -904,11 +904,16 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
     if not parts:
         raise RuntimeError("Нет произносимого текста для синтеза")
     if len(parts) == 1:
-        return await _synthesize_one(parts[0], language)
-    audios = [await _synthesize_one(part, language) for part in parts]
-    gap = (settings.tts_f5_gap_ms if _provider_for(language) == "f5"
-           else settings.tts_gap_ms)
-    return _concat_wav(audios, parts, gap)
+        result = await _synthesize_one(parts[0], language)
+    else:
+        audios = [await _synthesize_one(part, language) for part in parts]
+        gap = (settings.tts_f5_gap_ms if _provider_for(language) == "f5"
+               else settings.tts_gap_ms)
+        result = _concat_wav(audios, parts, gap)
+    # Шумовой хвост F5 в самом конце ответа плавно гасим в ноль (см. _F5_TAIL_FADE_MS).
+    if _provider_for(language) == "f5" and settings.tts_format == "wav":
+        result = _fade_out_tail(result, _F5_TAIL_FADE_MS)
+    return result
 
 
 def _provider_for(language: str | None) -> str:
@@ -962,8 +967,13 @@ async def _say(text: str, language: str | None) -> bytes:
 # 45–165 мс). Из-за этого пауза на стыке кусков плавала от 0.5 до 0.7 c (наш
 # зазор + случайные края), а кусок с короткой головой звучал «не с начала».
 # Нормализуем: подрезаем тишину по краям до _EDGE_KEEP_MS — стык становится
-# ровно TTS_F5_GAP_MS (+2×30 мс), одинаковый на каждом шве.
-_EDGE_KEEP_MS = 30
+# ровно TTS_F5_GAP_MS (+2×_EDGE_KEEP_MS), одинаковый на каждом шве.
+# 45 (было 30): при 30 F5 изредка «съедал» тихий край слова (спад/атака ниже
+# _ONSET_THRESH) на стыке кусков — конец куска и начало следующего звучали
+# недоговорённо. Больше края оставляем — слово договаривается. Если всё ещё
+# режется, второй рычаг — снизить _ONSET_THRESH (ловит более тихую атаку/спад
+# ДО добавления этого запаса). Тюнить на слух.
+_EDGE_KEEP_MS = 45
 _EDGE_THRESH = 300  # |int16| ниже — считаем тишиной (тот же порог, что в замерах)
 # «Хвост-сирота»: короткий всплеск в САМОМ конце, оторванный от речи заметной
 # тишиной, — галлюцинация модели в бюджете паддинга («страшный звук» с демо).
@@ -982,6 +992,11 @@ _BLOB_GAP_MS = 180     # всплеск оторван от речи такой 
 _ONSET_THRESH = 80
 _BLOB_MAX_MS = 500     # длиннее — это речь, не трогаем
 _BLOB_MIN_SPEECH_MS = 1500  # режем хвост только у куска с полноценной речью
+# F5 изредка оставляет короткий шумовой «хвост» в самом конце ответа (после
+# последней фонемы, в бюджете немого паддинга _f5, который трим убирает не всегда).
+# Линейно гасим последние _F5_TAIL_FADE_MS мс всего ответа в ноль: артефакт
+# затухает, на речь не влияет (гаснет только край). Тюнить на слух.
+_F5_TAIL_FADE_MS = 40
 
 
 def _trim_edge_silence(wav_bytes: bytes) -> bytes:
@@ -1048,6 +1063,44 @@ def _trim_edge_silence(wav_bytes: bytes) -> bytes:
         w.setsampwidth(sw)
         w.setframerate(fr)
         w.writeframes(samples[first * step:(last + 1) * step].tobytes())
+    return out.getvalue()
+
+
+def _fade_out_tail(wav_bytes: bytes, ms: int) -> bytes:
+    """Линейно гасит последние `ms` мс WAV до нуля (убирает шум/щелчок в конце).
+
+    Не 16-битный или не WAV — отдаём как есть (гашение — украшение, ронять из-за
+    него синтез нельзя).
+    """
+    if ms <= 0:
+        return wav_bytes
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as r:
+            nch, sw, fr = r.getnchannels(), r.getsampwidth(), r.getframerate()
+            frames = r.readframes(r.getnframes())
+    except (wave.Error, EOFError):
+        return wav_bytes
+    if sw != 2 or not frames:
+        return wav_bytes
+    import array
+    samples = array.array("h")
+    samples.frombytes(frames)
+    total = len(samples) // nch
+    fade = min(total, int(fr * ms / 1000))
+    if fade <= 0:
+        return wav_bytes
+    start = total - fade
+    for i in range(fade):
+        g = (fade - 1 - i) / fade  # 1.0 -> 0.0
+        for c in range(nch):
+            idx = (start + i) * nch + c
+            samples[idx] = int(samples[idx] * g)
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(nch)
+        w.setsampwidth(sw)
+        w.setframerate(fr)
+        w.writeframes(samples.tobytes())
     return out.getvalue()
 _f5_ref_cache: dict[str, tuple[bytes, str]] = {}  # путь -> (аудио-байты, ref_text)
 
