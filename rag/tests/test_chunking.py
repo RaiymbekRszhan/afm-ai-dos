@@ -97,3 +97,24 @@ def test_chunk_file_defaults_to_reference_when_type_missing():
     units = chunk_file(raw)
     assert len(units) == 1
     assert units[0].label == "Справка: Просто абзац."
+
+
+def test_chunk_file_tags_language_of_source():
+    # Каждый чанк должен нести метку языка ИСТОЧНИКА в начале текста — иначе при
+    # смешанном (ru+kk) контексте LLM тянет слово из чужеязычного куска.
+    ru = chunk_file("# TYPE: code\n# LANG: ru\n# SHORT: УК РК\n\nСтатья 1. А\nТекст.")
+    kk = chunk_file("# TYPE: code\n# LANG: kk\n# SHORT: ҚК РК\n\n1-бап. А\nМәтін.")
+    assert ru[0].text.startswith("[RU] ")
+    assert kk[0].text.startswith("[KK] ")
+
+
+def test_chunk_file_splits_long_unit_and_tags_every_piece():
+    # Длинная статья (> лимита) режется на несколько чанков, и КАЖДЫЙ обязан нести
+    # метку — иначе «хвост» теряет язык (баг смешения языков 2026-07-22). Цитата
+    # (label) у всех кусков одна, uid уникальны.
+    long_body = "1-бап. Тақырып\n" + ("Мазмұны туралы сөйлем. " * 300)  # заведомо > 1500 симв.
+    units = chunk_file("# TYPE: code\n# LANG: kk\n# SHORT: ҚК РК\n\n" + long_body)
+    assert len(units) > 1  # разрезалось на несколько кусков
+    assert all(u.text.startswith("[KK] ") for u in units)  # каждый помечен
+    assert all(u.label == "ҚК РК, 1-бап" for u in units)  # цитата сохранена у всех
+    assert len({u.uid for u in units}) == len(units)  # uid не задвоились

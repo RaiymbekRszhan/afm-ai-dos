@@ -72,6 +72,9 @@ def _query_param(lang: str | None) -> QueryParam:
 
 
 _CLEANUP = re.compile(r"[#*`]+")
+# Служебная языковая метка чанка (chunking.chunk_file) — LLM иногда цитирует её
+# буквально вместе с фактом из чужеязычного куска; в устном ответе ей не место.
+_LANG_TAG = re.compile(r"\[(?:RU|KK)\]\s*")
 
 # LightRAG при НУЛЕВОЙ выдаче поиска (пустой/мусорный вопрос) короткозамыкает и
 # возвращает свою английскую заглушку с маркером [no-context] — БЕЗ вызова LLM,
@@ -89,6 +92,7 @@ def _for_tts(text: str) -> str:
     text = re.split(r"\n#{1,6}\s*References", text)[0]
     text = re.split(r"\n###\s*Источники", text)[0]
     text = _CLEANUP.sub("", text)
+    text = _LANG_TAG.sub("", text)
     return text.strip()
 
 

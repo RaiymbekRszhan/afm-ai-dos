@@ -90,12 +90,68 @@ def chunk_reference(body: str, short: str) -> list[Unit]:
     return units
 
 
+# LightRAG до-режет любую вставленную единицу длиннее CHUNK_TOKEN_SIZE (1200
+# токенов, см. rag_engine.build_rag) на несколько чанков, а языковую метку
+# [RU]/[KK] несёт только первый кусок — «хвосты» длинных статей теряли язык, и
+# LLM тянула из безметочного русского хвоста слово в казахский ответ. Поэтому
+# длинные единицы дробим САМИ на под-куски заведомо короче лимита и метим КАЖДЫЙ.
+# 2400 символов ≈ 900-1100 токенов o200k на кириллице (под лимитом 1200, чтобы
+# LightRAG НЕ дорезал и метка сохранилась). Держим кусок КРУПНЫМ, близким к
+# естественной нарезке LightRAG: мелкий бюджет (было 1500) удвоил число чанков и
+# измельчил retrieval — анти-выдумочный кейс eval начал вместо чистого отказа
+# добавлять пояснение (2026-07-22). Слишком крупный (к 1200 токенам) рискует тем,
+# что LightRAG снова дорежет и вернёт безметочный хвост — 2400 это компромисс.
+_MAX_UNIT_CHARS = 2400
+
+
+def _split_long_text(text: str, max_chars: int = _MAX_UNIT_CHARS) -> list[str]:
+    """Режет длинный текст на части <= max_chars по «мягким» границам.
+
+    Приоритет границ: конец абзаца/строки -> конец предложения -> жёсткий разрез
+    (крайний случай). Порядок и полнота текста сохраняются — ничего не теряется и
+    не задваивается.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    parts: list[str] = []
+    rest = text.strip()
+    while len(rest) > max_chars:
+        window = rest[:max_chars]
+        cut = max(window.rfind("\n\n"), window.rfind("\n"))
+        if cut < max_chars // 2:
+            # нет близкой границы абзаца/строки — ищем конец предложения
+            last = None
+            for mm in re.finditer(r"[.!?;]\s", window):
+                last = mm
+            cut = last.end() if last and last.end() >= max_chars // 2 else max_chars
+        parts.append(rest[:cut].strip())
+        rest = rest[cut:].strip()
+    if rest:
+        parts.append(rest)
+    return [p for p in parts if p]
+
+
 def chunk_file(raw: str) -> list[Unit]:
     meta, body = parse_header(raw)
     short = meta["SHORT"] or meta["LAW"] or "Документ"
     t = meta["TYPE"].lower()
     if t == "code":
-        return chunk_code(body, short, meta["LANG"].lower())
-    if t == "faq":
-        return chunk_faq(body, short)
-    return chunk_reference(body, short)
+        units = chunk_code(body, short, meta["LANG"].lower())
+    elif t == "faq":
+        units = chunk_faq(body, short)
+    else:
+        units = chunk_reference(body, short)
+    # Языковая метка ИСТОЧНИКА в начале КАЖДОГО чанка (не путать с language
+    # вопроса): ru/kk-версии одной статьи семантически почти идентичны, поэтому
+    # векторный поиск нередко достаёт ОБЕ в один контекст — без метки LLM
+    # подмешивала в казахский ответ русский термин прямо оттуда (правило 1 в
+    # prompts.py учит модель не брать лексику из чужеязычного куска). Длинные
+    # единицы дробим, чтобы метку получил и «хвост» (см. _split_long_text).
+    tag = "[KK]" if meta["LANG"].strip().lower() == "kk" else "[RU]"
+    out: list[Unit] = []
+    for u in units:
+        pieces = _split_long_text(u.text)
+        for i, piece in enumerate(pieces):
+            uid = u.uid if len(pieces) == 1 else f"{u.uid}-p{i}"
+            out.append(Unit(text=f"{tag} {piece}", label=u.label, uid=uid))
+    return out
