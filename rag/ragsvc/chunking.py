@@ -33,6 +33,47 @@ def _uid(prefix: str, body: str) -> str:
     return f"{prefix}-{h}"
 
 
+# --- Чистка редакционных примечаний ------------------------------------------
+# В официальных текстах между нормами вставлены СТРОКИ-ПРИМЕЧАНИЯ о будущих/
+# прошлых правках: «В ч.2 статьи 64 предусматривается изменение Законом РК от
+# 11.06.2026 …», «N-бапқа өзгеріс енгізу көзделген – ҚР … Заңымен», «См. изменения
+# в статью …». Это НЕ действующая норма — для устного ответа гражданину это шум
+# (аватар мог бы проговорить «готовится изменение с такой-то даты»). Вырезаем их
+# ДО нарезки. Якоря узкие и проверены (rag/eval + сухая калибровка): обычное
+# нормативное «көзделген» («предусмотрено») и заключительные «вводится в действие»/
+# «Исключен Законом РК …» НЕ трогаем — только форму editorial-примечания.
+_EDITORIAL_NOTE_RE = re.compile(
+    r"("
+    r"(предусматрива[её]тся|предусмотрено)\s+(изменение|дополнение|исключение|.{0,40}в\s+редакции)"
+    r"|См\.\s*изменени[яе]\s+в"
+    r"|(өзгеріс енгізу|толықтыру|алып тастау|.{0,30}редакциясында)\s+көзделген\s*[–\-—]\s*ҚР"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _strip_editorial_notes(body: str) -> str:
+    """Удаляет строки-примечания о правках (см. _EDITORIAL_NOTE_RE)."""
+    return "\n".join(
+        ln for ln in body.splitlines() if not _EDITORIAL_NOTE_RE.search(ln)
+    )
+
+
+# Строка «содержательна», если в ней есть слово из букв (а не только номер пункта
+# «1.», подчёркивания бланка «____» и знаки). По ней выбираем метку-цитату у
+# reference-чанков: у форм uchet_sfm первая строка — пустое поле «1. ______»,
+# из-за чего цитата получалась мусорной («Порядок учёта СФМ: 1. ______»).
+_WORDY = re.compile(r"[A-Za-zА-Яа-яӘҒҚҢӨҰҮҺІіәғқңөұүһЁё]{3,}")
+
+
+def _first_meaningful_line(block: str, limit: int = 80) -> str:
+    for ln in block.splitlines():
+        s = ln.strip()
+        if _WORDY.search(s):
+            return s[:limit]
+    return block.splitlines()[0].strip()[:limit] if block.splitlines() else ""
+
+
 def parse_header(raw: str):
     """Снимаем метаданные из первых строк файла."""
     meta = {"LAW": "", "SHORT": "", "TYPE": "reference", "LANG": "ru"}
@@ -84,7 +125,7 @@ def chunk_reference(body: str, short: str) -> list[Unit]:
     blocks = [b.strip() for b in re.split(r"\n\s*\n", body) if b.strip()]
     units: list[Unit] = []
     for b in blocks:
-        first = b.splitlines()[0].strip()[:80]
+        first = _first_meaningful_line(b)
         label = f"{short}: {first}" if short else first
         units.append(Unit(text=b, label=label, uid=_uid(short or "ref", b)))
     return units
@@ -133,6 +174,7 @@ def _split_long_text(text: str, max_chars: int = _MAX_UNIT_CHARS) -> list[str]:
 
 def chunk_file(raw: str) -> list[Unit]:
     meta, body = parse_header(raw)
+    body = _strip_editorial_notes(body)  # убираем строки-примечания о правках
     short = meta["SHORT"] or meta["LAW"] or "Документ"
     t = meta["TYPE"].lower()
     if t == "code":
