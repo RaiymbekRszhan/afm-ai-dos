@@ -27,6 +27,7 @@ __pycache__/
 models/
 spark_tts_repo/
 rag/rag_storage/
+rag/rag_storage.bak.*/
 # промежуточные txt конвертера (исходник — data/raw/*.docx)
 rag/_convert/*.txt
 
