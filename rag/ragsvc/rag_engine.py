@@ -12,7 +12,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from . import config
-from .providers import llm_model_func, embedding_func, get_rerank
+from .providers import llm_model_func, embedding_func, get_rerank, CURRENT_LANG
 from .prompts import AFM_SYSTEM_PROMPT, NOT_FOUND_KK, NOT_FOUND_RU
 
 log = logging.getLogger("ragsvc")
@@ -61,12 +61,19 @@ def _query_param(lang: str | None) -> QueryParam:
         "Сұрақ қазақ тілінде, қазақ тілінде жауап бер." if lang == "kk" else
         "Отвечай на том же языке, что и вопрос."
     )
+    # Реранк-хук включаем, если жив внешний реранкер ЛИБО локальный языковой
+    # дедуп. Тогда же расширяем ретрив: naive тянет ровно chunk_top_k кандидатов
+    # (search_top_k = chunk_top_k or top_k в LightRAG), а дедупу/реранку нужен
+    # ПУЛ (TOP_K), из которого отобрать РАЗНЫЕ нормы — сами усекут до CHUNK_TOP_K
+    # (providers). Без обоих — прежнее поведение: тянем ровно CHUNK_TOP_K.
+    hook_on = config.RERANK_ENABLED or config.LANG_DEDUP
+    chunk_top_k = config.TOP_K if hook_on else config.CHUNK_TOP_K
     return QueryParam(
         mode="naive",                      # только векторный поиск
-        enable_rerank=config.RERANK_ENABLED,
+        enable_rerank=hook_on,
         include_references=False,          # ссылки не нужны в озвучке
         top_k=config.TOP_K,
-        chunk_top_k=config.CHUNK_TOP_K,
+        chunk_top_k=chunk_top_k,
         user_prompt=hint,
     )
 
@@ -97,6 +104,9 @@ def _for_tts(text: str) -> str:
 
 
 async def answer(rag: LightRAG, question: str, lang: str | None = None) -> str:
+    # Язык вопроса — в task-local ContextVar: его читает языковой дедуп в
+    # реранк-хуке (LightRAG туда язык не пробрасывает). См. providers.CURRENT_LANG.
+    CURRENT_LANG.set(lang)
     resp = await rag.aquery(
         question,
         param=_query_param(lang),
@@ -133,6 +143,7 @@ async def get_sources(rag: LightRAG, question: str, lang: str | None = None) -> 
     Парсим секцию «Reference Document List» из контекста (там наши метки-цитаты
     из file_paths) вместо возврата всего дампа графа знаний.
     """
+    CURRENT_LANG.set(lang)  # язык для дедупа в реранк-хуке (как в answer)
     p = _query_param(lang)
     p.only_need_context = True
     ctx = await rag.aquery(question, param=p, system_prompt=AFM_SYSTEM_PROMPT)

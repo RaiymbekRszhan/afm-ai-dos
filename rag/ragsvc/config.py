@@ -38,11 +38,21 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "dummy")
 
-# Reranker
+# Reranker (внешний bge-reranker-v2-m3, Cohere-совместимый /rerank).
 RERANK_ENABLED = _b("RERANK_ENABLED")
 RERANK_BASE_URL = os.getenv("RERANK_BASE_URL", "")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "bge-reranker-v2-m3")
 RERANK_API_KEY = os.getenv("RERANK_API_KEY", "dummy")
+
+# Языковой дедуп выдачи (локальный, БЕЗ внешнего сервиса). Ставит чанки языка
+# вопроса выше зеркальных иноязычных дублей и усекает до CHUNK_TOP_K — top-k
+# заполняется РАЗНЫМИ нормами нужного языка, а не ru+kk-копиями одной статьи.
+# Работает через тот же реранк-хук LightRAG (providers.lang_dedup_rerank); когда
+# включён внешний RERANK_ENABLED, он строго сильнее и заменяет дедуп. Чтобы хук
+# получил ШИРЕ пул кандидатов (иначе naive тянет лишь CHUNK_TOP_K и дедупить
+# нечего), при включённом дедупе/реранке ретрив расширяется до TOP_K (см.
+# rag_engine._query_param). Выключить: LANG_DEDUP=0.
+LANG_DEDUP = _b("LANG_DEDUP", "1")
 
 # RAG — только векторный поиск (naive). Граф знаний не используем.
 WORKING_DIR = os.getenv("WORKING_DIR", "./rag_storage")
