@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
+from time import perf_counter
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -9,12 +11,17 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app import service
+from app import logging_setup, service
 from app.clients import rag, stt, tts
 from app.config import settings
 from app.schemas import ChatRequest, ChatResponse, SpeakRequest, TranscribeResponse
 
 log = logging.getLogger("ai_dos.api")
+
+
+def _ms(t0: float) -> int:
+    """Миллисекунды с момента t0 (perf_counter) — для таймингов стадий."""
+    return round((perf_counter() - t0) * 1000)
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -27,6 +34,8 @@ _warmup_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _warmup_task
+    # Логирование: ops -> journald, аналитика /voice -> logs/interactions.jsonl.
+    logging_setup.configure_logging()
     # Источник ответа — внешний RAG-сервис (:8077). Локальный индекс больше не грузим.
     # Прогрев Whisper-kk в фоне, чтобы первый казахский запрос не тормозил.
     if settings.stt_kk_use_whisper:
@@ -122,20 +131,26 @@ async def transcribe_endpoint(
     """Шаг STT: аудио → текст (+ опциональная LLM-коррекция)."""
     audio = await _read_upload(data)
     lang = language or settings.stt_default_language
+    token = logging_setup.set_request_id(uuid.uuid4().hex[:8])
+    t = perf_counter()
     try:
-        raw = await stt.transcribe(
-            audio, data.filename or "audio.wav", lang,
-            content_type=data.content_type or "audio/wav",
-        )
-    except Exception as e:
-        # Полную ошибку — в лог; клиенту — обобщённо (в тексте httpx-ошибок ходят
-        # внутренние адреса сервисов АФМ, это раскрытие топологии сети).
-        log.warning("STT error [%s]: %r", lang, e)
-        raise HTTPException(status_code=502, detail="Ошибка распознавания речи (STT).")
+        try:
+            raw = await stt.transcribe(
+                audio, data.filename or "audio.wav", lang,
+                content_type=data.content_type or "audio/wav",
+            )
+        except Exception as e:
+            # Полную ошибку — в лог; клиенту — обобщённо (в тексте httpx-ошибок ходят
+            # внутренние адреса сервисов АФМ, это раскрытие топологии сети).
+            log.warning("STT error [%s]: %r", lang, e)
+            raise HTTPException(status_code=502, detail="Ошибка распознавания речи (STT).")
 
-    do_correct = service.should_correct(lang) if correct is None else correct
-    text = await service.correct_transcript(raw, lang) if do_correct else raw
-    return TranscribeResponse(text=text, language=lang, raw_text=raw)
+        do_correct = service.should_correct(lang) if correct is None else correct
+        text = await service.correct_transcript(raw, lang) if do_correct else raw
+        log.info("transcribe lang=%s stt=%dms", lang, _ms(t))
+        return TranscribeResponse(text=text, language=lang, raw_text=raw)
+    finally:
+        logging_setup.reset_request_id(token)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -143,13 +158,19 @@ async def chat_endpoint(req: ChatRequest):
     """Шаг RAG: текст вопроса → ответ строго по базе (внешний RAG-сервис :8077)."""
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Пустой вопрос")
-    service.check_injection(req.question, req.language)  # только логируем, не блокируем
+    token = logging_setup.set_request_id(uuid.uuid4().hex[:8])
+    t = perf_counter()
     try:
-        result = await rag.ask(req.question, req.language, with_sources=True)
-    except Exception as e:
-        log.warning("RAG error [%s]: %r", req.language, e)
-        raise HTTPException(status_code=502, detail="Ошибка поиска по базе (RAG).")
-    return result
+        service.check_injection(req.question, req.language)  # только логируем, не блокируем
+        try:
+            result = await rag.ask(req.question, req.language, with_sources=True)
+        except Exception as e:
+            log.warning("RAG error [%s]: %r", req.language, e)
+            raise HTTPException(status_code=502, detail="Ошибка поиска по базе (RAG).")
+        log.info("chat lang=%s rag=%dms", req.language, _ms(t))
+        return result
+    finally:
+        logging_setup.reset_request_id(token)
 
 
 @app.post("/speak")
@@ -157,16 +178,22 @@ async def speak_endpoint(req: SpeakRequest):
     """Шаг TTS: текст → аудио на нужном языке."""
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Пустой текст")
+    token = logging_setup.set_request_id(uuid.uuid4().hex[:8])
+    t = perf_counter()
     try:
-        audio = await tts.synthesize(req.text, req.language)
-    except RuntimeError as e:
-        # RuntimeError здесь — наши собственные сообщения (провайдер не настроен и
-        # т.п.), их можно показать; сетевые ошибки идут ниже и обезличиваются.
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        log.warning("TTS error [%s]: %r", req.language, e)
-        raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
-    return Response(content=audio, media_type=f"audio/{settings.tts_format}")
+        try:
+            audio = await tts.synthesize(req.text, req.language)
+        except RuntimeError as e:
+            # RuntimeError здесь — наши собственные сообщения (провайдер не настроен и
+            # т.п.), их можно показать; сетевые ошибки идут ниже и обезличиваются.
+            raise HTTPException(status_code=503, detail=str(e))
+        except Exception as e:
+            log.warning("TTS error [%s]: %r", req.language, e)
+            raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
+        log.info("speak lang=%s tts=%dms chars=%d", req.language, _ms(t), len(req.text))
+        return Response(content=audio, media_type=f"audio/{settings.tts_format}")
+    finally:
+        logging_setup.reset_request_id(token)
 
 
 @app.post("/voice")
@@ -185,91 +212,125 @@ async def voice_endpoint(
     формулировку; страница шлёт её со следующим вопросом, и реплика-согласие
     («да», «иә») означает «отвечай на исправленный вопрос».
     """
-    audio = await _read_upload(data)
+    # request-id связывает все строки лога одного обращения (STT/RAG/TTS/ошибки).
+    rid = uuid.uuid4().hex[:8]
+    audio = await _read_upload(data)  # может дать 413 ДО старта пайплайна — не логируем
     lang = language or settings.stt_default_language
-    # /voice — самый дорогой путь; ограничиваем число одновременных, чтобы пачка
-    # запросов не положила TTS/GPU-ноду. Лишние ждут очереди (не отвергаются).
-    async with _voice_sem:
-        try:
-            question = await stt.transcribe(
-                audio, data.filename or "audio.wav", lang,
-                content_type=data.content_type or "audio/wav",
-            )
-        except Exception as e:
-            log.warning("STT error [%s]: %r", lang, e)
-            raise HTTPException(status_code=502, detail="Ошибка распознавания речи (STT).")
-
-        if service.should_correct(lang):
-            question = await service.correct_transcript(question, lang)
-
-        if not question.strip():
-            raise HTTPException(status_code=400, detail="Не удалось распознать речь. Повторите вопрос.")
-
-        # «Да» в ответ на наше «возможно, вы хотели спросить …?» — отвечаем на
-        # исправленный вопрос. Любая другая реплика — обычный новый вопрос.
-        suggest_used = False
-        if suggest and service.is_affirmative(question):
-            question = suggest
-            suggest_used = True
-
-        service.check_injection(question, lang)  # только логируем, не блокируем
-
-        try:
-            # sources не нужны в озвучке: with_sources=True заставил бы RAG делать
-            # второй запрос к графу/LLM на каждый вопрос — лишняя задержка.
-            result = await rag.ask(question, lang, with_sources=False)
-        except Exception as e:
-            log.warning("RAG error [%s]: %r", lang, e)
-            raise HTTPException(status_code=502, detail="Ошибка поиска по базе (RAG).")
-
-        answer = result["answer"]
-
-        # RAG не нашёл ответа — вероятно, STT исказил вопрос. Предлагаем гражданину
-        # исправленную формулировку (доп. LLM-вызов ТОЛЬКО на пути отказа). После
-        # подтверждённой подсказки повторно не уточняем — иначе цикл уточнений.
-        suggestion = None
-        if not suggest_used and service.looks_not_found(answer):
-            suggestion = await service.suggest_question(question, lang)
-            if suggestion:
-                answer = service.clarify_phrase(suggestion, lang)
-
-        # Печать образцов: ответ про подачу заявления/жалобы/приём → предлагаем
-        # распечатать бланк. Приглашение ДОПИСЫВАЕМ в ответ (аватар проговорит +
-        # уйдёт в X-Answer на экран), id образцов — в заголовок X-Print. На пути
-        # уточнения (suggestion) не предлагаем — там ещё не ответ по существу.
-        print_ids: list[str] = []
-        if not suggestion:
-            print_ids = service.detect_print_templates(answer)
-            if print_ids:
-                answer = service.with_print_offer(answer, lang)
-
-        if settings.tts_enabled:
+    # Одна запись аналитики на обращение — собираем по ходу, пишем в finally (в т.ч.
+    # на пути ошибки: видно, какая стадия упала и сколько заняла).
+    rec: dict = {
+        "request_id": rid, "lang": lang, "provider": tts._provider_for(lang),
+        "corrected": False, "suggested": False, "print_ids": [], "answer_found": None,
+        "question": None, "answer": None,
+        "stt_ms": None, "rag_ms": None, "tts_ms": None, "error": None,
+    }
+    token = logging_setup.set_request_id(rid)
+    t_start = perf_counter()
+    try:
+        # /voice — самый дорогой путь; ограничиваем число одновременных, чтобы пачка
+        # запросов не положила TTS/GPU-ноду. Лишние ждут очереди (не отвергаются).
+        async with _voice_sem:
+            t = perf_counter()  # стадия «речь → текст» = STT (+ опц. LLM-коррекция)
             try:
-                out_audio = await tts.synthesize(answer, lang)
+                question = await stt.transcribe(
+                    audio, data.filename or "audio.wav", lang,
+                    content_type=data.content_type or "audio/wav",
+                )
+                if service.should_correct(lang):
+                    corrected = await service.correct_transcript(question, lang)
+                    rec["corrected"] = corrected != question
+                    question = corrected
             except Exception as e:
-                log.warning("TTS error [%s]: %r", lang, e)
-                raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
-            headers = {
-                # percent-encode: HTTP-заголовки только latin-1, а текст русский/казахский.
-                # UI может показать и вопрос, и текст озвученного ответа.
-                "X-Question": quote(question),
-                "X-Answer": quote(answer),
-            }
-            if suggestion:
-                # страница вернёт это в поле `suggest` следующего запроса
-                headers["X-Suggest"] = quote(suggestion)
-            if print_ids:
-                # страница покажет кнопку печати и построит меню образцов
-                headers["X-Print"] = ",".join(print_ids)
-            return Response(
-                content=out_audio,
-                media_type=f"audio/{settings.tts_format}",
-                headers=headers,
-            )
+                rec["error"] = "stt"
+                log.warning("STT error [%s]: %r", lang, e)
+                raise HTTPException(status_code=502, detail="Ошибка распознавания речи (STT).")
+            rec["stt_ms"] = _ms(t)
 
-        out = {"question": question, "answer": answer, "sources": result["sources"]}
-        if suggestion:
-            out["suggest"] = suggestion
-        if print_ids:
-            out["print"] = print_ids
-        return out
+            if not question.strip():
+                rec["error"] = "empty"
+                raise HTTPException(status_code=400, detail="Не удалось распознать речь. Повторите вопрос.")
+
+            # «Да» в ответ на наше «возможно, вы хотели спросить …?» — отвечаем на
+            # исправленный вопрос. Любая другая реплика — обычный новый вопрос.
+            suggest_used = False
+            if suggest and service.is_affirmative(question):
+                question = suggest
+                suggest_used = True
+            rec["question"] = question
+
+            service.check_injection(question, lang)  # только логируем, не блокируем
+
+            t = perf_counter()
+            try:
+                # sources не нужны в озвучке: with_sources=True заставил бы RAG делать
+                # второй запрос к графу/LLM на каждый вопрос — лишняя задержка.
+                result = await rag.ask(question, lang, with_sources=False)
+            except Exception as e:
+                rec["error"] = "rag"
+                log.warning("RAG error [%s]: %r", lang, e)
+                raise HTTPException(status_code=502, detail="Ошибка поиска по базе (RAG).")
+            rec["rag_ms"] = _ms(t)
+
+            answer = result["answer"]
+            # Нашёл ли RAG ответ — фиксируем ДО подмены answer подсказкой ниже.
+            rec["answer_found"] = not service.looks_not_found(answer)
+
+            # RAG не нашёл ответа — вероятно, STT исказил вопрос. Предлагаем гражданину
+            # исправленную формулировку (доп. LLM-вызов ТОЛЬКО на пути отказа). После
+            # подтверждённой подсказки повторно не уточняем — иначе цикл уточнений.
+            suggestion = None
+            if not suggest_used and service.looks_not_found(answer):
+                suggestion = await service.suggest_question(question, lang)
+                if suggestion:
+                    answer = service.clarify_phrase(suggestion, lang)
+            rec["suggested"] = bool(suggestion)
+
+            # Печать образцов: ответ про подачу заявления/жалобы/приём → предлагаем
+            # распечатать бланк. Приглашение ДОПИСЫВАЕМ в ответ (аватар проговорит +
+            # уйдёт в X-Answer на экран), id образцов — в заголовок X-Print. На пути
+            # уточнения (suggestion) не предлагаем — там ещё не ответ по существу.
+            print_ids: list[str] = []
+            if not suggestion:
+                print_ids = service.detect_print_templates(answer)
+                if print_ids:
+                    answer = service.with_print_offer(answer, lang)
+            rec["print_ids"] = print_ids
+            rec["answer"] = answer
+
+            if settings.tts_enabled:
+                t = perf_counter()
+                try:
+                    out_audio = await tts.synthesize(answer, lang)
+                except Exception as e:
+                    rec["error"] = "tts"
+                    log.warning("TTS error [%s]: %r", lang, e)
+                    raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
+                rec["tts_ms"] = _ms(t)
+                headers = {
+                    # percent-encode: HTTP-заголовки только latin-1, а текст русский/казахский.
+                    # UI может показать и вопрос, и текст озвученного ответа.
+                    "X-Question": quote(question),
+                    "X-Answer": quote(answer),
+                }
+                if suggestion:
+                    # страница вернёт это в поле `suggest` следующего запроса
+                    headers["X-Suggest"] = quote(suggestion)
+                if print_ids:
+                    # страница покажет кнопку печати и построит меню образцов
+                    headers["X-Print"] = ",".join(print_ids)
+                return Response(
+                    content=out_audio,
+                    media_type=f"audio/{settings.tts_format}",
+                    headers=headers,
+                )
+
+            out = {"question": question, "answer": answer, "sources": result["sources"]}
+            if suggestion:
+                out["suggest"] = suggestion
+            if print_ids:
+                out["print"] = print_ids
+            return out
+    finally:
+        rec["total_ms"] = _ms(t_start)
+        logging_setup.record_interaction(**rec)
+        logging_setup.reset_request_id(token)

@@ -317,6 +317,41 @@ ElevenLabs — когда нужен максимально чистый гол�
 
 ---
 
+## Логи и аналитика
+
+Два независимых потока (реализация — `app/logging_setup.py`):
+
+- **Ops (ошибки, тайминги, request-id)** — в stderr → **journald**. Смотреть как обычно:
+  ```bash
+  journalctl -u ai-dos-api -f                    # живой поток
+  journalctl -u ai-dos-api | grep interaction    # строки по каждому /voice
+  ```
+  Пример строки: `interaction lang=ru stt=320ms rag=1450ms tts=2100ms total=3.9s found=True suggest=0 print=fl provider=f5 error=-`. Ротацию journald держит сам (`SystemMaxUse` в `journald.conf`).
+- **Аналитика — по строке JSONL на каждый `/voice`** в `logs/interactions.jsonl` (суточная ротация, `backupCount=LOG_RETENTION_DAYS` → старые файлы **сами удаляются = ретеншен**). Поля: `question`, `answer`, `lang`, `answer_found`, `suggested`, `print_ids`, `provider`, тайминги стадий, `error`.
+
+⚠️ **`logs/` содержит ПДн граждан** — в git не коммитится (`.gitignore`), с сервера наружу не выносить без согласования.
+
+**Отчёт для АФМ** (спрос, доля fallback = дыры в базе, p50/p95 задержек, ru/kk):
+```bash
+.venv/bin/python -m scripts.interactions_report --dir logs           # всё
+.venv/bin/python -m scripts.interactions_report --dir logs --days 7  # за неделю
+```
+
+**Настройки** (env / `.env`, дефолты рабочие — менять не обязательно):
+
+| Переменная | Дефолт | Смысл |
+|---|---|---|
+| `LOG_LEVEL` | `INFO` | уровень ops-логов |
+| `LOG_DIR` | `logs` | куда писать JSONL (относит. WorkingDirectory) |
+| `LOG_ANALYTICS` | `true` | писать JSONL по `/voice` |
+| `LOG_QUESTIONS` | `full` | текст вопроса: `full` / `hash` (sha256) / `off` |
+| `LOG_ANSWERS` | `true` | писать текст ответа |
+| `LOG_RETENTION_DAYS` | `30` | сколько суток хранить (= число суточных файлов) |
+
+**systemd:** journald ловит stdout сам; `logs/` под `/opt/ai-dos` при текущем `ProtectSystem=full` пишется без доп. настроек. Если ужесточишь до `ProtectSystem=strict` — добавь в юнит `ReadWritePaths=/opt/ai-dos/logs`.
+
+---
+
 ## Если упрётся
 - ошибка установки F5/Spark → пришли текст, это обычно версии (пины в их `requirements.txt`)
 - RAG: `Embedding dimension mismatch` → сверь `EMBEDDING_DIM` в `rag/.env` с выводом `python -m scripts.check`

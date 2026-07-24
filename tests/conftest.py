@@ -8,6 +8,7 @@ import os
 # Должно стоять ДО импорта app.config (Settings читает окружение при импорте).
 os.environ["STT_KK_USE_WHISPER"] = "false"   # не грузим Whisper в lifespan
 os.environ["STT_CORRECTION"] = "false"        # не дёргаем LLM-коррекцию
+os.environ["LOG_ANALYTICS"] = "false"         # обычные тесты не пишут JSONL/logs/ (см. test_logging)
 
 import pytest
 from fastapi.testclient import TestClient

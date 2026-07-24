@@ -137,6 +137,20 @@ class Settings(BaseSettings):
     # путь (Whisper + до 10 вызовов TTS, минуты CPU/GPU); без лимита пачка
     # параллельных запросов кладёт TTS/GPU-ноду. Остальные ждут в очереди.
     max_concurrent_voice: int = 2
+    # --- Логирование ---
+    # Ops-логи (ошибки/тайминги/request-id) идут в stderr → journald (systemd).
+    # Аналитика (по одной строке на /voice) — в JSONL-файл с суточной ротацией;
+    # backupCount=log_retention_days → старые суточные файлы сами удаляются
+    # (это и есть ретеншен персональных данных граждан).
+    log_level: str = "INFO"          # уровень ai_dos.* (DEBUG|INFO|WARNING|ERROR)
+    log_dir: str = "logs"            # куда писать interactions.jsonl (относит. WorkingDirectory)
+    log_analytics: bool = True       # писать JSONL по /voice
+    # Как хранить текст вопроса гражданина (ПДн): full — как есть; hash — sha256[:16];
+    # off — не писать текст вовсе (останутся метрики: язык, found/fallback, тайминги).
+    log_questions: str = "full"
+    log_answers: bool = True         # писать текст ответа (для последующего анализа LLM-ответов)
+    log_retention_days: int = 30     # сколько суточных JSONL-файлов держать (= дней хранения)
+
     # Известные провайдеры TTS без спец-проверки конфига (openai проверяется отдельно).
     _KNOWN_TTS_PROVIDERS = ("f5", "spark", "say", "eleven")
 
