@@ -4,6 +4,8 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   parseAnswer,
   parseNum,
@@ -116,4 +118,15 @@ test("detectPrintTemplates: 'личный приём' с кириллическ�
 
 test("detectPrintTemplates: обычный ответ без предложения печати", () => {
   assert.deepEqual(detectPrintTemplates("Штраф составляет 100 МРП."), []);
+});
+
+test("detectPrintTemplates: контракт с бэкендом (общий fixture, N9)", () => {
+  // Тот же набор, что гоняет pytest над service.detect_print_templates
+  // (tests/test_print_triggers.py) — обе стороны обязаны совпасть с ним, значит
+  // и друг с другом. Синхронизирует фронт (answer_render.js) и бэк (service.py).
+  const fixture = path.join(__dirname, "..", "..", "tests", "fixtures", "print_triggers.json");
+  const cases = JSON.parse(fs.readFileSync(fixture, "utf8"));
+  for (const c of cases) {
+    assert.deepEqual(detectPrintTemplates(c.text), c.expect, c.note);
+  }
 });
