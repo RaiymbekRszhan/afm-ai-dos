@@ -1,0 +1,21 @@
+# Локальный казахский STT (Whisper-kk) для ОРКЕСТРАТОРА (venv .venv).
+# Ставить ТОЛЬКО если казахский STT крутится in-process на этой машине, т.е.
+#   STT_KK_USE_WHISPER=true
+# По умолчанию НЕ нужен: казахский STT идёт на сервер АФМ (:8804, он тянет и
+# казахский) или на отдельный whisper_kk_server (STT_KK_URL). В обоих случаях
+# оркестратору torch НЕ нужен — ставь только базовый requirements.txt.
+#
+# ⚠️ CPU-машина (оркестратор без GPU): обычный `pip install torch==2.12.1` тянет
+# CUDA-сборку с nvidia-* колёсами (несколько ГБ, бесполезно на CPU). Сначала CPU-torch:
+#   pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
+# затем:
+#   pip install -r requirements-whisper-kk.txt
+#
+# GPU-машина: сначала torch под CUDA сервера (см. pytorch.org), затем этот файл.
+# Модель Whisper-kk (~1.6 ГБ) скачается сама при первом казахском запросе
+# (на офлайн-сети АФМ — заранее прогреть кэш HF на Wi-Fi).
+torch==2.12.1
+transformers==5.12.1
+accelerate==1.14.0
+librosa==0.11.0
+soundfile==0.14.0

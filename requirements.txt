@@ -8,10 +8,9 @@ pydantic-settings==2.7.1
 python-multipart==0.0.20
 num2words==0.5.14        # числа -> слова для русского TTS (F5 цифры не читает)
 
-# Казахский STT (Whisper-kk, локально/на GPU). Тяжёлые — ставить на Wi-Fi.
-torch==2.12.1
-transformers==5.12.1
-accelerate==1.14.0
-librosa==0.11.0
-soundfile==0.14.0
+# Локальный казахский STT (Whisper-kk, STT_KK_USE_WHISPER=true) — ТЯЖЁЛЫЙ стек
+# (torch/transformers/librosa) вынесен в requirements-whisper-kk.txt. По умолчанию
+# НЕ нужен: казахский STT идёт на сервер АФМ (:8804) или на whisper_kk_server,
+# оркестратор без него лёгкий и ставится БЕЗ torch/CUDA (импорты в stt.py ленивые,
+# прогрев Whisper гейтится флагом). См. requirements-whisper-kk.txt.
 

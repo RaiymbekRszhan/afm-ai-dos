@@ -18,16 +18,21 @@ dependencies = [
     # Числа -> слова для русской озвучки (F5 цифры не читает). Без пакета озвучка
     # чисел на русском молча деградирует (импорт в tts.py обёрнут в try/except).
     "num2words==0.5.14",
-    # Казахский STT (Whisper-kk). Тяжёлые — на GPU нужен torch под CUDA сервера.
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+# Локальный казахский STT (Whisper-kk, STT_KK_USE_WHISPER=true). НЕ нужен, когда
+# казахский STT на сервере АФМ (:8804) или whisper_kk_server — оркестратор тогда
+# лёгкий (без torch/CUDA). Ставить: pip install -r requirements-whisper-kk.txt
+# (на CPU-машине сперва CPU-сборку torch — см. тот файл). Зеркалит requirements-whisper-kk.txt.
+whisper-kk = [
     "torch==2.12.1",
     "transformers==5.12.1",
     "accelerate==1.14.0",
     "librosa==0.11.0",
     "soundfile==0.14.0",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=8"]
 
 [tool.uv]
 package = false        # это приложение, не библиотека — ставим только зависимости

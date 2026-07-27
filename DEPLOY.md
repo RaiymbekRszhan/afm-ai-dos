@@ -86,7 +86,10 @@ uv venv .venv && source .venv/bin/activate     # без uv: python3 -m venv .ven
 uv pip install -r requirements.txt             # без uv: pip install -r requirements.txt
 deactivate
 ```
-Whisper-kk (~1.6 ГБ) скачается сам при первом казахском запросе.
+Базовый стек **лёгкий, без torch/CUDA**: казахский STT идёт на сервер АФМ (:8804), казахский
+TTS — на ElevenLabs (или Spark :8992). Локальный Whisper-kk (`STT_KK_USE_WHISPER=true`) нужен
+РЕДКО — тогда дополнительно `pip install -r requirements-whisper-kk.txt` (на CPU-машине сперва
+CPU-сборку torch, см. файл; модель Whisper-kk ~1.6 ГБ скачается при первом казахском запросе).
 
 ## ШАГ 3. RAG-сервис (venv rag/.venv)
 ```bash
