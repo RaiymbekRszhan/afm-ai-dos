@@ -100,7 +100,7 @@ USE_ELEVEN=1 bash run_api.sh    # основной путь: TTS на ElevenLabs
 | POST | `/transcribe` | STT: аудио → текст (+ опц. коррекция) |
 | POST | `/chat`       | RAG: вопрос → ответ + источники (строкой) |
 | POST | `/speak`      | TTS: текст → аудио |
-| POST | `/voice`      | полный цикл: аудио → WAV ответа + X-Question/X-Answer/X-Suggest |
+| POST | `/voice`      | полный цикл: аудио → JSON `{question, answer, suggest, print, provider, format, audio_b64}` (текст + WAV в base64, всё в теле) |
 
 ## TTS: длинные ответы и нормализация
 TTS обрезает текст длиннее ~182 симв. Поэтому в `app/clients/tts.py` длинный ответ
