@@ -20,6 +20,7 @@ import asyncio
 import io
 import os
 import threading
+from contextlib import asynccontextmanager
 
 import librosa
 import soundfile as sf
@@ -31,6 +32,9 @@ from transformers.utils import logging as hf_logging
 
 MODEL = os.environ.get("WHISPER_KK_MODEL", "shyngys879/kazakh-whisper-large-v3-turbo")
 PORT = int(os.environ.get("WHISPER_KK_PORT", "8813"))
+# По умолчанию слушаем все интерфейсы (сервис живёт на GPU-ноде АФМ, к нему ходит
+# оркестратор по сети), но адрес НАСТРАИВАЕМ — как у f5/spark (N8).
+HOST = os.environ.get("WHISPER_KK_HOST", "0.0.0.0")
 
 # Ленивый кэш пайплайна + double-checked locking: прогрев (startup) и первый
 # запрос иначе оба увидят None и загрузят гигабайты модели ДВАЖДЫ (скачок/OOM).
@@ -72,13 +76,15 @@ def _load() -> None:
         )
 
 
-app = FastAPI(title="Ai-dos — Whisper-kk STT (казахский)")
-
-
-@app.on_event("startup")
-def _warm() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     # Прогреваем модель при старте, чтобы первый запрос не ждал загрузку весов.
+    # lifespan вместо @app.on_event (последний удаляют в новых FastAPI, N8).
     _load()
+    yield
+
+
+app = FastAPI(title="Ai-dos — Whisper-kk STT (казахский)", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -101,12 +107,15 @@ async def transcribe(data: UploadFile = File(...), language: str = Form("kazakh"
         return out["text"].strip()
 
     try:
-        # Тяжёлый синтез — в отдельном потоке, чтобы не блокировать event loop.
+        # Тяжёлое распознавание — в отдельном потоке, чтобы не блокировать event loop.
         text = await asyncio.to_thread(_run)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Whisper-kk error: {e!r}")
+        # Наружу — обобщённо: {e!r} может нести пути/детали окружения (N8);
+        # полная диагностика — в лог сервиса.
+        print(f"[whisper-kk] ошибка распознавания: {e!r}")
+        raise HTTPException(status_code=500, detail="Ошибка распознавания речи (Whisper-kk).")
     return {"status": "success", "data": text}
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT)
