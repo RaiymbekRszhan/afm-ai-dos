@@ -10,14 +10,16 @@ Wants=network-online.target ai-dos-rag.service
 Type=simple
 User=ai-dos
 WorkingDirectory=/opt/ai-dos
+# Дефолт: оркестратор на 127.0.0.1 — снаружи к нему ходит только video_ui (:8100)
+# с той же машины (N6). Открыть на всю сеть (за TLS-прокси): API_HOST=0.0.0.0 в
+# ai-dos.env. Environment= задаёт дефолт, EnvironmentFile ниже может переопределить.
+Environment=API_HOST=127.0.0.1
 # ЕДИНЫЙ источник топологии TTS/STT/RAG — тот же файл, что сорсит run_api.sh (N2).
 # Скопируй deploy/ai-dos.env.example -> /opt/ai-dos/ai-dos.env и подгони.
 # `-` — файл необязателен: без него берутся дефолты app/config.py.
 EnvironmentFile=-/opt/ai-dos/ai-dos.env
 # Секреты (ELEVENLABS_API_KEY и пр.) — в /opt/ai-dos/.env (читает pydantic).
-# host 0.0.0.0: к оркестратору напрямую ходят браузеры граждан. За TLS-прокси
-# (рекомендуется) можно сузить до 127.0.0.1.
-ExecStart=/opt/ai-dos/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=/opt/ai-dos/.venv/bin/uvicorn app.main:app --host ${API_HOST} --port 8000
 Restart=always
 RestartSec=5
 

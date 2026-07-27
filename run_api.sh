@@ -127,4 +127,7 @@ export RAG_URL="${RAG_URL:-http://localhost:8077/ask}"
 WITH_VIDEO_UI="${WITH_VIDEO_UI:-1}"
 if [ "$WITH_VIDEO_UI" = "1" ]; then bash video_ui/run.sh & fi
 
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# По умолчанию оркестратор слушает 127.0.0.1: снаружи к нему ходит только
+# video_ui (:8100) с той же машины (см. N6). Открыть на всю сеть (за TLS-прокси):
+# API_HOST=0.0.0.0 (в ai-dos.env).
+uvicorn app.main:app --host "${API_HOST:-127.0.0.1}" --port 8000

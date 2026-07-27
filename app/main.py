@@ -78,10 +78,11 @@ async def _read_upload(data: UploadFile) -> bytes:
     return audio
 
 
-# docs_url=None — отключаем встроенный Swagger (он тянет CSS/JS с CDN, а в сети
-# АФМ нет интернета). Ниже отдаём Swagger с локальных файлов.
+# docs_url/redoc_url/openapi_url=None — отключаем встроенные роуты Swagger (он тянет
+# CSS/JS с CDN, а в сети АФМ нет интернета; схему в проде вообще не раскрываем).
+# Ниже — свои /docs и /openapi.json, ОБА за флагом settings.enable_docs (N6).
 app = FastAPI(title="АФМ — Цифровой офицер Ai-dos", lifespan=lifespan, docs_url=None,
-              redoc_url=None)
+              redoc_url=None, openapi_url=None)
 
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -105,11 +106,21 @@ async def favicon():
     return Response(status_code=204)
 
 
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_json():
+    """Схема API — только при enable_docs (в проде выключена, N6)."""
+    if not settings.enable_docs:
+        raise HTTPException(status_code=404)
+    return app.openapi()
+
+
 @app.get("/docs", include_in_schema=False)
 async def custom_docs():
-    """Swagger UI с локальными ассетами (работает без интернета)."""
+    """Swagger UI с локальными ассетами (без интернета). Только при enable_docs (N6)."""
+    if not settings.enable_docs:
+        raise HTTPException(status_code=404)
     return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
+        openapi_url="/openapi.json",
         title=app.title,
         swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
         swagger_css_url="/static/swagger-ui/swagger-ui.css",

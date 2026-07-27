@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     # тысяч символов (llm_max_tokens=512); 4000 — заметный запас сверху.
     max_speak_chars: int = 4000
 
+    # Swagger `/docs` и схема `/openapi.json`: в проде выключены (N6) — не раскрываем
+    # схему API в сети киоска. ENABLE_DOCS=1 включает (для отладки за TLS-прокси).
+    enable_docs: bool = False
+
     # Загрузка аудио: предел размера файла (защита от перегруза памяти).
     max_upload_mb: int = 25
     # Сколько запросов /voice обрабатывать одновременно. /voice — самый дорогой

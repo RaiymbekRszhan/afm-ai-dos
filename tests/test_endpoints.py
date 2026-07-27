@@ -11,6 +11,20 @@ def test_health(client):
     assert "tts" in body and "enabled" in body["tts"]
 
 
+def test_docs_disabled_by_default(client):
+    """N6: Swagger /docs и схема /openapi.json в проде выключены (не раскрываем API)."""
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
+def test_docs_enabled_with_flag(client, monkeypatch):
+    """N6: при ENABLE_DOCS /docs и /openapi.json доступны (для отладки за прокси)."""
+    import app.main as main
+    monkeypatch.setattr(main.settings, "enable_docs", True)
+    assert client.get("/docs").status_code == 200
+    assert client.get("/openapi.json").status_code == 200
+
+
 def test_chat_ok(client):
     r = client.post("/chat", json={"question": "Какой порог по ювелирке?", "language": "russian"})
     assert r.status_code == 200
