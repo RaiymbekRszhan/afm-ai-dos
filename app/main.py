@@ -25,8 +25,19 @@ def _ms(t0: float) -> int:
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
-# Ограничитель одновременных /voice (дорогой путь): защита TTS/GPU от перегруза.
-_voice_sem = asyncio.Semaphore(max(1, settings.max_concurrent_voice))
+# Общий ограничитель конкурентности TTS/GPU: защищает и /voice (весь дорогой
+# пайплайн), и прямой /speak (см. _guarded_synthesize) — иначе пачка запросов
+# кладёт единственную TTS/GPU-ноду.
+_tts_sem = asyncio.Semaphore(max(1, settings.max_concurrent_voice))
+
+
+async def _guarded_synthesize(text: str, language: str | None) -> bytes:
+    """Синтез под общим семафором TTS/GPU (N12). /speak идёт через него, чтобы
+    прямые вызовы не заняли единственный ресурс мимо лимита, как уже сделано для
+    /voice. НЕ звать из-под уже удержанного _tts_sem (в /voice) — семафор не
+    реентрантен, при лимите 1 это дедлок; /voice синтезирует, уже держа семафор."""
+    async with _tts_sem:
+        return await tts.synthesize(text, language)
 # Ссылка на фоновый прогрев Whisper — иначе GC может убить task до завершения.
 _warmup_task: asyncio.Task | None = None
 
@@ -182,7 +193,7 @@ async def speak_endpoint(req: SpeakRequest):
     t = perf_counter()
     try:
         try:
-            audio = await tts.synthesize(req.text, req.language)
+            audio = await _guarded_synthesize(req.text, req.language)
         except RuntimeError as e:
             # RuntimeError здесь — наши собственные сообщения (провайдер не настроен и
             # т.п.), их можно показать; сетевые ошибки идут ниже и обезличиваются.
@@ -229,7 +240,7 @@ async def voice_endpoint(
     try:
         # /voice — самый дорогой путь; ограничиваем число одновременных, чтобы пачка
         # запросов не положила TTS/GPU-ноду. Лишние ждут очереди (не отвергаются).
-        async with _voice_sem:
+        async with _tts_sem:
             t = perf_counter()  # стадия «речь → текст» = STT (+ опц. LLM-коррекция)
             try:
                 question = await stt.transcribe(
