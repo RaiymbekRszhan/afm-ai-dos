@@ -867,10 +867,13 @@ def _concat_wav(parts: list[bytes], texts: list[str] | None = None,
     return out.getvalue()
 
 
-async def synthesize(text: str, language: str | None = None) -> bytes:
-    """Текст -> аудио (WAV-байты). Длинный текст режется и склеивается."""
-    if not text.strip():
-        raise RuntimeError("Пустой текст для синтеза")
+def prepare_for_tts(text: str, language: str | None = None) -> tuple[str, list[str]]:
+    """Что реально уйдёт в TTS: (текст для озвучки, куски для синтеза).
+
+    Вынесено из synthesize() отдельной функцией, чтобы бенч
+    (`python -m scripts.tts_bench`) показывал РОВНО ту нарезку и нормализацию,
+    что идут в бой, а не их копию, которая со временем разъедется.
+    """
     # Экранные таблицы не озвучиваем (их рендерит фронтенд). Если ответ состоял
     # из одной таблицы — киоск не должен получить 5xx: озвучиваем отсылку к экрану.
     speech = strip_display_blocks(text)
@@ -879,29 +882,33 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
                   if _resolve_lang(language) == "kk"
                   else "Ответ показан на экране.")
     # Раскрываем аббревиатуры/латиницу в произносимый вид (только для звука).
-    text = _normalize_for_tts(speech, language)
-    # Склейка реализована для WAV; для иных форматов синтезируем одним куском.
-    if settings.tts_format != "wav":
-        return await _synthesize_one(text, language)
+    speech = _normalize_for_tts(speech, language)
     # F5 сам делит текст на предложения — отдаём крупные куски (меньше швов).
     # Spark своей нарезки не имеет: режем сами, но его предел (3000) куда выше
     # F5-шных 180, поэтому даём предложению запас — чтобы разрез попал на запятую,
     # а не в середину фразы (иначе Spark комкает хвост огрызка).
-    if _provider_for(language) == "eleven":
+    provider = _provider_for(language)
+    if provider == "eleven":
         # eleven держит длинный текст сам — крупные куски, минимум швов.
-        sent_max = settings.elevenlabs_max_chars
-        group = sent_max
-    elif _provider_for(language) == "spark":
-        sent_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
-        group = sent_max
+        sent_max = group = settings.elevenlabs_max_chars
+    elif provider == "spark":
+        sent_max = group = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     else:
         sent_max = settings.tts_max_chars
-        group = (settings.tts_group_chars
-                 if _provider_for(language) == "f5"
-                 else settings.tts_max_chars)
-    parts = _split_for_tts(text, sent_max, group)
+        group = settings.tts_group_chars if provider == "f5" else settings.tts_max_chars
     # Выкидываем куски без букв (одни цифры/знаки) — TTS на них падает.
-    parts = [p for p in parts if _has_speech(p)]
+    parts = [p for p in _split_for_tts(speech, sent_max, group) if _has_speech(p)]
+    return speech, parts
+
+
+async def synthesize(text: str, language: str | None = None) -> bytes:
+    """Текст -> аудио (WAV-байты). Длинный текст режется и склеивается."""
+    if not text.strip():
+        raise RuntimeError("Пустой текст для синтеза")
+    text, parts = prepare_for_tts(text, language)
+    # Склейка реализована для WAV; для иных форматов синтезируем одним куском.
+    if settings.tts_format != "wav":
+        return await _synthesize_one(text, language)
     if not parts:
         raise RuntimeError("Нет произносимого текста для синтеза")
     if len(parts) == 1:

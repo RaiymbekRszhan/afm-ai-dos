@@ -35,6 +35,45 @@ def test_split_groups_sentences_for_f5():
     assert tts._split_for_tts(text, 180, 600) == [text]
 
 
+# ---------- TTS: подготовка текста и нарезка под провайдера ----------
+def test_prepare_for_tts_normalizes_and_drops_display_blocks():
+    """Возвращает то, что реально уйдёт в TTS: без таблицы, с раскрытыми числами."""
+    speech, chunks = tts.prepare_for_tts(
+        "Штраф до 700 МРП.\n[ТАБЛИЦА]\nБанк | Номер\nKaspi | 9999\n[/ТАБЛИЦА]", "russian")
+    assert "ТАБЛИЦА" not in speech and "9999" not in speech
+    assert "семисот месячных расчётных показателей" in speech
+    assert chunks == [speech]
+
+
+def test_prepare_for_tts_speaks_screen_notice_for_table_only_answer():
+    """Ответ из одной таблицы: озвучиваем отсылку к экрану, а не пустоту."""
+    speech, chunks = tts.prepare_for_tts("[ТАБЛИЦА]\nБанк | Номер\n[/ТАБЛИЦА]", "russian")
+    assert speech == "Ответ показан на экране."
+    assert chunks == [speech]
+    kk_speech, _ = tts.prepare_for_tts("[КЕСТЕ]\nБанк | Нөмір\n[/КЕСТЕ]", "kazakh")
+    assert kk_speech == "Жауап экранда көрсетілген."
+
+
+def test_prepare_for_tts_chunk_limit_follows_provider(monkeypatch):
+    """Лимит куска берётся у провайдера языка: f5 — группа, spark/eleven — свои."""
+    text = " ".join(f"Предложение номер {i} для проверки нарезки." for i in range(1, 30))
+
+    monkeypatch.setattr(settings, "tts_provider", "f5")
+    _, f5_chunks = tts.prepare_for_tts(text, "russian")
+    assert all(len(c) <= settings.tts_group_chars for c in f5_chunks)
+
+    monkeypatch.setattr(settings, "tts_kk_provider", "spark")
+    _, spark_chunks = tts.prepare_for_tts(text, "kazakh")
+    spark_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
+    assert all(len(c) <= spark_max for c in spark_chunks)
+
+    monkeypatch.setattr(settings, "tts_kk_provider", "eleven")
+    _, eleven_chunks = tts.prepare_for_tts(text, "kazakh")
+    assert all(len(c) <= settings.elevenlabs_max_chars for c in eleven_chunks)
+    # eleven держит длинный текст сам -> кусков заведомо меньше, чем у f5/spark
+    assert len(eleven_chunks) < len(f5_chunks)
+
+
 # ---------- TTS: нормализация аббревиатур (только для звука) ----------
 def test_normalize_ru_expands_abbr():
     # Кодексы раскрываются полностью: после «статья N» — родительный падеж.
