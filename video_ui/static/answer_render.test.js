@@ -13,6 +13,7 @@ const {
   extractLinks,
   wordWeight,
   detectPrintTemplates,
+  speechRate,
 } = require("./answer_render.js");
 
 test("parseAnswer: чистая проза без таблиц", () => {
@@ -118,6 +119,13 @@ test("detectPrintTemplates: 'личный приём' с кириллическ�
 
 test("detectPrintTemplates: обычный ответ без предложения печати", () => {
   assert.deepEqual(detectPrintTemplates("Штраф составляет 100 МРП."), []);
+});
+
+test("speechRate: Spark ускоряем, ElevenLabs/F5 в норме (N7)", () => {
+  assert.equal(speechRate("spark"), 1.4);   // офлайн-фолбэк казахского — медленный
+  assert.equal(speechRate("eleven"), 1.0);  // дефолтный казахский — в норме
+  assert.equal(speechRate("f5"), 1.0);      // русский
+  assert.equal(speechRate(undefined), 1.0); // нет данных — безопасный дефолт
 });
 
 test("detectPrintTemplates: контракт с бэкендом (общий fixture, N9)", () => {

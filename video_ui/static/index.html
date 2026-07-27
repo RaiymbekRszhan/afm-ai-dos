@@ -304,22 +304,12 @@ idleV.addEventListener("error", function () { noVid.style.display = "flex"; });
 // Тишина-заглушка: проигрываем её ВНУТРИ жеста (клик по кнопке), чтобы снять
 // autoplay-блокировку — тогда WAV, пришедший через несколько секунд, уже сыграет.
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
-// Темп проговаривания ответа — СВОЙ НА КАЖДЫЙ ЯЗЫК, у них разные движки TTS.
-// Ускоряем ИМЕННО ЗДЕСЬ, а не в самом TTS: playbackRate ускоряет ровно во столько,
-// сколько задано, ничего не стоит (звук уже готов) и не может уронить синтез.
-// preservesPitch держит тембр — голос не «мультяшный», просто говорит быстрее.
-//
-// kazakh: 1.0 — казахский по умолчанию озвучивает ElevenLabs (eleven_v3), он
-//   проговаривает в НОРМАЛЬНОМ темпе, разгонять не надо. ⚠️ Если казахский вернётся
-//   на Spark (TTS_KK_PROVIDER=spark или USE_LOCAL_SPARK=1 — офлайн, без интернета),
-//   Spark говорит медленно (8.00 c на тестовой фразе) — поставь kazakh: 1.4
-//   (8.00/1.4 = 5.71 c; 1.2–1.4 звучит естественно, выше — тараторит). Разгонять
-//   НАДО плеером, а не ручкой SPARK_SPEED (на high — вырожденная генерация, роняет
-//   ответ, см. spark_server/run.sh).
-// russian (F5): 1.0 — темп нормальный, ускорять не надо. Если покажется медленным,
-//   правильнее сменить референс (refs/ref_ru_f5.wav): F5 клонирует голос вместе с
-//   темпом, и это звучит естественнее, чем растягивание плеером.
-const SPEECH_RATE = { kazakh: 1.0, russian: 1.0 };
+// Темп проговаривания зависит от ДВИЖКА TTS (не от языка) и приходит с бэкенда
+// полем data.provider: Spark (офлайн-фолбэк казахского) медленный — ускоряем;
+// ElevenLabs/F5 — в норме. Логика в speechRate() (answer_render.js), чтобы её
+// покрывал node-тест и она не зависела от жёсткой константы (N7). Разгоняем
+// плеером (playbackRate) — ничего не стоит и не роняет синтез (в отличие от
+// SPARK_SPEED); preservesPitch держит тембр.
 const answerAudio = new Audio();
 let answerUrl = null, audioPrimed = false;
 
@@ -341,7 +331,7 @@ function b64ToBlob(b64, mime) {
   return new Blob([bytes], { type: mime });
 }
 
-function playAnswer(blob, lang) {
+function playAnswer(blob, lang, provider) {
   if (answerUrl) URL.revokeObjectURL(answerUrl);
   answerUrl = URL.createObjectURL(blob);
   autoScroll = true;                 // новый ответ — прокрутка снова наша
@@ -351,9 +341,9 @@ function playAnswer(blob, lang) {
   // preservesPitch — дефолт true в современных браузерах, но задаём явно
   // (webkit* — для Safari, где свойство до сих пор с префиксом).
   try { answerAudio.preservesPitch = true; answerAudio.webkitPreservesPitch = true; } catch (e) {}
-  // Язык берём тот, на котором СПРАШИВАЛИ, а не текущий в селекте: пока шёл
-  // синтез, посетитель мог переключить язык — темп поехал бы не тот.
-  answerAudio.playbackRate = SPEECH_RATE[lang] || 1.0;
+  // Темп — по ДВИЖКУ, которым синтезировали (provider из тела /voice): Spark
+  // ускоряем, ElevenLabs/F5 — 1.0 (N7). speechRate — в answer_render.js.
+  answerAudio.playbackRate = speechRate(provider);
   showTalking();
   answerAudio.play().catch(function (e) {
     st.textContent = "звук заблокирован браузером: " + e.message;
@@ -702,7 +692,7 @@ async function stopAndSend() {
     st.textContent = "ответ готов";
     if (data.audio_b64) {
       const blob = b64ToBlob(data.audio_b64, "audio/" + (data.format || "wav"));
-      playAnswer(blob, askedLang);       // звук + ролик «говорит», по окончании — idle
+      playAnswer(blob, askedLang, data.provider);  // темп — по data.provider (N7)
     } else {
       showIdle();                        // TTS выключен — показываем только текст
     }

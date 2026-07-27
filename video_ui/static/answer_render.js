@@ -398,10 +398,21 @@ function renderAnswer(container, text, qrContainer) {
   return rich || hasQr;
 }
 
+// ---------- темп проговаривания по TTS-провайдеру (N7) ----------
+// Темп зависит от ДВИЖКА, а не от языка: Spark (офлайн-фолбэк казахского) говорит
+// медленно — ускоряем плеером; ElevenLabs (дефолтный kk) и F5 (ru) — в норме.
+// Разгон через playbackRate ничего не стоит (звук уже готов) и не роняет синтез,
+// в отличие от ручки SPARK_SPEED. Провайдер приходит в теле /voice (data.provider).
+var SPEECH_RATE_BY_PROVIDER = { spark: 1.4 };
+function speechRate(provider) {
+  return SPEECH_RATE_BY_PROVIDER[provider] || 1.0;
+}
+
 /* для node-тестов (в браузере module нет) */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { parseAnswer: parseAnswer, parseNum: parseNum,
                      pickNumericColumn: pickNumericColumn,
                      extractLinks: extractLinks, wordWeight: wordWeight,
-                     detectPrintTemplates: detectPrintTemplates };
+                     detectPrintTemplates: detectPrintTemplates,
+                     speechRate: speechRate };
 }
