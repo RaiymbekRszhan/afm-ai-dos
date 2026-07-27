@@ -90,6 +90,8 @@ def test_eleven_result_cached(monkeypatch):
 def test_healthy_aggregates_f5_and_eleven(monkeypatch):
     monkeypatch.setattr(tts.settings, "tts_provider", "f5")
     monkeypatch.setattr(tts.settings, "tts_kk_provider", "eleven")
+    monkeypatch.setattr(tts.settings, "tts_fallback", "")
+    monkeypatch.setattr(tts.settings, "tts_kk_fallback", "")
     monkeypatch.setattr(tts.settings, "f5_url", "http://f5:8991/tts")
 
     async def fake_probe(client, url):
@@ -105,3 +107,25 @@ def test_healthy_aggregates_f5_and_eleven(monkeypatch):
     assert out["f5"]["reachable"] is True     # N1: F5 жив, хоть и 404
     assert out["eleven"]["reachable"] is True  # N4: облако мониторится
     assert "spark" not in out                  # spark не задействован
+
+
+def test_healthy_probes_fallback_provider(monkeypatch):
+    """Фолбэк проверяется наравне с основным: страховку надо мониторить ДО того,
+    как пропадёт интернет к eleven и она понадобится."""
+    monkeypatch.setattr(tts.settings, "tts_provider", "f5")
+    monkeypatch.setattr(tts.settings, "tts_kk_provider", "eleven")
+    monkeypatch.setattr(tts.settings, "tts_kk_fallback", "spark")
+    monkeypatch.setattr(tts.settings, "f5_url", "http://f5:8991/tts")
+    monkeypatch.setattr(tts.settings, "spark_url", "http://spark:8992/tts")
+
+    async def fake_probe(client, url):
+        return {"reachable": True, "status": 200}
+
+    async def fake_eleven(client):
+        return {"reachable": True}
+
+    monkeypatch.setattr(tts, "_probe_responds", fake_probe)
+    monkeypatch.setattr(tts, "_eleven_reachable", fake_eleven)
+
+    out = asyncio.run(tts.healthy())
+    assert out["spark"]["reachable"] is True

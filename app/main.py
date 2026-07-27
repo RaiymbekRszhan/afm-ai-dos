@@ -330,12 +330,16 @@ async def voice_endpoint(
             if settings.tts_enabled:
                 t = perf_counter()
                 try:
-                    out_audio = await tts.synthesize(answer, lang)
+                    out_audio, used_provider = await tts.synthesize_with_provider(answer, lang)
                 except Exception as e:
                     rec["error"] = "tts"
                     log.warning("TTS error [%s]: %r", lang, e)
                     raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
                 rec["tts_ms"] = _ms(t)
+                # Провайдер мог смениться фолбэком (облако недоступно -> Spark):
+                # и в аналитику, и на страницу должен уйти ФАКТИЧЕСКИЙ — иначе
+                # киоск включит темп чужого движка (медленный Spark на 1.0).
+                rec["provider"] = used_provider
                 audio_b64 = base64.b64encode(out_audio).decode("ascii")
 
             return {
@@ -345,9 +349,10 @@ async def voice_endpoint(
                 "suggest": suggestion,
                 # [] или список образцов (fl/ul/priem) — страница строит меню печати.
                 "print": print_ids,
-                # активный TTS-провайдер языка ответа: страница подбирает темп
-                # проговаривания (eleven vs spark), см. video_ui (N7).
-                "provider": tts._provider_for(lang),
+                # ФАКТИЧЕСКИЙ TTS-провайдер этого ответа (после возможного
+                # фолбэка): страница подбирает по нему темп проговаривания
+                # (eleven vs spark), см. video_ui (N7).
+                "provider": rec["provider"],
                 "format": settings.tts_format,
                 # base64-WAV; null, если TTS выключен (страница покажет только текст).
                 "audio_b64": audio_b64,

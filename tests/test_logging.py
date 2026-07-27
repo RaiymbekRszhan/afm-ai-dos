@@ -28,6 +28,9 @@ def _mock_pipeline(monkeypatch):
     async def fake_synth(text, language=None):
         return wav_bytes()
 
+    async def fake_synth_with_provider(text, language=None):
+        return wav_bytes(), tts._provider_for(language)
+
     async def fake_correct(text, language=None):
         return text
 
@@ -35,6 +38,7 @@ def _mock_pipeline(monkeypatch):
     monkeypatch.setattr(rag, "ask", fake_ask)
     monkeypatch.setattr(rag, "healthy", fake_healthy)
     monkeypatch.setattr(tts, "synthesize", fake_synth)
+    monkeypatch.setattr(tts, "synthesize_with_provider", fake_synth_with_provider)
     monkeypatch.setattr(service, "correct_transcript", fake_correct)
 
 

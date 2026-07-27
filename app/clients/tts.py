@@ -8,6 +8,7 @@
 """
 import asyncio
 import io
+import logging
 import os
 import re
 import tempfile
@@ -16,6 +17,8 @@ import wave
 from urllib.parse import urlparse, urlunparse
 
 from app.config import settings
+
+log = logging.getLogger("ai_dos.tts")
 
 
 def _health_from(url: str) -> str:
@@ -924,8 +927,12 @@ def _concat_wav(parts: list[bytes], texts: list[str] | None = None,
     return out.getvalue()
 
 
-def prepare_for_tts(text: str, language: str | None = None) -> tuple[str, list[str]]:
+def prepare_for_tts(text: str, language: str | None = None,
+                    provider: str | None = None) -> tuple[str, list[str]]:
     """Что реально уйдёт в TTS: (текст для озвучки, куски для синтеза).
+
+    `provider` — явный движок (у фолбэка свои лимиты куска: eleven держит 800
+    символов, Spark 260, F5 группирует по 240); по умолчанию — движок языка.
 
     Вынесено из synthesize() отдельной функцией, чтобы бенч
     (`python -m scripts.tts_bench`) показывал РОВНО ту нарезку и нормализацию,
@@ -944,7 +951,7 @@ def prepare_for_tts(text: str, language: str | None = None) -> tuple[str, list[s
     # Spark своей нарезки не имеет: режем сами, но его предел (3000) куда выше
     # F5-шных 180, поэтому даём предложению запас — чтобы разрез попал на запятую,
     # а не в середину фразы (иначе Spark комкает хвост огрызка).
-    provider = _provider_for(language)
+    provider = provider or _provider_for(language)
     if provider == "eleven":
         # eleven держит длинный текст сам — крупные куски, минимум швов.
         sent_max = group = settings.elevenlabs_max_chars
@@ -958,27 +965,59 @@ def prepare_for_tts(text: str, language: str | None = None) -> tuple[str, list[s
     return speech, parts
 
 
-async def synthesize(text: str, language: str | None = None) -> bytes:
-    """Текст -> аудио (WAV-байты). Длинный текст режется и склеивается."""
-    if not text.strip():
-        raise RuntimeError("Пустой текст для синтеза")
-    text, parts = prepare_for_tts(text, language)
+async def _synthesize_all(text: str, language: str | None, provider: str) -> bytes:
+    """Весь ответ одним провайдером: нарезка -> синтез кусков -> склейка."""
+    speech, parts = prepare_for_tts(text, language, provider)
     # Склейка реализована для WAV; для иных форматов синтезируем одним куском.
     if settings.tts_format != "wav":
-        return await _synthesize_one(text, language)
+        return await _synthesize_chunk(speech, language, provider)
     if not parts:
         raise RuntimeError("Нет произносимого текста для синтеза")
     if len(parts) == 1:
-        result = await _synthesize_one(parts[0], language)
+        result = await _synthesize_chunk(parts[0], language, provider)
     else:
-        audios = [await _synthesize_one(part, language) for part in parts]
-        gap = (settings.tts_f5_gap_ms if _provider_for(language) == "f5"
-               else settings.tts_gap_ms)
+        audios = [await _synthesize_chunk(part, language, provider) for part in parts]
+        gap = settings.tts_f5_gap_ms if provider == "f5" else settings.tts_gap_ms
         result = _concat_wav(audios, parts, gap)
     # Шумовой хвост F5 в самом конце ответа плавно гасим в ноль (см. _F5_TAIL_FADE_MS).
-    if _provider_for(language) == "f5" and settings.tts_format == "wav":
+    if provider == "f5" and settings.tts_format == "wav":
         result = _fade_out_tail(result, _F5_TAIL_FADE_MS)
     return result
+
+
+async def synthesize_with_provider(text: str, language: str | None = None
+                                   ) -> tuple[bytes, str]:
+    """Текст -> (аудио, ПРОВАЙДЕР, которым в итоге озвучили).
+
+    Провайдер важен вызывающему: киоск по нему выбирает темп проигрывания
+    (Spark медленный — ускоряем плеером), и после фолбэка это уже не тот
+    провайдер, что настроен для языка.
+    """
+    if not text.strip():
+        raise RuntimeError("Пустой текст для синтеза")
+    primary = _provider_for(language)
+    fallback = _fallback_for(language)
+    # Провайдер, отказавший только что, пропускаем без попытки: иначе каждый
+    # запрос в офлайн-сети платит полный таймаут облака (см. tts_fallback_cooldown).
+    if fallback and _in_cooldown(primary):
+        log.warning("TTS %s пропущен (недавний отказ), сразу фолбэк %s", primary, fallback)
+        return await _synthesize_all(text, language, fallback), fallback
+    try:
+        result = await _synthesize_all(text, language, primary)
+    except Exception as e:
+        if not fallback:
+            raise
+        _mark_down(primary)
+        log.warning("TTS %s не смог (%r) -> фолбэк %s", primary, e, fallback)
+        return await _synthesize_all(text, language, fallback), fallback
+    _mark_up(primary)
+    return result, primary
+
+
+async def synthesize(text: str, language: str | None = None) -> bytes:
+    """Текст -> аудио (WAV-байты). Длинный текст режется и склеивается."""
+    audio, _ = await synthesize_with_provider(text, language)
+    return audio
 
 
 def _provider_for(language: str | None) -> str:
@@ -986,9 +1025,62 @@ def _provider_for(language: str | None) -> str:
     return settings.tts_kk_provider if _resolve_lang(language) == "kk" else settings.tts_provider
 
 
-async def _synthesize_one(text: str, language: str | None = None) -> bytes:
-    """Синтез одного фрагмента. Провайдер выбирается по языку."""
-    provider = _provider_for(language)
+def _fallback_for(language: str | None) -> str:
+    """Запасной провайдер языка (пусто — фолбэка нет). Сам себе не фолбэк."""
+    fb = (settings.tts_kk_fallback if _resolve_lang(language) == "kk"
+          else settings.tts_fallback).strip()
+    return fb if fb and fb != _provider_for(language) else ""
+
+
+# Провайдер -> момент последнего отказа (monotonic). Предохранитель: пока идёт
+# кулдаун, провайдер не дёргаем вовсе — см. synthesize_with_provider.
+_provider_down: dict[str, float] = {}
+
+
+def _in_cooldown(provider: str) -> bool:
+    failed_at = _provider_down.get(provider)
+    if failed_at is None:
+        return False
+    if time.monotonic() - failed_at < settings.tts_fallback_cooldown:
+        return True
+    del _provider_down[provider]      # кулдаун истёк — можно пробовать снова
+    return False
+
+
+def _mark_down(provider: str) -> None:
+    _provider_down[provider] = time.monotonic()
+
+
+def _mark_up(provider: str) -> None:
+    _provider_down.pop(provider, None)
+
+
+async def _synthesize_chunk(text: str, language: str | None, provider: str) -> bytes:
+    """Синтез куска с повторами: единичный сетевой сбой не рушит весь ответ.
+
+    Повторяем ТОЛЬКО то, что может пройти со второй попытки (сеть, 5xx, битый
+    ответ). Наши собственные RuntimeError — это «провайдер не настроен»: их
+    повтор не вылечит, отдаём сразу (и выше сработает фолбэк).
+    """
+    last: Exception | None = None
+    for attempt in range(settings.tts_retries + 1):
+        try:
+            return await _synthesize_one(text, language, provider)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            last = e
+            if attempt < settings.tts_retries:
+                log.warning("TTS %s: кусок не синтезировался (%r), повтор %d",
+                            provider, e, attempt + 1)
+                await asyncio.sleep(0.5 * (attempt + 1))
+    raise last  # type: ignore[misc]
+
+
+async def _synthesize_one(text: str, language: str | None = None,
+                          provider: str | None = None) -> bytes:
+    """Синтез одного фрагмента. Провайдер — явный либо по языку."""
+    provider = provider or _provider_for(language)
     if provider == "say":
         return await _say(text, language)
     if provider == "openai":
@@ -1275,7 +1367,9 @@ async def _eleven(text: str, language: str | None) -> bytes:
     sr = 24000  # PCM 16-бит моно; частоту фиксируем — куски склеиваются одинаковыми
     url = (f"{settings.elevenlabs_url.rstrip('/')}"
            f"/text-to-speech/{settings.elevenlabs_voice_id}?output_format=pcm_{sr}")
-    async with httpx.AsyncClient(timeout=180) as client:
+    # Таймаут короткий (ELEVENLABS_TIMEOUT): облако недоступно -> быстрее уйдём
+    # на офлайн-фолбэк, чем гражданин устанет ждать у киоска.
+    async with httpx.AsyncClient(timeout=settings.elevenlabs_timeout) as client:
         resp = await client.post(
             url,
             headers={"xi-api-key": settings.elevenlabs_api_key},
@@ -1370,10 +1464,15 @@ async def healthy() -> dict:
 
     f5/spark — по факту HTTP-ответа (см. _probe_responds); eleven — по 2xx на
     /user с кэшем (см. _eleven_reachable). Пусто, если провайдер не задействован.
+
+    Фолбэк-провайдеры проверяются наравне с основными: молча умерший Spark — это
+    отсутствие страховки на случай, когда пропадёт интернет к eleven, и знать об
+    этом надо ДО того, как он понадобится.
     """
     import httpx
 
-    providers = {settings.tts_provider, settings.tts_kk_provider}
+    providers = {settings.tts_provider, settings.tts_kk_provider,
+                 settings.tts_fallback, settings.tts_kk_fallback} - {""}
     out: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=3.0) as client:
         if "f5" in providers and settings.f5_url:
