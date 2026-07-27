@@ -169,7 +169,8 @@ ELEVENLABS_VOICE_ID=...
 # Это дефолт run_api.sh БЕЗ USE_ELEVEN.
 TTS_PROVIDER=f5
 F5_URL=http://192.168.165.2:8991/tts
-F5_REF_AUDIO=refs/ref_ru_f5.wav      # референс тембра (шлётся в каждый запрос)
+F5_REF_AUDIO=refs/ref_ru_f5_padded.wav  # референс тембра (шлётся в каждый запрос);
+                                     # _padded = с тишиной по краям, иначе резкий старт
 F5_REF_TEXT=@refs/ref_ru.txt         # "@путь" = прочитать транскрипт из файла
 TTS_KK_PROVIDER=spark
 SPARK_URL=http://192.168.165.2:8992/tts
@@ -190,7 +191,7 @@ LLM/эмбеддинги RAG-сервиса настраиваются отде�
 
 **Через systemd:** в `deploy/ai-dos-api.service` поставь
 `Environment=F5_URL=http://192.168.165.2:8991/tts`,
-`Environment=F5_REF_AUDIO=refs/ref_ru_f5.wav`,
+`Environment=F5_REF_AUDIO=refs/ref_ru_f5_padded.wav`,
 `Environment=F5_REF_TEXT=@refs/ref_ru.txt`,
 `Environment=SPARK_URL=http://192.168.165.2:8992/tts` и отключи локальные TTS-юниты
 `ai-dos-f5`/`ai-dos-spark` (`systemctl disable --now ai-dos-f5 ai-dos-spark`).

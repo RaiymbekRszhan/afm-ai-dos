@@ -286,6 +286,14 @@ _GOV_RE = re.compile(
 # Год: только 4-значное число перед «год/года/году» (муж. род).
 _YEAR_CASE = {"год": ("m", "nom"), "года": ("m", "gen"), "году": ("m", "prep")}
 _YEAR_RE = re.compile(r"\b(\d{4})\s+(год|года|году)\b", re.IGNORECASE)
+# Дата: день месяца — ПОРЯДКОВОЕ в родительном («1 января» -> «первого января»).
+# Без этого правила день читался количественным («один января»), а после предлога
+# ещё и уезжал в родительный количественного («до 15 марта» -> «до пятнадцати
+# марта»). Месяц в дате всегда стоит в родительном, поэтому список — только его
+# формы. Год рядом добивает _YEAR_RE («2024 года» -> «...четвёртого года»).
+_RU_MONTHS = ("января|февраля|марта|апреля|мая|июня|июля|августа|сентября|"
+              "октября|ноября|декабря")
+_RU_DATE_RE = re.compile(rf"\b(\d{{1,2}})\s+({_RU_MONTHS})\b", re.IGNORECASE)
 
 
 def _ord_gov_sub(m: "re.Match") -> str:
@@ -296,6 +304,13 @@ def _ord_gov_sub(m: "re.Match") -> str:
 def _ord_year_sub(m: "re.Match") -> str:
     gender, case = _YEAR_CASE[m.group(2).lower()]
     return f"{_ordinal_ru(int(m.group(1)), gender, case)} {m.group(2)}"
+
+
+def _ord_date_sub(m: "re.Match") -> str:
+    day = int(m.group(1))
+    if not 1 <= day <= 31:          # не дата (например, «45 мая») — не трогаем
+        return m.group(0)
+    return f"{_ordinal_ru(day, 'm', 'gen')} {m.group(2)}"
 
 
 # Родительный падеж количественных после «от/до/свыше/…»: «от 45 до 450 МРП» ->
@@ -434,6 +449,9 @@ def _ru_numbers(text: str) -> str:
         lambda m: _ru_phone_words(m.group(0)), text)
     if _num2words is None:
         return text
+    # Даты — ДО правил предлогов: иначе «до 15 марта» уйдёт в количественный
+    # родительный («до пятнадцати марта»).
+    text = _RU_DATE_RE.sub(_ord_date_sub, text)    # «1 января» -> «первого января»
     text = _GOV_RE.sub(_ord_gov_sub, text)         # статья/пункт/часть N -> порядковое
     text = _YEAR_RE.sub(_ord_year_sub, text)       # NNNN год/года/году -> порядковое
     text = _RU_GEN_PCT_RE.sub(_ru_gen_pct_sub, text)    # от/до N% -> родительный
@@ -554,6 +572,11 @@ def _kk_pct_sub(m: "re.Match") -> str:
 _KK_ORD_HYPHEN_RE = re.compile(rf"\b(\d{{1,4}})-([{_KK_LET}]+)")
 # Год через пробел: «2024 жыл/жылы/жылғы» -> порядковое.
 _KK_YEAR_RE = re.compile(r"\b(\d{4})\s+(жыл\w*)", re.IGNORECASE)
+# Дата: день месяца — порядковое, как в русском («15 наурыз» -> «он бесінші
+# наурыз»). Месяц берём с любым падежным окончанием («наурызда», «қаңтардан»).
+_KK_MONTHS = ("қаңтар|ақпан|наурыз|сәуір|мамыр|маусым|шілде|тамыз|қыркүйек|"
+              "қазан|қараша|желтоқсан")
+_KK_DATE_RE = re.compile(rf"\b(\d{{1,2}})\s+({_KK_MONTHS})(\w*)", re.IGNORECASE)
 # Сам суффикс порядкового, записанный после дефиса («2-ші»): его НЕ оставляем
 # отдельным словом — порядковое числительное уже содержит нужное окончание.
 _KK_ORD_SUFFIXES = {"ші", "шы", "ыншы", "інші", "ншы", "нші"}
@@ -569,6 +592,13 @@ def _kk_ord_hyphen_sub(m: "re.Match") -> str:
 
 def _kk_ord_year_sub(m: "re.Match") -> str:
     return f"{_kk_ordinal(int(m.group(1)))} {m.group(2)}"
+
+
+def _kk_ord_date_sub(m: "re.Match") -> str:
+    day = int(m.group(1))
+    if not 1 <= day <= 31:          # не дата — оставляем числу общее правило
+        return m.group(0)
+    return f"{_kk_ordinal(day)} {m.group(2)}{m.group(3)}"
 
 
 # Телефон казахской фразы: как в русском (_ru_phone_words), но ключевое слово
@@ -624,6 +654,7 @@ def _kk_numbers(text: str) -> str:
         lambda m: _kk_phone_words(m.group(0)), text)
     text = _RU_LONG_CODE_RE.sub(                    # слитные 10+ цифр (сотовый/ЖСН)
         lambda m: _kk_phone_words(m.group(0)), text)
+    text = _KK_DATE_RE.sub(_kk_ord_date_sub, text)          # «15 наурыз» -> порядковое
     text = _KK_ORD_HYPHEN_RE.sub(_kk_ord_hyphen_sub, text)  # N-бап -> порядковое
     text = _KK_YEAR_RE.sub(_kk_ord_year_sub, text)          # NNNN жыл -> порядковое
     text = re.sub(r"(\d+(?:,\d+)?)\s*%", _kk_pct_sub, text)  # проценты -> пайыз
@@ -744,6 +775,30 @@ def _break_at_clause(chunk: str) -> tuple[str, str]:
     return chunk, ""
 
 
+# Служебные слова, на которых кусок обрывать НЕЛЬЗЯ. Куски синтезируются порознь,
+# и TTS договаривает кусок как законченную реплику: обрыв на союзе даёт «...и»
+# с падающей интонацией, паузу шва, и только потом продолжение («Республики
+# Казахстан И / статьёй 218...»). Такое слово переносим в следующий кусок — там
+# оно и по смыслу. Список — рус. союзы/предлоги + каз. союзы/послелоги; языки
+# не пересекаются, поэтому набор общий.
+_DANGLING_WORDS = {
+    "и", "а", "но", "или", "либо", "да", "же", "ли", "что", "чтобы", "как", "если",
+    "когда", "чем", "в", "во", "на", "по", "до", "от", "из", "за", "к", "ко", "с",
+    "со", "о", "об", "обо", "у", "для", "при", "про", "над", "под", "перед",
+    "между", "через", "без", "кроме", "после", "около", "свыше", "более", "менее",
+    "және", "немесе", "мен", "бен", "пен", "үшін", "туралы", "бойынша", "кейін",
+    "дейін", "бастап", "арқылы",
+}
+
+
+def _move_dangling(head: str, tail: str) -> tuple[str, str]:
+    """Переносит служебные слова с конца куска в начало следующего."""
+    words = head.split()
+    while len(words) > 1 and words[-1].lower() in _DANGLING_WORDS:
+        tail = f"{words.pop()} {tail}".strip()
+    return " ".join(words), tail
+
+
 def _hard_split(sentence: str, max_chars: int) -> list[str]:
     """Слишком длинное предложение режем на куски не длиннее лимита.
 
@@ -751,7 +806,8 @@ def _hard_split(sentence: str, max_chars: int) -> list[str]:
     кусок, оборванный посреди фразы, TTS озвучивает как законченную реплику —
     даёт падающую интонацию и комкает хвост на ровном месте. По запятой конец
     куска попадает туда, где пауза уместна, и шов не слышен. Если знаков нет
-    (длинное перечисление одними словами) — прежний словесный фолбэк.
+    (длинное перечисление одними словами) — словесный фолбэк, но и там кусок не
+    заканчивается служебным словом (см. _move_dangling).
 
     Увеличивать max_chars вместо этого нельзя: время синтеза растёт квадратично
     (замер на Spark: 100 симв. -> 18 c, 330 симв. -> 117 c).
@@ -761,6 +817,7 @@ def _hard_split(sentence: str, max_chars: int) -> list[str]:
     for word in sentence.split():
         if cur and len(cur) + 1 + len(word) > max_chars:
             head, tail = _break_at_clause(cur)
+            head, tail = _move_dangling(head, tail)  # не обрывать кусок на союзе
             parts.append(head)
             cur = f"{tail} {word}".strip() if tail else word
         else:

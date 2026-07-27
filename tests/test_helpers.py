@@ -29,6 +29,33 @@ def test_hard_split_long_sentence():
     assert all(len(p) <= 40 for p in parts)
 
 
+def test_split_does_not_end_chunk_on_conjunction():
+    """Кусок не обрывается на союзе/предлоге — иначе TTS договаривает «...и»
+    как законченную реплику, а продолжение уезжает за паузу шва."""
+    text = ("штраф до семисот месячных расчётных показателей по статье двести "
+            "четырнадцатой Кодекса об административных правонарушениях Республики "
+            "Казахстан и статье двести восемнадцатой Уголовного кодекса")
+    parts = tts._split_for_tts(text, 180, 180)
+    assert len(parts) > 1
+    for part in parts:
+        assert part.split()[-1].lower() not in tts._DANGLING_WORDS, part
+    # слова не потерялись и не задвоились
+    assert " ".join(parts) == text
+
+
+def test_move_dangling_carries_words_to_next_chunk():
+    assert tts._move_dangling("Республики Казахстан и", "статьёй") == (
+        "Республики Казахстан", "и статьёй")
+    # несколько служебных слов подряд уезжают целиком
+    assert tts._move_dangling("данные и в", "течение дня") == (
+        "данные", "и в течение дня")
+    # кусок из одного служебного слова не опустошаем
+    assert tts._move_dangling("и", "далее") == ("и", "далее")
+    # обычное слово на конце не трогаем
+    assert tts._move_dangling("сумма штрафа", "составляет") == (
+        "сумма штрафа", "составляет")
+
+
 def test_split_groups_sentences_for_f5():
     # короткие предложения группируются в один крупный кусок (group_max большой)
     text = "Первое. Второе. Третье. Четвёртое."
@@ -249,6 +276,26 @@ def test_normalize_kk_ordinals_for_legal_refs():
     assert "екі мың жиырма төртінші жылы" in N("2024 жылы")  # год -> порядковое
     # с раскрытием аббревиатуры падеж + порядковое уживаются
     assert "екі жүз он төртінші бабында" in N("ҚК-нің 214-бабында")
+
+
+def test_normalize_ru_dates_are_ordinal():
+    """День месяца — порядковое в родительном, год добивает правило года."""
+    out = tts._normalize_for_tts("Заявление подано 1 января 2024 года.", "russian")
+    assert "первого января" in out
+    assert "две тысячи двадцать четвёртого года" in out
+    # после предлога тоже дата, а не количественное («до пятнадцати марта»)
+    assert "до пятнадцатого марта" in tts._normalize_for_tts("до 15 марта", "russian")
+    assert "третьего февраля" in tts._normalize_for_tts("3 февраля 2026 года", "russian")
+    assert "двадцать второго мая" in tts._normalize_for_tts("22 мая", "russian")
+    # не дата — обычное количественное
+    assert "сорок пять" in tts._normalize_for_tts("45 мая", "russian")
+
+
+def test_normalize_kk_dates_are_ordinal():
+    """«15 наурыз» -> «он бесінші наурыз»; падежное окончание месяца сохраняется."""
+    out = tts._normalize_for_tts("Өтініш 15 наурызда берілді.", "kazakh")
+    assert "он бесінші наурызда" in out
+    assert "бірінші қаңтардан" in tts._normalize_for_tts("1 қаңтардан бастап", "kazakh")
 
 
 def test_normalize_kk_percent_and_decimal():

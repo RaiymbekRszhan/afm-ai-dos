@@ -51,7 +51,7 @@ FastAPI-оркестратор: распознаёт речь, получает 
   `data/` (база знаний `.md`), `rag_storage/` (индекс после `ingest`), `.env`
 - `f5_server/` (рус), `spark_server/` (каз) — офлайн-фолбэк TTS; `whisper_kk_server/` —
   вынос казахского STT на GPU АФМ (у каждого setup/run/README внутри)
-- `refs/` — образцы голоса для офлайн-фолбэка (`ref_ru_f5.wav`+`ref_ru.txt` — референс F5; `ref_kk.*` — Spark)
+- `refs/` — образцы голоса для офлайн-фолбэка (`ref_ru_f5_padded.wav`+`ref_ru.txt` — боевой референс F5; `ref_kk.*` — Spark)
 - `video_ui/` — киоск-страница «видео-аватар» (:8100): ролики, таблицы, QR, README внутри
 - `tests/` — pytest оркестратора (офлайн, внешние сервисы замоканы): `python -m pytest`
 - `run_api.sh` — поднимает весь стек одной командой (`USE_ELEVEN=1` — TTS на ElevenLabs)
@@ -156,10 +156,11 @@ python -m scripts.tts_bench --baseline out/tts_bench/<прошлый>   # сра
 Основной TTS — **ElevenLabs**: голос выбирается в аккаунте (`ELEVENLABS_VOICE_ID`),
 модель `eleven_v3` сама определяет язык (рус/каз одним голосом). Ключ/голос — в `.env`.
 
-Офлайн-фолбэк: **F5** (русский) говорит «в тембр» референс-аудио `refs/ref_ru_f5.wav`
-+ транскрипт `refs/ref_ru.txt` (задаётся в `f5_server/run.sh` через `F5_REF_AUDIO`/
-`F5_REF_TEXT`; сменить — `python f5_server/transcribe_ref.py`); **Spark** (казахский) —
-голос по умолчанию.
+Офлайн-фолбэк: **F5** (русский) говорит «в тембр» референс-аудио
+`refs/ref_ru_f5_padded.wav` + транскрипт `refs/ref_ru.txt` (задаётся через
+`F5_REF_AUDIO`/`F5_REF_TEXT`; сменить голос — `python f5_server/transcribe_ref.py`,
+он же сделает `_padded`-вариант, см. [f5_server/README.md](f5_server/README.md));
+**Spark** (казахский) — голос по умолчанию.
 
 ## Ключевые ограничения (важно)
 - **Сеть АФМ без интернета** — все пакеты/модели качать заранее на Wi-Fi; на сервере `HF_HUB_OFFLINE=1`.
