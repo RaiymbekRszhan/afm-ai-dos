@@ -9,6 +9,24 @@
 `ai-dos-api`, если тот жив, но не отвечает 3 проверки подряд (зависший
 GPU-вызов, дедлок).
 
+## Единый источник окружения (топология TTS/STT) — N2
+Топология (какой TTS/STT, по каким адресам) задаётся в ОДНОМ файле, который читают
+**оба** пути запуска — и systemd (`ai-dos-api.service` через `EnvironmentFile`), и
+`run_api.sh` (сорсит его в начале). Так «деплой по инструкции» = то, что проверяли,
+без расхождения «как в юните» ↔ «как в скрипте».
+
+```bash
+cp deploy/ai-dos.env.example ai-dos.env   # в корень проекта (в git не коммитим)
+# отредактируй ai-dos.env: выбери топологию (A) GPU-F5 + ElevenLabs  или
+#                                             (B) полностью локальный F5 + Spark
+```
+- **Секреты** (`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`) — в `.env`, НЕ в `ai-dos.env`
+  (оба читает `app/config.py`).
+- Топология **(A)** (пилотный дефолт): русский F5 на GPU-ноде АФМ + казахский
+  ElevenLabs — локальные `ai-dos-f5`/`ai-dos-spark` НЕ нужны, их не `enable`.
+- Топология **(B)** (офлайн): локальные F5 + Spark — тогда `enable --now ai-dos-f5
+  ai-dos-spark` (см. «Установка» ниже).
+
 ## Перед установкой
 Сначала пройди [../DEPLOY.md](../DEPLOY.md) (шаги 1–6): код скопирован, 4 venv созданы,
 индекс собран (`ingest`), `.env` и `rag/.env` заполнены, всё хоть раз поднялось руками.
@@ -30,7 +48,12 @@ sed -i 's#/opt/ai-dos#/home/afm/STT#g; s/User=ai-dos/User=afm/g' ai-dos-*.servic
 ```bash
 sudo cp deploy/ai-dos-*.service deploy/ai-dos-watchdog.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now ai-dos-f5 ai-dos-spark ai-dos-rag ai-dos-api
+# Топология (A) GPU-F5 + ElevenLabs (пилотный дефолт) — локальные TTS не нужны:
+sudo systemctl enable --now ai-dos-rag ai-dos-api
+# Топология (B) локальный TTS — дополнительно подними F5 + Spark:
+# sudo systemctl enable --now ai-dos-f5 ai-dos-spark
+# Локальный казахский STT (STT_KK_USE_WHISPER=true) — ещё и whisper-kk:
+# sudo systemctl enable --now ai-dos-whisper-kk
 sudo systemctl enable --now ai-dos-watchdog.timer     # сторож /health (раз в 2 мин)
 ```
 В `ai-dos-watchdog.service` путь скрипта — `/opt/ai-dos/scripts/api_watchdog.sh`:

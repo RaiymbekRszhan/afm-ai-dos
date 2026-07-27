@@ -1,22 +1,20 @@
 [Unit]
 Description=Ai-dos оркестратор (STT -> RAG -> TTS, порт 8000)
+# rag — обязателен (источник ответа). f5/spark нужны ТОЛЬКО для локальной
+# TTS-топологии (B в ai-dos.env); при GPU-F5 + ElevenLabs их не поднимают,
+# поэтому здесь они лишь в After (порядок, если запущены), не в Wants.
 After=network-online.target ai-dos-rag.service ai-dos-f5.service ai-dos-spark.service
-Wants=network-online.target ai-dos-rag.service ai-dos-f5.service ai-dos-spark.service
+Wants=network-online.target ai-dos-rag.service
 
 [Service]
 Type=simple
 User=ai-dos
 WorkingDirectory=/opt/ai-dos
-# Соответствует run_api.sh. STT каз — локальный Whisper (офлайн), TTS — наши сервисы.
-Environment=STT_KK_USE_WHISPER=true
-Environment=WHISPER_DEVICE=cuda
-Environment=HF_HUB_OFFLINE=1
-Environment=TRANSFORMERS_OFFLINE=1
-Environment=TTS_PROVIDER=f5
-Environment=F5_URL=http://localhost:8810/tts
-Environment=TTS_KK_PROVIDER=spark
-Environment=SPARK_URL=http://localhost:8809/tts
-Environment=RAG_URL=http://localhost:8077/ask
+# ЕДИНЫЙ источник топологии TTS/STT/RAG — тот же файл, что сорсит run_api.sh (N2).
+# Скопируй deploy/ai-dos.env.example -> /opt/ai-dos/ai-dos.env и подгони.
+# `-` — файл необязателен: без него берутся дефолты app/config.py.
+EnvironmentFile=-/opt/ai-dos/ai-dos.env
+# Секреты (ELEVENLABS_API_KEY и пр.) — в /opt/ai-dos/.env (читает pydantic).
 # host 0.0.0.0: к оркестратору напрямую ходят браузеры граждан. За TLS-прокси
 # (рекомендуется) можно сузить до 127.0.0.1.
 ExecStart=/opt/ai-dos/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000

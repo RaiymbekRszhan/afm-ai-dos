@@ -13,6 +13,9 @@ __pycache__/
 
 # секреты/локальная конфигурация
 .env
+# топология сервера (N2): копия deploy/ai-dos.env.example, per-server, НЕ в git
+ai-dos.env
+deploy/ai-dos.env
 
 # аудио (генерируемое/временное) — но образцы для клона голоса НУЖНЫ
 *.wav
