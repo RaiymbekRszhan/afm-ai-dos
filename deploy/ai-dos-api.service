@@ -1,24 +1,24 @@
 [Unit]
 Description=Ai-dos оркестратор (STT -> RAG -> TTS, порт 8000)
-# rag — обязателен (источник ответа). f5/spark нужны ТОЛЬКО для локальной
-# TTS-топологии (B в ai-dos.env); при GPU-F5 + ElevenLabs их не поднимают,
-# поэтому здесь они лишь в After (порядок, если запущены), не в Wants.
-After=network-online.target ai-dos-rag.service ai-dos-f5.service ai-dos-spark.service
+# rag (источник ответа) — единственная локальная зависимость. TTS/STT (F5, Spark,
+# STT, ElevenLabs) живут на сервере АФМ / в облаке — не systemd-юниты этой машины.
+After=network-online.target ai-dos-rag.service
 Wants=network-online.target ai-dos-rag.service
 
 [Service]
 Type=simple
 User=ai-dos
 WorkingDirectory=/opt/ai-dos
-# Дефолт: оркестратор на 127.0.0.1 — снаружи к нему ходит только video_ui (:8100)
-# с той же машины (N6). Открыть на всю сеть (за TLS-прокси): API_HOST=0.0.0.0 в
-# ai-dos.env. Environment= задаёт дефолт, EnvironmentFile ниже может переопределить.
+# Топология TTS/STT/RAG — в /opt/ai-dos/.env (его читает app/config.py через pydantic,
+# т.к. WorkingDirectory=/opt/ai-dos). ЕДИНЫЙ источник: тот же .env действует и при
+# запуске без systemd (run_api.sh может переопределить для отладки). Раньше здесь
+# были Environment=F5_URL=localhost… — они ПЕРЕБИВАЛИ .env мёртвыми локальными
+# адресами (env-переменные приоритетнее .env-файла); убраны (N2).
+# API_HOST нужен для подстановки в ExecStart (systemd не читает pydantic-.env, только
+# своё окружение). Дефолт 127.0.0.1: снаружи к оркестратору ходит только video_ui
+# (:8100) с этой же машины (N6). Открыть за TLS-прокси: API_HOST=0.0.0.0.
 Environment=API_HOST=127.0.0.1
-# ЕДИНЫЙ источник топологии TTS/STT/RAG — тот же файл, что сорсит run_api.sh (N2).
-# Скопируй deploy/ai-dos.env.example -> /opt/ai-dos/ai-dos.env и подгони.
-# `-` — файл необязателен: без него берутся дефолты app/config.py.
-EnvironmentFile=-/opt/ai-dos/ai-dos.env
-# Секреты (ELEVENLABS_API_KEY и пр.) — в /opt/ai-dos/.env (читает pydantic).
+# Секреты (ELEVENLABS_API_KEY и пр.) — тоже в /opt/ai-dos/.env (читает pydantic).
 ExecStart=/opt/ai-dos/.venv/bin/uvicorn app.main:app --host ${API_HOST} --port 8000
 Restart=always
 RestartSec=5

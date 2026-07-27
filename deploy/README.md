@@ -10,22 +10,20 @@
 GPU-вызов, дедлок).
 
 ## Единый источник окружения (топология TTS/STT) — N2
-Топология (какой TTS/STT, по каким адресам) задаётся в ОДНОМ файле, который читают
-**оба** пути запуска — и systemd (`ai-dos-api.service` через `EnvironmentFile`), и
-`run_api.sh` (сорсит его в начале). Так «деплой по инструкции» = то, что проверяли,
-без расхождения «как в юните» ↔ «как в скрипте».
+Топология (какой TTS/STT, по каким адресам) задаётся в ОДНОМ файле — `.env` в корне
+проекта. Его читает `app/config.py` (pydantic), поэтому он действует и под systemd
+(юнит с `WorkingDirectory=/opt/ai-dos` → читается `/opt/ai-dos/.env`), и при запуске
+без него. `run_api.sh` может переопределить значения для отладки (флаги `USE_LOCAL_*`),
+но боевой 24/7-путь берёт топологию из `.env`. Так «деплой по инструкции» = то, что
+проверяли — без расхождения «как в юните» ↔ «как в скрипте».
 
-```bash
-cp deploy/ai-dos.env.example ai-dos.env   # в корень проекта (в git не коммитим)
-# отредактируй ai-dos.env: выбери топологию (A) GPU-F5 + ElevenLabs  или
-#                                             (B) полностью локальный F5 + Spark
-```
-- **Секреты** (`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`) — в `.env`, НЕ в `ai-dos.env`
-  (оба читает `app/config.py`).
-- Топология **(A)** (пилотный дефолт): русский F5 на GPU-ноде АФМ + казахский
-  ElevenLabs — локальные `ai-dos-f5`/`ai-dos-spark` НЕ нужны, их не `enable`.
-- Топология **(B)** (офлайн): локальные F5 + Spark — тогда `enable --now ai-dos-f5
-  ai-dos-spark` (см. «Установка» ниже).
+- Пример и все поля — в `.env.example` (скопируй в `.env` и подгони).
+- Пилотная топология: русский F5 на GPU-ноде АФМ (`:8991`) + STT-сервер АФМ (`:8804`);
+  казахский TTS — переключатель `TTS_KK_PROVIDER`: `eleven` (облако) или `spark`
+  (Spark на сервере АФМ, `SPARK_URL=…:8992`). Локальных F5/Spark/Whisper на этой
+  машине нет — соответствующие юниты не нужны.
+- ⚠️ НЕ добавляй в юнит строки `Environment=F5_URL=…` и т.п.: переменные окружения
+  приоритетнее `.env` и молча перебьют его (ровно это и чинил N2).
 
 ## Перед установкой
 Сначала пройди [../DEPLOY.md](../DEPLOY.md) (шаги 1–6): код скопирован, 4 venv созданы,
@@ -48,12 +46,11 @@ sed -i 's#/opt/ai-dos#/home/afm/STT#g; s/User=ai-dos/User=afm/g' ai-dos-*.servic
 ```bash
 sudo cp deploy/ai-dos-*.service deploy/ai-dos-watchdog.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-# Топология (A) GPU-F5 + ElevenLabs (пилотный дефолт) — локальные TTS не нужны:
+# Пилот: TTS/STT на сервере АФМ, локально нужны только rag + оркестратор:
 sudo systemctl enable --now ai-dos-rag ai-dos-api
-# Топология (B) локальный TTS — дополнительно подними F5 + Spark:
-# sudo systemctl enable --now ai-dos-f5 ai-dos-spark
-# Локальный казахский STT (STT_KK_USE_WHISPER=true) — ещё и whisper-kk:
-# sudo systemctl enable --now ai-dos-whisper-kk
+# ТОЛЬКО если гоняешь TTS/STT локально на ЭТОЙ машине (не на сервере АФМ):
+# sudo systemctl enable --now ai-dos-f5 ai-dos-spark        # локальный TTS
+# sudo systemctl enable --now ai-dos-whisper-kk             # локальный казахский STT
 sudo systemctl enable --now ai-dos-watchdog.timer     # сторож /health (раз в 2 мин)
 ```
 В `ai-dos-watchdog.service` путь скрипта — `/opt/ai-dos/scripts/api_watchdog.sh`:

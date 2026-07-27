@@ -17,19 +17,6 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 
-# ЕДИНЫЙ источник топологии TTS/STT/RAG — тот же файл, что systemd подключает
-# через EnvironmentFile (N2). Сорсим ДО дефолтов ${VAR:-...} ниже, чтобы значения
-# из файла стали действующими (а флаги USE_LOCAL_* оставались override для отладки).
-# Файл необязателен: без него берутся прежние дефолты этого скрипта.
-# Ищем ai-dos.env в корне, затем deploy/ (пример — deploy/ai-dos.env.example).
-for _envf in ai-dos.env deploy/ai-dos.env; do
-  if [ -f "$_envf" ]; then
-    echo "[run_api] окружение из $_envf"
-    set -a; . "./$_envf"; set +a
-    break
-  fi
-done
-
 # Проверяем venv ДО старта: иначе `source .venv/bin/activate` тихо провалится
 # (нет set -e) и uvicorn запустится из чужого окружения PATH.
 need_venv(){ [ -f "$1/bin/activate" ] || { echo "ОШИБКА: venv '$1' не создан — см. DEPLOY.md (ШАГ 2-5)"; exit 1; }; }
@@ -129,5 +116,5 @@ if [ "$WITH_VIDEO_UI" = "1" ]; then bash video_ui/run.sh & fi
 
 # По умолчанию оркестратор слушает 127.0.0.1: снаружи к нему ходит только
 # video_ui (:8100) с той же машины (см. N6). Открыть на всю сеть (за TLS-прокси):
-# API_HOST=0.0.0.0 (в ai-dos.env).
+# API_HOST=0.0.0.0 bash run_api.sh (в systemd — Environment=API_HOST=0.0.0.0).
 uvicorn app.main:app --host "${API_HOST:-127.0.0.1}" --port 8000
