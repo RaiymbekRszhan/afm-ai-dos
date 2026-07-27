@@ -628,7 +628,7 @@ syncBadge();
 
 // Авто-стоп: тишина дольше SILENCE_MS после речи — завершаем запись сами.
 const SILENCE_PEAK = 0.015;
-const SILENCE_MS = 3000;
+const SILENCE_MS = 2000;
 let hasSpoken = false, lastVoiceMs = 0, stopping = false;
 
 async function startRecording() {
