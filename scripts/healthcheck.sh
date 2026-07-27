@@ -51,6 +51,19 @@ print(json.dumps({a[i]: conv(a[i+1]) for i in range(0, len(a), 2)}, ensure_ascii
 ' "$@"
 }
 is_wav(){ [ -s "$1" ] && [ "$(head -c 4 "$1" 2>/dev/null)" = "RIFF" ]; }
+# /voice отдаёт JSON {answer, audio_b64, ...} (N5). «ok», если ответ непустой и
+# аудио (если есть) декодируется в WAV; audio_b64=null (TTS выкл) — тоже ок.
+voice_ok(){ python3 -c '
+import sys, json, base64
+try:
+    d = json.load(sys.stdin)
+    ans = d.get("answer") or ""
+    ab = d.get("audio_b64")
+    audio_ok = ab is None or base64.b64decode(ab)[:4] == b"RIFF"
+    print("ok" if ans and audio_ok else "")
+except Exception:
+    print("")
+'; }
 
 # --- Проверки ----------------------------------------------------------------
 check_health(){ # check_health "Имя" URL  — ждёт {"status":"ok"} на /health
@@ -90,14 +103,14 @@ check_speak(){ # check_speak russian|kazakh "текст" имя_файла.wav
   else no "TTS $lang — ответ не WAV" "$(head -c 120 "$file")"; fi
 }
 
-check_voice(){ # check_voice russian|kazakh refs/файл.wav имя_выхода.wav
+check_voice(){ # check_voice russian|kazakh refs/файл.wav имя_выхода.json
   local lang="$1" ref="$2" out="$OUT/$3" code
   if [ ! -f "$ref" ]; then no "Сквозной голос $lang — нет файла $ref"; return; fi
   code="$(curl -s --max-time "${VOICE_TIMEOUT:-300}" -o "$out" -w '%{http_code}' \
         -X POST "$API/voice" -F "data=@$ref" -F "language=$lang")" || true
   if [ "$code" != "200" ]; then no "Сквозной голос $lang — HTTP $code" "$(head -c 200 "$out")"; return; fi
-  if is_wav "$out"; then ok "Сквозной голос $lang (STT→RAG→TTS) → $out"
-  else no "Сквозной голос $lang — ответ не WAV" "$(head -c 120 "$out")"; fi
+  if [ "$(voice_ok < "$out")" = "ok" ]; then ok "Сквозной голос $lang (STT→RAG→TTS) — текст+WAV в JSON"
+  else no "Сквозной голос $lang — в ответе нет текста/аудио" "$(head -c 200 "$out")"; fi
 }
 
 # --- Запуск ------------------------------------------------------------------
@@ -143,8 +156,8 @@ check_speak kazakh  "Сәлеметсіз бе! Бұл тексеру."         
 
 if [ "$FULL" = 1 ]; then
   section "4. Сквозной голос: аудио → STT → RAG → TTS (по образцам refs/)"
-  check_voice russian refs/ref_ru.wav voice_ru.wav
-  check_voice kazakh  refs/ref_kk.wav voice_kk.wav
+  check_voice russian refs/ref_ru.wav voice_ru.json
+  check_voice kazakh  refs/ref_kk.wav voice_kk.json
 fi
 
 # --- Итог --------------------------------------------------------------------

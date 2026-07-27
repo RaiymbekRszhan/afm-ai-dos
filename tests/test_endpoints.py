@@ -38,21 +38,44 @@ def test_transcribe(client):
     assert r.json()["text"]
 
 
-def test_voice_returns_audio(client):
+def _decode_audio(body: dict) -> bytes:
+    import base64
+    return base64.b64decode(body["audio_b64"])
+
+
+def test_voice_returns_json_with_audio_and_text(client):
+    """N5: /voice отдаёт JSON-тело — вопрос/ответ + аудио в base64, без X-* заголовков."""
     files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
     r = client.post("/voice", files=files, data={"language": "russian"})
     assert r.status_code == 200
-    assert r.headers["content-type"] == "audio/wav"
-    assert "X-Question" in r.headers           # percent-encoded распознанный вопрос
-    assert "X-Answer" in r.headers             # percent-encoded текст ответа (для UI)
-    assert r.content[:4] == b"RIFF"
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["question"] and body["answer"]
+    assert body["provider"]                        # активный TTS-провайдер (для темпа)
+    assert _decode_audio(body)[:4] == b"RIFF"      # base64 -> валидный WAV
+    # текст больше НЕ в заголовках
+    assert "X-Answer" not in r.headers and "X-Question" not in r.headers
+
+
+def test_voice_long_answer_survives_in_body(client, monkeypatch):
+    """N5: длинный табличный ответ (превысил бы лимит HTTP-заголовка) доходит ЦЕЛИКОМ."""
+    from app.clients import rag
+
+    long_answer = "Ответ по статье 214. " * 2000  # ~42000 символов, кириллица
+
+    async def long_ask(question, language=None, with_sources=True):
+        return {"answer": long_answer, "sources": ""}
+
+    monkeypatch.setattr(rag, "ask", long_ask)
+    files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
+    r = client.post("/voice", files=files, data={"language": "russian"})
+    assert r.status_code == 200
+    assert r.json()["answer"] == long_answer       # ничего не потеряно и не обрезано
 
 
 def test_voice_suggests_on_not_found(client, monkeypatch):
-    """STT исказил вопрос, RAG не нашёл ответа -> в X-Suggest уходит исправленная
+    """STT исказил вопрос, RAG не нашёл ответа -> в поле suggest уходит исправленная
     формулировка, а озвучивается фраза-уточнение «возможно, вы хотели спросить…»."""
-    import urllib.parse
-
     from app.clients import rag
     from app import service
 
@@ -68,15 +91,14 @@ def test_voice_suggests_on_not_found(client, monkeypatch):
     files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
     r = client.post("/voice", files=files, data={"language": "russian"})
     assert r.status_code == 200
-    assert urllib.parse.unquote(r.headers["X-Suggest"]) == "Какие штрафы за неуплату налогов?"
-    assert "хотели спросить" in urllib.parse.unquote(r.headers["X-Answer"])
+    body = r.json()
+    assert body["suggest"] == "Какие штрафы за неуплату налогов?"
+    assert "хотели спросить" in body["answer"]
 
 
 def test_voice_affirmative_answers_suggested(client, monkeypatch):
     """Реплика «да» + поле suggest -> отвечаем на ИСПРАВЛЕННЫЙ вопрос, без
-    повторного уточнения (X-Suggest в ответе нет)."""
-    import urllib.parse
-
+    повторного уточнения (suggest в ответе — null)."""
     from app.clients import rag, stt
 
     asked = {}
@@ -94,17 +116,16 @@ def test_voice_affirmative_answers_suggested(client, monkeypatch):
     r = client.post("/voice", files=files, data={
         "language": "russian", "suggest": "Какие штрафы за неуплату налогов?"})
     assert r.status_code == 200
+    body = r.json()
     assert asked["q"] == "Какие штрафы за неуплату налогов?"
-    assert urllib.parse.unquote(r.headers["X-Question"]) == "Какие штрафы за неуплату налогов?"
-    assert "X-Suggest" not in r.headers
+    assert body["question"] == "Какие штрафы за неуплату налогов?"
+    assert body["suggest"] is None
 
 
 def test_voice_no_print_offer_on_not_found(client, monkeypatch):
     """Фраза-отказ сама содержит «подать обращение через e-Otinish», но печатать
     бланк на неизвестный/off-topic вопрос НЕ предлагаем (иначе бланк лез бы на любой
     отказ — напр. про «субъектов Аргентины»). Регрессия демо 2026-07-27."""
-    import urllib.parse
-
     from app.clients import rag
     from app import service
 
@@ -121,15 +142,14 @@ def test_voice_no_print_offer_on_not_found(client, monkeypatch):
     files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
     r = client.post("/voice", files=files, data={"language": "russian"})
     assert r.status_code == 200
-    assert "X-Print" not in r.headers                                  # кнопки печати нет
-    assert "распечатать" not in urllib.parse.unquote(r.headers["X-Answer"])  # приглашение не дописано
+    body = r.json()
+    assert body["print"] == []                          # кнопки печати нет
+    assert "распечатать" not in body["answer"]          # приглашение не дописано
 
 
 def test_voice_print_offer_on_real_application_answer(client, monkeypatch):
     """Контроль: на РЕАЛЬНЫЙ ответ про подачу жалобы печать образца по-прежнему
-    предлагается (X-Print + приглашение в X-Answer) — фикс не должен это сломать."""
-    import urllib.parse
-
+    предлагается (print + приглашение в answer) — фикс не должен это сломать."""
     from app.clients import rag
 
     async def app_ask(question, language=None, with_sources=True):
@@ -140,8 +160,9 @@ def test_voice_print_offer_on_real_application_answer(client, monkeypatch):
     files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
     r = client.post("/voice", files=files, data={"language": "russian"})
     assert r.status_code == 200
-    assert "X-Print" in r.headers                                      # кнопка печати есть
-    assert "распечатать" in urllib.parse.unquote(r.headers["X-Answer"])  # приглашение дописано
+    body = r.json()
+    assert body["print"]                                # кнопка печати есть
+    assert "распечатать" in body["answer"]              # приглашение дописано
 
 
 def test_voice_upload_too_large(client, monkeypatch):

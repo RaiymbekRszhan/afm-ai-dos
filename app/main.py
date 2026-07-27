@@ -1,10 +1,10 @@
 import asyncio
+import base64
 import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
 from time import perf_counter
-from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -311,6 +311,11 @@ async def voice_endpoint(
             rec["print_ids"] = print_ids
             rec["answer"] = answer
 
+            # Ответ отдаём ОДНИМ JSON-телом: текст (вопрос/ответ/подсказка/печать) +
+            # аудио в base64. Раньше текст ехал percent-encoded в заголовках
+            # X-Question/X-Answer/..., и длинный ответ с таблицей упирался в лимит
+            # заголовка — экран тихо оставался без текста (N5). В теле лимита нет.
+            audio_b64 = None
             if settings.tts_enabled:
                 t = perf_counter()
                 try:
@@ -320,30 +325,22 @@ async def voice_endpoint(
                     log.warning("TTS error [%s]: %r", lang, e)
                     raise HTTPException(status_code=502, detail="Ошибка синтеза речи (TTS).")
                 rec["tts_ms"] = _ms(t)
-                headers = {
-                    # percent-encode: HTTP-заголовки только latin-1, а текст русский/казахский.
-                    # UI может показать и вопрос, и текст озвученного ответа.
-                    "X-Question": quote(question),
-                    "X-Answer": quote(answer),
-                }
-                if suggestion:
-                    # страница вернёт это в поле `suggest` следующего запроса
-                    headers["X-Suggest"] = quote(suggestion)
-                if print_ids:
-                    # страница покажет кнопку печати и построит меню образцов
-                    headers["X-Print"] = ",".join(print_ids)
-                return Response(
-                    content=out_audio,
-                    media_type=f"audio/{settings.tts_format}",
-                    headers=headers,
-                )
+                audio_b64 = base64.b64encode(out_audio).decode("ascii")
 
-            out = {"question": question, "answer": answer, "sources": result["sources"]}
-            if suggestion:
-                out["suggest"] = suggestion
-            if print_ids:
-                out["print"] = print_ids
-            return out
+            return {
+                "question": question,
+                "answer": answer,
+                # null, если не на пути уточнения; страница вернёт это полем `suggest`.
+                "suggest": suggestion,
+                # [] или список образцов (fl/ul/priem) — страница строит меню печати.
+                "print": print_ids,
+                # активный TTS-провайдер языка ответа: страница подбирает темп
+                # проговаривания (eleven vs spark), см. video_ui (N7).
+                "provider": tts._provider_for(lang),
+                "format": settings.tts_format,
+                # base64-WAV; null, если TTS выключен (страница покажет только текст).
+                "audio_b64": audio_b64,
+            }
     finally:
         rec["total_ms"] = _ms(t_start)
         logging_setup.record_interaction(**rec)

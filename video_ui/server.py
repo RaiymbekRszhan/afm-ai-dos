@@ -110,12 +110,12 @@ async def health():
 @app.post("/voice")
 async def voice(data: UploadFile = File(...), language: str = Form("russian"),
                 suggest: str = Form(default=None)):
-    """Вопрос → рабочий бэкенд (:8000) → WAV ответа + текст в заголовках.
+    """Вопрос → рабочий бэкенд (:8000) → JSON-ответ (текст + аудио в base64).
 
-    Тело и заголовки прокидываем как есть: контракт /voice бэкенда —
-    WAV + percent-encoded X-Question/X-Answer (X-Suggest —
-    подсказка «возможно, вы хотели спросить…», страница вернёт её полем suggest
-    со следующим вопросом)."""
+    Тело прокидываем как есть: контракт /voice бэкенда — JSON
+    {question, answer, suggest, print, provider, format, audio_b64} (N5).
+    `suggest` — подсказка «возможно, вы хотели спросить…», страница вернёт её
+    полем suggest со следующим вопросом."""
     limit = int(MAX_UPLOAD_MB * 1024 * 1024)
 
     def _too_big(n: int) -> HTTPException:
@@ -147,10 +147,8 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
         except Exception:
             detail = r.text[:200]
         raise HTTPException(status_code=r.status_code, detail=detail)
-    headers = {}
-    for h in ("x-question", "x-answer", "x-suggest", "x-print"):
-        if r.headers.get(h):
-            headers[h.title()] = r.headers[h]
+    # Контракт /voice — JSON-тело {question, answer, suggest, print, provider,
+    # format, audio_b64} (N5): текст и аудио в теле, не в заголовках. Пробрасываем
+    # как есть.
     return Response(content=r.content,
-                    media_type=r.headers.get("content-type", "audio/wav"),
-                    headers=headers)
+                    media_type=r.headers.get("content-type", "application/json"))
