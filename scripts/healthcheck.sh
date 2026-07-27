@@ -15,8 +15,8 @@ cd "$(dirname "$0")/.."          # корень проекта (нужен дл�
 HOST="${HOST:-localhost}"
 API="${API:-http://$HOST:8000}"   # оркестратор
 RAG="${RAG:-http://$HOST:8077}"   # RAG-сервис
-F5="${F5:-http://$HOST:8810}"     # русский TTS (F5-TTS)
-SPARK="${SPARK:-http://$HOST:8809}" # казахский TTS
+# Адреса TTS-серверов здесь НЕ нужны: доступность берём из tts.servers.* в
+# $API/health (оркестратор пингует их по фактическим адресам сам, см. check_tts_srv).
 FULL=0; [ "${1:-}" = "--full" ] && FULL=1
 OUT="$(mktemp -d)"                # сюда складываем синтезированные WAV для прослушки
 
@@ -117,10 +117,12 @@ if [ -n "$api_health" ]; then
   # f5_server ИЛИ GPU-сервер АФМ) и кладёт статус в tts.servers.* — берём его
   # оттуда, а не гадаем URL (иначе при удалённом F5 ложный FAIL на localhost:8810).
   check_tts_srv(){ # check_tts_srv f5|spark "Имя"
-    local key="$1" name="$2"
+    local key="$1" name="$2" status
+    status="$(printf '%s' "$api_health" | jget "tts.servers.$key.status")"
     case "$(printf '%s' "$api_health" | jget "tts.servers.$key.reachable")" in
-      True|true) ok "$name — reachable (по данным $API/health)";;
-      *) no "$name — недоступен" "см. tts.servers.$key в $API/health";;
+      # reachable = сервер ОТВЕТИЛ (даже 404: у F5 на GPU нет /health, но он жив).
+      True|true) ok "$name — отвечает${status:+ (HTTP $status)}";;
+      *) no "$name — недоступен" "$(printf '%s' "$api_health" | jget "tts.servers.$key.error")";;
     esac
   }
   case " $ru_prov $kk_prov " in *" f5 "*)    check_tts_srv f5    "F5 (русский TTS)";;    esac

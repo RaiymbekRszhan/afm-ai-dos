@@ -42,6 +42,11 @@ def client(monkeypatch):
     async def fake_synthesize(text, language=None):
         return wav_bytes()
 
+    async def fake_tts_healthy():
+        # Детальную health-пробу TTS проверяет tests/test_tts_health.py;
+        # эндпоинт-тесты остаются офлайн (без httpx к f5.test/spark.test).
+        return {"f5": {"reachable": True, "status": 200}}
+
     async def fake_correct(text, language=None):
         return text
 
@@ -49,6 +54,7 @@ def client(monkeypatch):
     monkeypatch.setattr(rag, "ask", fake_ask)
     monkeypatch.setattr(rag, "healthy", fake_healthy)
     monkeypatch.setattr(tts, "synthesize", fake_synthesize)
+    monkeypatch.setattr(tts, "healthy", fake_tts_healthy)
     monkeypatch.setattr(service, "correct_transcript", fake_correct)
 
     with TestClient(main.app) as c:

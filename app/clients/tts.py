@@ -11,6 +11,7 @@ import io
 import os
 import re
 import tempfile
+import time
 import wave
 from urllib.parse import urlparse, urlunparse
 
@@ -1250,25 +1251,71 @@ async def _openai(text: str) -> bytes:
 
 
 # ---------- Health: доступность TTS-серверов (для /health оркестратора) ----------
+async def _probe_responds(client, url: str) -> dict:
+    """Сервер жив, если ОТВЕТИЛ на HTTP-запрос — даже 404/405.
+
+    У multipart-F5 на GPU-ноде АФМ нет эндпоинта `/health`, и прежний
+    `raise_for_status()` красил 404 в `reachable:false` навсегда — приёмка не
+    проходила, а настоящее падение F5 было не отличить от этого шума (N1).
+    Теперь недоступность = ТОЛЬКО транспортная ошибка/таймаут; любой HTTP-ответ
+    (значит, порт слушает и процесс жив) = reachable, со статусом для диагностики.
+    """
+    try:
+        resp = await client.get(_health_from(url))
+    except Exception as e:
+        return {"reachable": False, "error": str(e)}
+    return {"reachable": True, "status": resp.status_code}
+
+
+# Кэш health-пробы ElevenLabs: (monotonic-время, результат). Проба ходит в облако —
+# не дёргаем её на КАЖДЫЙ /health (дашборд/watchdog опрашивают часто), держим ответ
+# несколько секунд. GET /user символы не тратит, но сеть АФМ офлайн — лишний запрос
+# всё равно ни к чему.
+_eleven_health_cache: tuple[float, dict] | None = None
+_ELEVEN_HEALTH_TTL = 30.0
+
+
+async def _eleven_reachable(client) -> dict:
+    """Доступность облачного ElevenLabs (дефолтный казахский TTS, N4).
+
+    Кэшируется на _ELEVEN_HEALTH_TTL секунд. reachable=True только на 2xx: 401
+    (плохой ключ) — это НЕдоступно для синтеза, а не «жив».
+    """
+    global _eleven_health_cache
+    now = time.monotonic()
+    if _eleven_health_cache is not None and now - _eleven_health_cache[0] < _ELEVEN_HEALTH_TTL:
+        return _eleven_health_cache[1]
+    if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id):
+        result = {"reachable": False, "error": "не заданы ELEVENLABS_API_KEY/VOICE_ID"}
+    else:
+        url = f"{settings.elevenlabs_url.rstrip('/')}/user"
+        try:
+            resp = await client.get(url, headers={"xi-api-key": settings.elevenlabs_api_key})
+            if resp.status_code < 400:
+                result = {"reachable": True}
+            else:
+                result = {"reachable": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            result = {"reachable": False, "error": str(e)}
+    _eleven_health_cache = (now, result)
+    return result
+
+
 async def healthy() -> dict:
-    """Пингует /health у выбранных TTS-серверов (f5/spark). Пусто, если они не нужны."""
+    """Доступность выбранных TTS-серверов для `/health` оркестратора.
+
+    f5/spark — по факту HTTP-ответа (см. _probe_responds); eleven — по 2xx на
+    /user с кэшем (см. _eleven_reachable). Пусто, если провайдер не задействован.
+    """
     import httpx
 
     providers = {settings.tts_provider, settings.tts_kk_provider}
-    targets: dict[str, str] = {}
-    if "f5" in providers and settings.f5_url:
-        targets["f5"] = settings.f5_url
-    if "spark" in providers and settings.spark_url:
-        targets["spark"] = settings.spark_url
-
     out: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=3.0) as client:
-        for name, url in targets.items():
-            health_url = _health_from(url)
-            try:
-                resp = await client.get(health_url)
-                resp.raise_for_status()
-                out[name] = {"reachable": True}
-            except Exception as e:
-                out[name] = {"reachable": False, "error": str(e)}
+        if "f5" in providers and settings.f5_url:
+            out["f5"] = await _probe_responds(client, settings.f5_url)
+        if "spark" in providers and settings.spark_url:
+            out["spark"] = await _probe_responds(client, settings.spark_url)
+        if "eleven" in providers:
+            out["eleven"] = await _eleven_reachable(client)
     return out
