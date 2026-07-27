@@ -99,6 +99,67 @@ def test_answer_lightrag_no_context_stub_becomes_localized_not_found():
     assert result_kk == NOT_FOUND_KK
 
 
+# ---------- answer(): LLM выдал отказ НЕ НА ТОМ языке -> нормализуем к языку вопроса ----------
+# Регрессия (демо): на казахский off-topic-вопрос LLM игнорировал мягкую языковую
+# подсказку и отдавал РУССКИЙ NOT_FOUND_RU (извлечённый контекст был русскоязычным) —
+# гражданин видел отказ на чужом языке. Ловим фразу-отказ по маркерам ядра фразы и
+# приводим к _not_found(lang), чтобы язык отказа был детерминирован.
+
+def test_answer_normalizes_wrong_language_not_found_to_question_lang():
+    # LLM отдал РУССКИЙ отказ на КАЗАХСКИЙ вопрос -> должен стать казахским.
+    assert _run(rag_engine.answer(_FakeRag(NOT_FOUND_RU),
+                                  "Аргентинаның субъектілері кім?", lang="kk")) == NOT_FOUND_KK
+    # И наоборот: казахский отказ на русский вопрос -> русский.
+    assert _run(rag_engine.answer(_FakeRag(NOT_FOUND_KK),
+                                  "мимо базы", lang="ru")) == NOT_FOUND_RU
+
+
+def test_answer_normalizes_paraphrased_not_found_by_marker():
+    # LLM перефразировал вокруг маркера «нет точной информации» — всё равно ловим.
+    fake = _FakeRag("К сожалению, у меня нет точной информации по этому вопросу.")
+    assert _run(rag_engine.answer(fake, "казахский вопрос", lang="kk")) == NOT_FOUND_KK
+
+
+# ---------- висячая отсылка к экранной таблице БЕЗ блока [ТАБЛИЦА] ----------
+# Регрессия (демо 2026-07-27): числонезависимое перечисление (субъекты) LLM прочитал
+# словами (верно), но приписал «— барлық тізбек показано в таблице на экране» — таблицы
+# нет (и по правилам быть не должно), да ещё русской формой в казахском ответе.
+
+def test_strip_phantom_table_ref_removes_dangling_kk_clause():
+    text = ("Оларға банктер, биржалар, сақтандыру ұйымдары және төлем ұйымдары кіреді "
+            "— барлық тізбек показано в таблице на экране.")
+    assert rag_engine._strip_phantom_table_ref(text) == (
+        "Оларға банктер, биржалар, сақтандыру ұйымдары және төлем ұйымдары кіреді.")
+
+
+def test_strip_phantom_table_ref_removes_dangling_ru_clause():
+    text = "Пороги разные для видов операций, они показаны в таблице на экране."
+    assert rag_engine._strip_phantom_table_ref(text) == "Пороги разные для видов операций."
+
+
+def test_strip_phantom_table_ref_drops_whole_sentence():
+    text = "Штраф составляет 40 МРП. Полный перечень показан в таблице на экране."
+    assert rag_engine._strip_phantom_table_ref(text) == "Штраф составляет 40 МРП."
+
+
+def test_strip_phantom_table_ref_keeps_when_block_present():
+    text = ("Пороги показаны в таблице на экране.\n[ТАБЛИЦА]\nВид | Порог\n"
+            "Недвижимость | 50 000 000 тенге\n[/ТАБЛИЦА]")
+    assert rag_engine._strip_phantom_table_ref(text) == text
+
+
+def test_strip_phantom_table_ref_ignores_answer_without_table_word():
+    text = "Штраф составляет 40 МРП согласно статье 214."
+    assert rag_engine._strip_phantom_table_ref(text) == text
+
+
+def test_answer_strips_phantom_table_ref_end_to_end():
+    fake = _FakeRag("Субъектілерге банктер мен биржалар кіреді "
+                    "— толық тізбек показано в таблице на экране.")
+    assert _run(rag_engine.answer(fake, "субъектілер кім?", lang="kk")) == (
+        "Субъектілерге банктер мен биржалар кіреді.")
+
+
 # ---------- answer(): None -> RuntimeError (aquery упал внутри LightRAG) ----------
 
 def test_answer_none_response_raises_runtime_error():

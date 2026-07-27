@@ -82,8 +82,9 @@ bash spark_server/setup.sh              # казахский TTS (Spark)
 ```
 Запуск **одной командой** (Ctrl-C гасит всё):
 ```bash
-bash run_api.sh                 # офлайн-фолбэк TTS: f5 (8810) + spark (8809) + rag + API + video_ui
+bash run_api.sh                 # TTS с GPU-сервера АФМ: f5 (:8991) + spark (:8992) + rag + API + video_ui
 USE_ELEVEN=1 bash run_api.sh    # основной путь: TTS на ElevenLabs (нужен интернет)
+# локальный TTS, если GPU АФМ недоступен: USE_LOCAL_F5=1 и/или USE_LOCAL_SPARK=1 bash run_api.sh
 ```
 Открой **http://localhost:8000/** — тест-страница с микрофоном. Swagger: `/docs`.
 

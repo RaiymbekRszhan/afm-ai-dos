@@ -169,8 +169,9 @@ F5_URL=http://192.168.165.2:8991/tts
 F5_REF_AUDIO=refs/ref_ru_f5.wav      # референс тембра (шлётся в каждый запрос)
 F5_REF_TEXT=@refs/ref_ru.txt         # "@путь" = прочитать транскрипт из файла
 TTS_KK_PROVIDER=spark
-SPARK_URL=http://localhost:8809/tts
-# Локальный русский F5 вместо GPU: F5_URL=http://localhost:8810/tts, убери F5_REF_*, старт с USE_LOCAL_F5=1
+SPARK_URL=http://192.168.165.2:8992/tts
+# Локальный TTS вместо GPU (когда сервер АФМ недоступен): старт с USE_LOCAL_F5=1
+# (русский) и/или USE_LOCAL_SPARK=1 (казахский) — адреса/контракт переключатся сами.
 ```
 И в `spark_server/run.sh` поставь `SPARK_DEVICE="cuda"` (для GPU).
 LLM/эмбеддинги RAG-сервиса настраиваются отдельно в `rag/.env` (шаг 3).
@@ -179,30 +180,32 @@ LLM/эмбеддинги RAG-сервиса настраиваются отде�
 > multipart `{ref_audio, ref_text, gen_text}` на GPU-сервер (референс в каждом
 > запросе); если пусто — прежний JSON `{text, language}` на локальный `f5_server`.
 > `run_api.sh` уже настроен на GPU-сервер по умолчанию (`USE_LOCAL_F5=0`) — отдельные
-> ключи запуска не нужны. Вернуть локальный русский TTS: `USE_LOCAL_F5=1
-> F5_URL=http://localhost:8810/tts bash run_api.sh`.
+> ключи запуска не нужны. Вернуть локальный русский TTS: `USE_LOCAL_F5=1 bash run_api.sh`
+> (адрес и контракт переключатся сами). Казахский Spark на GPU АФМ (`:8992`)
+> использует ТОТ ЖЕ JSON-контракт `{text, language}`, что и локальный, — вернуть
+> локальный: `USE_LOCAL_SPARK=1 bash run_api.sh` (`SPARK_URL` переключится сам).
 
 **Через systemd:** в `deploy/ai-dos-api.service` поставь
 `Environment=F5_URL=http://192.168.165.2:8991/tts`,
 `Environment=F5_REF_AUDIO=refs/ref_ru_f5.wav`,
-`Environment=F5_REF_TEXT=@refs/ref_ru.txt` и отключи юнит `ai-dos-f5`
-(`systemctl disable --now ai-dos-f5`).
+`Environment=F5_REF_TEXT=@refs/ref_ru.txt`,
+`Environment=SPARK_URL=http://192.168.165.2:8992/tts` и отключи локальные TTS-юниты
+`ai-dos-f5`/`ai-dos-spark` (`systemctl disable --now ai-dos-f5 ai-dos-spark`).
 
 ---
 
 ## ШАГ 7. Запустить всё
-**Одной командой** (поднимает spark + rag + основной API; русский TTS — с GPU-сервера
-АФМ, локальный f5 не стартует; Ctrl-C гасит всё):
+**Одной командой** (поднимает rag + основной API + video_ui; русский И казахский TTS —
+с GPU-сервера АФМ, локальные f5/spark не стартуют; Ctrl-C гасит всё):
 ```bash
 HF_HUB_OFFLINE=1 bash run_api.sh
 ```
-Или вручную по сервисам (tmux). `f5_server` — только если нужен локальный русский TTS
-(`USE_LOCAL_F5=1` и `F5_URL=http://localhost:8810/tts`); по умолчанию он не нужен:
+Или вручную по сервисам (tmux). `f5_server`/`spark_server` — только если нужен локальный
+TTS (`USE_LOCAL_F5=1` / `USE_LOCAL_SPARK=1`); по умолчанию TTS берётся с GPU АФМ:
 ```bash
-bash spark_server/run.sh                                             # 8809 (казахский TTS)
 (cd rag && source .venv/bin/activate && uvicorn ragsvc.server:app --host 127.0.0.1 --port 8077)
 source .venv/bin/activate && HF_HUB_OFFLINE=1 uvicorn app.main:app --host 0.0.0.0 --port 8000
-# локальный русский TTS (опционально): bash f5_server/run.sh            # 8810
+# локальный TTS (опционально): bash f5_server/run.sh  # 8810 (ru) ; bash spark_server/run.sh  # 8809 (kk)
 ```
 
 ---

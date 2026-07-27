@@ -287,10 +287,13 @@ async def voice_endpoint(
 
             # Печать образцов: ответ про подачу заявления/жалобы/приём → предлагаем
             # распечатать бланк. Приглашение ДОПИСЫВАЕМ в ответ (аватар проговорит +
-            # уйдёт в X-Answer на экран), id образцов — в заголовок X-Print. На пути
-            # уточнения (suggestion) не предлагаем — там ещё не ответ по существу.
+            # уйдёт в X-Answer на экран), id образцов — в заголовок X-Print. НЕ предлагаем
+            # на пути уточнения (suggestion — там ещё не ответ по существу) и на пути
+            # ОТКАЗА (answer_found=False): фраза-отказ сама содержит «подать обращение
+            # через e-Otinish», иначе бланк предлагался бы на любой неизвестный/off-topic
+            # вопрос (напр. «кто субъекты Аргентины» → печать заявления — бессмыслица).
             print_ids: list[str] = []
-            if not suggestion:
+            if not suggestion and rec["answer_found"]:
                 print_ids = service.detect_print_templates(answer)
                 if print_ids:
                     answer = service.with_print_offer(answer, lang)

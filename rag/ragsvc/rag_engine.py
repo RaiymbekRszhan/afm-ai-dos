@@ -88,10 +88,58 @@ _LANG_TAG = re.compile(r"\[(?:RU|KK)\]\s*")
 # минуя наш промпт. В озвучку её пускать нельзя (гражданин услышит английский).
 _LC_FALLBACK_RE = re.compile(r"\[no-context\]|sorry,?\s+i'?m not able to provide",
                              re.IGNORECASE)
+# Ядро фраз NOT_FOUND_RU/KK. LLM обязан на пустой Контекст вернуть фразу-отказ НА
+# ЯЗЫКЕ ВОПРОСА, но мягкую языковую подсказку (user_prompt) иногда игнорирует и
+# отдаёт отказ на «чужом» языке — особенно на off-topic-вопросе, где извлечённый
+# контекст чужеязычный (казахский вопрос → русский отказ, замечено на демо).
+# По этим маркерам ловим «LLM отказал» и НОРМАЛИЗУЕМ к _not_found(lang). Маркеры —
+# те же, что у оркестратора (app/service.py::looks_not_found), держим синхронно.
+_NOT_FOUND_MARKS = ("нет точной информации", "нақты ақпарат жоқ")
 
 
 def _not_found(lang: str | None) -> str:
     return NOT_FOUND_KK if lang == "kk" else NOT_FOUND_RU
+
+
+def _looks_not_found(text: str) -> bool:
+    low = text.lower()
+    return any(m in low for m in _NOT_FOUND_MARKS)
+
+
+# Отсылка «показано в таблице на экране» БЕЗ самого блока [ТАБЛИЦА]/[КЕСТЕ] — ложная:
+# LLM пообещал таблицу, которой на экране не будет. Частый случай — перечисление БЕЗ
+# чисел (субъекты, органы): по правилам промпта таблицы там быть НЕ должно, список
+# читается словами, но LLM всё равно приписывает отсылку — да ещё РУССКОЙ формой в
+# казахском ответе («показано в таблице на экране», замечено на демо). Срезаем висячую
+# отсылку, если блока в тексте нет; когда таблица РЕАЛЬНО есть — не трогаем.
+_TABLE_MARK_RE = re.compile(r"\[(?:ТАБЛИЦА|КЕСТЕ)\]", re.IGNORECASE)
+_TABLE_WORD_RE = re.compile(r"таблиц|кесте", re.IGNORECASE)
+_PHANTOM_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_PHANTOM_CLAUSE_SEP_RE = re.compile(r"[—–,:;]")  # без обычного дефиса: он внутри слов (іс-қимыл)
+
+
+def _strip_phantom_table_ref(text: str) -> str:
+    """Убирает отсылку к экранной таблице, если самого блока [ТАБЛИЦА] в ответе нет.
+
+    Режем КЛАУЗУ с упоминанием «таблиц…/кесте…» по последнему разделителю перед ней;
+    если упоминание — целое предложение, выкидываем предложение. Реальную таблицу
+    (есть блок [ТАБЛИЦА]/[КЕСТЕ]) не трогаем — там отсылка законна.
+    """
+    if _TABLE_MARK_RE.search(text) or not _TABLE_WORD_RE.search(text):
+        return text
+    kept: list[str] = []
+    for sent in _PHANTOM_SENT_SPLIT_RE.split(text):
+        m = _TABLE_WORD_RE.search(sent)
+        if not m:
+            kept.append(sent)
+            continue
+        end = sent[-1] if sent[-1:] in ".!?" else ""
+        head = sent[:m.start()]
+        seps = list(_PHANTOM_CLAUSE_SEP_RE.finditer(head))
+        if seps and head[:seps[-1].start()].strip():
+            kept.append(head[:seps[-1].start()].rstrip() + (end or "."))
+        # иначе упоминание таблицы — само предложение: пропускаем целиком
+    return " ".join(kept).strip() or text
 
 
 def _for_tts(text: str) -> str:
@@ -130,7 +178,11 @@ async def answer(rag: LightRAG, question: str, lang: str | None = None) -> str:
     if _LC_FALLBACK_RE.search(text):
         # Заменяем англ. заглушку LightRAG фирменной фразой отказа на языке вопроса.
         return _not_found(lang)
-    return text
+    if _looks_not_found(text):
+        # LLM выдал фразу-отказ, но мог выбрать НЕ ТОТ язык (см. _NOT_FOUND_MARKS):
+        # приводим к канонической фразе на языке вопроса — язык отказа детерминирован.
+        return _not_found(lang)
+    return _strip_phantom_table_ref(text)
 
 
 _REF_HEADER = re.compile(r"Reference Document List[^\n]*:\s*", re.IGNORECASE)
