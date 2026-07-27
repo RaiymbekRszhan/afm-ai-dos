@@ -5,8 +5,25 @@ tts_enabled=False (провайдер "eleven" не входил в допуст
 from app.config import Settings
 
 
-def test_tts_enabled_true_for_default_f5_spark():
-    assert Settings(tts_provider="f5", tts_kk_provider="spark").tts_enabled is True
+def test_tts_enabled_true_for_f5_spark_with_urls():
+    # f5/spark считаются сконфигурированными ТОЛЬКО с непустым адресом сервера.
+    assert Settings(
+        tts_provider="f5", tts_kk_provider="spark",
+        f5_url="http://f5:8810/tts", spark_url="http://spark:8809/tts",
+    ).tts_enabled is True
+
+
+def test_tts_enabled_false_for_f5_without_url():
+    # Регрессия N3: раньше f5 считался валидным по одному имени, /health врал
+    # "включён", а /voice падал 502 у гражданина. f5_url зануляем явно — тест не
+    # должен зависеть от .env на машине разработчика.
+    s = Settings(tts_provider="f5", tts_kk_provider="say", f5_url="")
+    assert s.tts_enabled is False
+
+
+def test_tts_enabled_false_for_spark_without_url():
+    s = Settings(tts_provider="say", tts_kk_provider="spark", spark_url="")
+    assert s.tts_enabled is False
 
 
 def test_tts_enabled_true_for_say():

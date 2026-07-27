@@ -151,15 +151,21 @@ class Settings(BaseSettings):
     log_answers: bool = True         # писать текст ответа (для последующего анализа LLM-ответов)
     log_retention_days: int = 30     # сколько суточных JSONL-файлов держать (= дней хранения)
 
-    # Известные провайдеры TTS без спец-проверки конфига (openai проверяется отдельно).
-    _KNOWN_TTS_PROVIDERS = ("f5", "spark", "say", "eleven")
-
     def _provider_configured(self, provider: str) -> bool:
         if provider == "openai":
             return bool(self.tts_base_url and self.tts_model)
         if provider == "eleven":
             return bool(self.elevenlabs_api_key and self.elevenlabs_voice_id)
-        return provider in self._KNOWN_TTS_PROVIDERS
+        # f5/spark — сетевые сервисы: без адреса синтез невозможен. Проверяем URL,
+        # иначе /health рапортует "включён", а /voice падает 502 уже у гражданина
+        # (N3). "say" — локальный (macOS), URL не нужен.
+        if provider == "f5":
+            return bool(self.f5_url)
+        if provider == "spark":
+            return bool(self.spark_url)
+        if provider == "say":
+            return True
+        return False
 
     @property
     def tts_enabled(self) -> bool:

@@ -9,6 +9,10 @@ import os
 os.environ["STT_KK_USE_WHISPER"] = "false"   # не грузим Whisper в lifespan
 os.environ["STT_CORRECTION"] = "false"        # не дёргаем LLM-коррекцию
 os.environ["LOG_ANALYTICS"] = "false"         # обычные тесты не пишут JSONL/logs/ (см. test_logging)
+# f5/spark теперь требуют адрес (N3), иначе tts_enabled=False и /voice отдаёт JSON
+# без звука. Задаём фиктивные URL — сам синтез в тестах замокан (см. fixture client).
+os.environ.setdefault("F5_URL", "http://f5.test:8810/tts")
+os.environ.setdefault("SPARK_URL", "http://spark.test:8809/tts")
 
 import pytest
 from fastapi.testclient import TestClient
