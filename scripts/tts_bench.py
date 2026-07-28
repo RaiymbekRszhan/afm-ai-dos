@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import glob
 import html
 import io
 import json
@@ -301,6 +302,36 @@ def _fmt(v, dash="—"):
     return dash if v is None else v
 
 
+RUNS_DIR = os.path.join("out", "tts_bench")
+
+
+def resolve_baseline(value: str, current_out: str) -> str | None:
+    """Каталог базы для сравнения: путь, имя прогона или `last`.
+
+    Имя прогона — это дата-время (`2026-07-28_1137`), а не коммит и не ветка:
+    промахнуться легко, поэтому принимаем и голое имя, и полный путь, и `last`
+    (предыдущий прогон), а на промахе показываем, что вообще есть.
+    """
+    if not value:
+        return None
+    runs = sorted(d for d in glob.glob(os.path.join(RUNS_DIR, "*"))
+                  if os.path.isfile(os.path.join(d, "report.json")))
+    if value in ("last", "prev"):
+        runs = [d for d in runs if os.path.abspath(d) != os.path.abspath(current_out)]
+        if runs:
+            return runs[-1]
+        print("[bench] предыдущих прогонов нет — сравнивать не с чем")
+        return None
+    for cand in (value, os.path.join(RUNS_DIR, value)):
+        if os.path.isfile(os.path.join(cand, "report.json")):
+            return cand
+    print(f"[bench] база {value!r} не найдена. Доступные прогоны:")
+    for d in runs[-8:]:
+        print(f"    {d}")
+    print("    (или --baseline last — предыдущий прогон)")
+    return None
+
+
 def write_markdown(rows: list[dict], path: str, baseline: dict | None) -> None:
     lines = [
         f"# Бенч TTS — {os.path.basename(os.path.dirname(path))}",
@@ -498,7 +529,9 @@ def main() -> int:
     p.add_argument("--repeat", type=int, default=1, help="прогонов на фразу (медиана)")
     p.add_argument("--timeout", type=float, default=300.0, help="таймаут запроса, с")
     p.add_argument("--out", default="", help="каталог прогона (по умолчанию out/tts_bench/<дата>)")
-    p.add_argument("--baseline", default="", help="каталог прошлого прогона для сравнения")
+    p.add_argument("--baseline", default="",
+                   help="с чем сравнить: имя прогона (2026-07-28_1137), путь к нему "
+                        "или last — предыдущий прогон")
     p.add_argument("--preview", action="store_true", help="без сети: нормализация и нарезка")
     p.add_argument("--no-first-chunk", action="store_true",
                    help="не мерить отдельно первый кусок (на один запрос меньше)")
@@ -537,25 +570,34 @@ def main() -> int:
     rows = run(args, items, planner)
 
     baseline = None
-    if args.baseline:
+    base_dir = resolve_baseline(args.baseline, args.out)
+    if base_dir:
         try:
-            with open(os.path.join(args.baseline, "report.json"), encoding="utf-8") as f:
+            with open(os.path.join(base_dir, "report.json"), encoding="utf-8") as f:
                 baseline = {r["id"]: r for r in json.load(f)["rows"]}
+            print(f"[bench] сравниваю с {base_dir}")
         except Exception as e:
             print(f"[bench] база для сравнения не прочитана: {e!r}")
+            base_dir = None
 
     meta = {"api": args.api, "ts": datetime.now().isoformat(timespec="seconds"),
-            "repeat": args.repeat, "baseline": args.baseline or None,
+            "repeat": args.repeat, "baseline": base_dir,
             "warmup": not args.no_warmup}
     with open(os.path.join(args.out, "report.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "rows": rows}, f, ensure_ascii=False, indent=2)
     write_markdown(rows, os.path.join(args.out, "report.md"), baseline)
-    write_html(rows, os.path.join(args.out, "listen.html"), args.baseline or None)
+    write_html(rows, os.path.join(args.out, "listen.html"), base_dir)
 
     failed = [r["id"] for r in rows if r.get("error")]
+    # Готовые к копированию команды: имена прогонов — даты-время, и набирать их
+    # руками (или подставлять в <плейсхолдер>) — верный способ промахнуться.
     print(f"\nГотово: {args.out}")
-    print(f"  report.md    — таблица метрик")
-    print(f"  listen.html  — прослушка (открыть в браузере)")
+    print(f"  таблица метрик:  cat {os.path.join(args.out, 'report.md')}")
+    print(f"  прослушка:       open {os.path.join(args.out, 'listen.html')}"
+          + ("  (плееры «до/после» рядом)" if base_dir else ""))
+    if not base_dir:
+        print(f"  сравнить с прошлым прогоном: "
+              f"python -m scripts.tts_bench --baseline last")
     if failed:
         print(f"  ОШИБКИ: {', '.join(failed)}")
     return 1 if failed else 0
