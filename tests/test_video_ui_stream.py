@@ -1,0 +1,105 @@
+"""Прокси киоска (video_ui) для потокового ответа: пробрасывает NDJSON насквозь.
+
+Смысл потока в том, что первый кусок озвучки доходит до киоска, пока
+досинтезируется остальное, — значит прокси НЕ должен копить тело: буферизация
+здесь молча убила бы весь выигрыш. Плюс ошибки бэкенда должны приходить строкой
+`error`, а не обрывом (статус 200 уже отдан гражданину).
+
+Сети нет: httpx.AsyncClient подменяется заглушкой.
+"""
+import importlib.util
+import json
+import os
+
+import pytest
+from fastapi.testclient import TestClient
+
+_PATH = os.path.join(os.path.dirname(__file__), "..", "video_ui", "server.py")
+_spec = importlib.util.spec_from_file_location("video_ui_server", _PATH)
+video_ui = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(video_ui)
+
+
+class _FakeStream:
+    """Ответ httpx.stream: статус + строки NDJSON."""
+
+    def __init__(self, lines, status_code=200):
+        self._lines = lines
+        self.status_code = status_code
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def aread(self):
+        return json.dumps({"detail": "бэкенд отказал"}).encode()
+
+
+class _FakeClient:
+    def __init__(self, lines=None, status_code=200, boom=None):
+        self._lines, self._status, self._boom = lines or [], status_code, boom
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def stream(self, method, url, **kw):
+        if self._boom:
+            raise self._boom
+        return _FakeStream(self._lines, self._status)
+
+
+def _client(monkeypatch, **kw):
+    monkeypatch.setattr(video_ui.httpx, "AsyncClient",
+                        lambda *a, **k: _FakeClient(**kw))
+    return TestClient(video_ui.app)
+
+
+def _post(c):
+    return c.post("/voice/stream", files={"data": ("q.wav", b"RIFFfake", "audio/wav")},
+                  data={"language": "russian"})
+
+
+def test_proxy_relays_events_in_order(monkeypatch):
+    lines = [json.dumps({"type": "meta", "answer": "Ответ"}, ensure_ascii=False),
+             json.dumps({"type": "audio", "seq": 0}),
+             json.dumps({"type": "end"})]
+    r = _post(_client(monkeypatch, lines=lines))
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    # nginx перед киоском иначе копит ответ целиком и съедает смысл потока
+    assert r.headers.get("x-accel-buffering") == "no"
+    events = [json.loads(x) for x in r.text.splitlines() if x.strip()]
+    assert [e["type"] for e in events] == ["meta", "audio", "end"]
+    assert events[0]["answer"] == "Ответ"
+
+
+def test_proxy_turns_backend_error_into_event(monkeypatch):
+    r = _post(_client(monkeypatch, lines=[], status_code=502))
+    events = [json.loads(x) for x in r.text.splitlines() if x.strip()]
+    assert events == [{"type": "error", "detail": "бэкенд отказал"}]
+
+
+def test_proxy_hides_transport_details(monkeypatch):
+    """Наружу — обобщённо: repr исключения httpx тянет внутренние адреса."""
+    r = _post(_client(monkeypatch, boom=ConnectionError("connect to 192.168.165.2:8000")))
+    events = [json.loads(x) for x in r.text.splitlines() if x.strip()]
+    assert events[0]["type"] == "error"
+    assert "192.168" not in events[0]["detail"]
+
+
+def test_proxy_rejects_oversized_upload(monkeypatch):
+    c = _client(monkeypatch, lines=[])
+    big = b"x" * (int(video_ui.MAX_UPLOAD_MB * 1024 * 1024) + 1)
+    r = c.post("/voice/stream", files={"data": ("q.wav", big, "audio/wav")},
+               data={"language": "russian"})
+    assert r.status_code == 413

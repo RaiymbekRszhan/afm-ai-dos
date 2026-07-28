@@ -1020,6 +1020,82 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
     return audio
 
 
+def _append_silence(wav_bytes: bytes, ms: int) -> bytes:
+    """Дописывает `ms` тишины в конец WAV (не WAV — отдаём как есть).
+
+    В монолитном пути паузу на стыке ставит склейка (_concat_wav). В потоковом
+    куски играются порознь, склейки нет — значит паузу нужно вшить в хвост
+    куска, иначе следующий начнётся впритык и «влезет», не дав предыдущему
+    договорить (та самая настройка 280/140 и 300/150, подобранная на слух).
+    """
+    if ms <= 0:
+        return wav_bytes
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as r:
+            nch, sw, fr = r.getnchannels(), r.getsampwidth(), r.getframerate()
+            frames = r.readframes(r.getnframes())
+    except (wave.Error, EOFError):
+        return wav_bytes
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(nch)
+        w.setsampwidth(sw)
+        w.setframerate(fr)
+        w.writeframes(frames + b"\x00" * (int(fr * ms / 1000) * nch * sw))
+    return out.getvalue()
+
+
+async def synthesize_stream(text: str, language: str | None = None):
+    """Куски озвучки ПО МЕРЕ синтеза: (номер, WAV, провайдер, символов в куске).
+
+    Ради этого и делался стриминг: гражданин слышит первый кусок, пока
+    досинтезируются остальные. Синтез идёт быстрее реального времени (F5 на GPU
+    АФМ — примерно в 8 раз), поэтому очередь не пустеет, а ожидание падает с
+    полного времени ответа до времени ОДНОГО первого куска.
+
+    Паузы на стыках вшиты в хвост куска (см. _append_silence), гашение хвоста
+    F5 — в последний кусок: звучать должно ровно как склеенный WAV.
+
+    Фолбэк на запасной движок возможен ТОЛЬКО до первого выданного куска: менять
+    голос на середине ответа хуже, чем честно оборвать (гражданин уже слышит
+    начало, а текст целиком на экране с самого начала).
+    """
+    if not text.strip():
+        raise RuntimeError("Пустой текст для синтеза")
+    primary = _provider_for(language)
+    fallback = _fallback_for(language)
+    provider = fallback if (fallback and _in_cooldown(primary)) else primary
+    if provider != primary:
+        log.warning("TTS %s пропущен (недавний отказ), сразу фолбэк %s", primary, provider)
+
+    # Первый кусок синтезируем ДО выдачи: только пока ничего не отдано, отказ
+    # ещё можно молча пережить сменой движка.
+    while True:
+        _, parts = prepare_for_tts(text, language, provider)
+        if not parts:
+            raise RuntimeError("Нет произносимого текста для синтеза")
+        try:
+            head = await _synthesize_chunk(parts[0], language, provider)
+            break
+        except Exception as e:
+            if provider != primary or not fallback:
+                raise
+            _mark_down(primary)
+            log.warning("TTS %s не смог (%r) -> фолбэк %s", primary, e, fallback)
+            provider = fallback
+    if provider == primary:
+        _mark_up(primary)
+
+    base_gap = settings.tts_f5_gap_ms if provider == "f5" else settings.tts_gap_ms
+    for idx, part in enumerate(parts):
+        audio = head if idx == 0 else await _synthesize_chunk(part, language, provider)
+        if idx < len(parts) - 1:
+            audio = _append_silence(audio, _gap_ms_after(part, base_gap))
+        elif provider == "f5" and settings.tts_format == "wav":
+            audio = _fade_out_tail(audio, _F5_TAIL_FADE_MS)
+        yield idx, audio, provider, len(part)
+
+
 def _provider_for(language: str | None) -> str:
     """Какой TTS-провайдер обслуживает данный язык (kk -> свой провайдер)."""
     return settings.tts_kk_provider if _resolve_lang(language) == "kk" else settings.tts_provider

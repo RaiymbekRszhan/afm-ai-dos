@@ -128,6 +128,10 @@ def record_interaction(
     stt_ms: int | None = None,
     rag_ms: int | None = None,
     tts_ms: int | None = None,
+    # Потоковый ответ (/voice/stream): сколько ждали ПЕРВЫЙ кусок озвучки —
+    # это и есть воспринимаемая гражданином задержка, в отличие от tts_ms
+    # (полный синтез). У монолитного /voice остаётся None.
+    tts_first_ms: int | None = None,
     total_ms: int | None = None,
     error: str | None = None,
 ) -> None:
@@ -139,9 +143,9 @@ def record_interaction(
     ops = logging.getLogger("ai_dos.api")
     # Человекочитаемая строка в journald (быстро глазами по journalctl).
     ops.info(
-        "interaction lang=%s stt=%sms rag=%sms tts=%sms total=%sms "
+        "interaction lang=%s stt=%sms rag=%sms tts=%sms first=%sms total=%sms "
         "found=%s suggest=%s print=%s provider=%s error=%s",
-        lang, stt_ms, rag_ms, tts_ms, total_ms,
+        lang, stt_ms, rag_ms, tts_ms, tts_first_ms, total_ms,
         answer_found, int(suggested), ",".join(print_ids or []) or "-",
         provider or "-", error or "-",
     )
@@ -160,6 +164,7 @@ def record_interaction(
         "stt_ms": stt_ms,
         "rag_ms": rag_ms,
         "tts_ms": tts_ms,
+        "tts_first_ms": tts_first_ms,
         "total_ms": total_ms,
         "error": error,
     }

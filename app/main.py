@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import os
 import uuid
@@ -8,7 +9,7 @@ from time import perf_counter
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import logging_setup, service
@@ -218,114 +219,132 @@ async def speak_endpoint(req: SpeakRequest):
         logging_setup.reset_request_id(token)
 
 
+def _new_record(rid: str, lang: str) -> dict:
+    """Заготовка строки аналитики: собирается по ходу, пишется один раз в finally
+    (в т.ч. на пути ошибки — видно, какая стадия упала и сколько заняла)."""
+    return {
+        "request_id": rid, "lang": lang, "provider": tts._provider_for(lang),
+        "corrected": False, "suggested": False, "print_ids": [], "answer_found": None,
+        "question": None, "answer": None,
+        "stt_ms": None, "rag_ms": None, "tts_ms": None, "tts_first_ms": None,
+        "error": None,
+    }
+
+
+async def _answer_pipeline(audio: bytes, filename: str, content_type: str,
+                           lang: str, suggest: str | None, rec: dict
+                           ) -> tuple[str, str, str | None, list[str]]:
+    """STT → RAG → уточнение/печать. Возвращает (вопрос, ответ, подсказка, бланки).
+
+    Общая часть `/voice` и `/voice/stream`: различаются они только тем, КАК
+    отдают озвучку (одним WAV или потоком кусков), а путь до текста — один.
+    Звать ПОД семафором _tts_sem: следом идёт синтез.
+    """
+    t = perf_counter()  # стадия «речь → текст» = STT (+ опц. LLM-коррекция)
+    try:
+        question = await stt.transcribe(audio, filename, lang, content_type=content_type)
+        if service.should_correct(lang):
+            corrected = await service.correct_transcript(question, lang)
+            rec["corrected"] = corrected != question
+            question = corrected
+    except Exception as e:
+        rec["error"] = "stt"
+        log.warning("STT error [%s]: %r", lang, e)
+        raise HTTPException(status_code=502, detail="Ошибка распознавания речи (STT).")
+    rec["stt_ms"] = _ms(t)
+
+    if not question.strip():
+        rec["error"] = "empty"
+        raise HTTPException(status_code=400,
+                            detail="Не удалось распознать речь. Повторите вопрос.")
+
+    # «Да» в ответ на наше «возможно, вы хотели спросить …?» — отвечаем на
+    # исправленный вопрос. Любая другая реплика — обычный новый вопрос.
+    suggest_used = False
+    if suggest and service.is_affirmative(question):
+        question = suggest
+        suggest_used = True
+    rec["question"] = question
+
+    service.check_injection(question, lang)  # только логируем, не блокируем
+
+    t = perf_counter()
+    try:
+        # sources не нужны в озвучке: with_sources=True заставил бы RAG делать
+        # второй запрос к графу/LLM на каждый вопрос — лишняя задержка.
+        result = await rag.ask(question, lang, with_sources=False)
+    except Exception as e:
+        rec["error"] = "rag"
+        log.warning("RAG error [%s]: %r", lang, e)
+        raise HTTPException(status_code=502, detail="Ошибка поиска по базе (RAG).")
+    rec["rag_ms"] = _ms(t)
+
+    answer = result["answer"]
+    # Нашёл ли RAG ответ — фиксируем ДО подмены answer подсказкой ниже.
+    rec["answer_found"] = not service.looks_not_found(answer)
+
+    # RAG не нашёл ответа — вероятно, STT исказил вопрос. Предлагаем гражданину
+    # исправленную формулировку (доп. LLM-вызов ТОЛЬКО на пути отказа). После
+    # подтверждённой подсказки повторно не уточняем — иначе цикл уточнений.
+    suggestion = None
+    if not suggest_used and service.looks_not_found(answer):
+        suggestion = await service.suggest_question(question, lang)
+        if suggestion:
+            answer = service.clarify_phrase(suggestion, lang)
+    rec["suggested"] = bool(suggestion)
+
+    # Печать образцов: ответ про подачу заявления/жалобы/приём → предлагаем
+    # распечатать бланк. Приглашение ДОПИСЫВАЕМ в ответ (аватар проговорит +
+    # уйдёт в поле answer на экран), id образцов — в поле print. НЕ предлагаем
+    # на пути уточнения (suggestion — там ещё не ответ по существу) и на пути
+    # ОТКАЗА (answer_found=False): фраза-отказ сама содержит «подать обращение
+    # через e-Otinish», иначе бланк предлагался бы на любой неизвестный/off-topic
+    # вопрос (напр. «кто субъекты Аргентины» → печать заявления — бессмыслица).
+    print_ids: list[str] = []
+    if not suggestion and rec["answer_found"]:
+        print_ids = service.detect_print_templates(answer)
+        if print_ids:
+            answer = service.with_print_offer(answer, lang)
+    rec["print_ids"] = print_ids
+    rec["answer"] = answer
+    return question, answer, suggestion, print_ids
+
+
 @app.post("/voice")
 async def voice_endpoint(
     data: UploadFile = File(...),
     language: str = Form(default=None),
     suggest: str = Form(default=None),
 ):
-    """Полный пайплайн: аудио → STT → RAG+LLM → (TTS).
+    """Полный пайплайн: аудио → STT → RAG+LLM → (TTS). Ответ — ОДНИМ JSON.
 
-    Возвращает WAV ответа + текст в заголовках (X-Question/X-Answer) — их
-    показывает страница видео-аватара (video_ui). Без TTS — JSON с текстом.
+    Тело: {question, answer, suggest, print, provider, format, audio_b64} —
+    текст и аудио (base64) в теле, не в заголовках: длинный табличный ответ
+    упирался в лимит заголовка, и экран тихо оставался без текста (N5).
 
-    `suggest` — подсказка с ПРОШЛОГО ответа (заголовок X-Suggest): если STT
-    исказил вопрос и RAG не нашёл ответа, мы предлагаем исправленную
-    формулировку; страница шлёт её со следующим вопросом, и реплика-согласие
-    («да», «иә») означает «отвечай на исправленный вопрос».
+    `suggest` — подсказка с ПРОШЛОГО ответа: если STT исказил вопрос и RAG не
+    нашёл ответа, мы предлагаем исправленную формулировку; страница шлёт её со
+    следующим вопросом, и реплика-согласие («да», «иә») означает «отвечай на
+    исправленный вопрос».
+
+    Озвучка отдаётся ЦЕЛИКОМ: гражданин ждёт полного синтеза. Потоковый вариант
+    (первый звук через ~1.5 с вместо ~6.5) — `/voice/stream`.
     """
     # request-id связывает все строки лога одного обращения (STT/RAG/TTS/ошибки).
     rid = uuid.uuid4().hex[:8]
     audio = await _read_upload(data)  # может дать 413 ДО старта пайплайна — не логируем
     lang = language or settings.stt_default_language
-    # Одна запись аналитики на обращение — собираем по ходу, пишем в finally (в т.ч.
-    # на пути ошибки: видно, какая стадия упала и сколько заняла).
-    rec: dict = {
-        "request_id": rid, "lang": lang, "provider": tts._provider_for(lang),
-        "corrected": False, "suggested": False, "print_ids": [], "answer_found": None,
-        "question": None, "answer": None,
-        "stt_ms": None, "rag_ms": None, "tts_ms": None, "error": None,
-    }
+    rec = _new_record(rid, lang)
     token = logging_setup.set_request_id(rid)
     t_start = perf_counter()
     try:
         # /voice — самый дорогой путь; ограничиваем число одновременных, чтобы пачка
         # запросов не положила TTS/GPU-ноду. Лишние ждут очереди (не отвергаются).
         async with _tts_sem:
-            t = perf_counter()  # стадия «речь → текст» = STT (+ опц. LLM-коррекция)
-            try:
-                question = await stt.transcribe(
-                    audio, data.filename or "audio.wav", lang,
-                    content_type=data.content_type or "audio/wav",
-                )
-                if service.should_correct(lang):
-                    corrected = await service.correct_transcript(question, lang)
-                    rec["corrected"] = corrected != question
-                    question = corrected
-            except Exception as e:
-                rec["error"] = "stt"
-                log.warning("STT error [%s]: %r", lang, e)
-                raise HTTPException(status_code=502, detail="Ошибка распознавания речи (STT).")
-            rec["stt_ms"] = _ms(t)
+            question, answer, suggestion, print_ids = await _answer_pipeline(
+                audio, data.filename or "audio.wav",
+                data.content_type or "audio/wav", lang, suggest, rec)
 
-            if not question.strip():
-                rec["error"] = "empty"
-                raise HTTPException(status_code=400, detail="Не удалось распознать речь. Повторите вопрос.")
-
-            # «Да» в ответ на наше «возможно, вы хотели спросить …?» — отвечаем на
-            # исправленный вопрос. Любая другая реплика — обычный новый вопрос.
-            suggest_used = False
-            if suggest and service.is_affirmative(question):
-                question = suggest
-                suggest_used = True
-            rec["question"] = question
-
-            service.check_injection(question, lang)  # только логируем, не блокируем
-
-            t = perf_counter()
-            try:
-                # sources не нужны в озвучке: with_sources=True заставил бы RAG делать
-                # второй запрос к графу/LLM на каждый вопрос — лишняя задержка.
-                result = await rag.ask(question, lang, with_sources=False)
-            except Exception as e:
-                rec["error"] = "rag"
-                log.warning("RAG error [%s]: %r", lang, e)
-                raise HTTPException(status_code=502, detail="Ошибка поиска по базе (RAG).")
-            rec["rag_ms"] = _ms(t)
-
-            answer = result["answer"]
-            # Нашёл ли RAG ответ — фиксируем ДО подмены answer подсказкой ниже.
-            rec["answer_found"] = not service.looks_not_found(answer)
-
-            # RAG не нашёл ответа — вероятно, STT исказил вопрос. Предлагаем гражданину
-            # исправленную формулировку (доп. LLM-вызов ТОЛЬКО на пути отказа). После
-            # подтверждённой подсказки повторно не уточняем — иначе цикл уточнений.
-            suggestion = None
-            if not suggest_used and service.looks_not_found(answer):
-                suggestion = await service.suggest_question(question, lang)
-                if suggestion:
-                    answer = service.clarify_phrase(suggestion, lang)
-            rec["suggested"] = bool(suggestion)
-
-            # Печать образцов: ответ про подачу заявления/жалобы/приём → предлагаем
-            # распечатать бланк. Приглашение ДОПИСЫВАЕМ в ответ (аватар проговорит +
-            # уйдёт в X-Answer на экран), id образцов — в заголовок X-Print. НЕ предлагаем
-            # на пути уточнения (suggestion — там ещё не ответ по существу) и на пути
-            # ОТКАЗА (answer_found=False): фраза-отказ сама содержит «подать обращение
-            # через e-Otinish», иначе бланк предлагался бы на любой неизвестный/off-topic
-            # вопрос (напр. «кто субъекты Аргентины» → печать заявления — бессмыслица).
-            print_ids: list[str] = []
-            if not suggestion and rec["answer_found"]:
-                print_ids = service.detect_print_templates(answer)
-                if print_ids:
-                    answer = service.with_print_offer(answer, lang)
-            rec["print_ids"] = print_ids
-            rec["answer"] = answer
-
-            # Ответ отдаём ОДНИМ JSON-телом: текст (вопрос/ответ/подсказка/печать) +
-            # аудио в base64. Раньше текст ехал percent-encoded в заголовках
-            # X-Question/X-Answer/..., и длинный ответ с таблицей упирался в лимит
-            # заголовка — экран тихо оставался без текста (N5). В теле лимита нет.
             audio_b64 = None
             if settings.tts_enabled:
                 t = perf_counter()
@@ -361,3 +380,105 @@ async def voice_endpoint(
         rec["total_ms"] = _ms(t_start)
         logging_setup.record_interaction(**rec)
         logging_setup.reset_request_id(token)
+
+
+@app.post("/voice/stream")
+async def voice_stream_endpoint(
+    data: UploadFile = File(...),
+    language: str = Form(default=None),
+    suggest: str = Form(default=None),
+):
+    """То же, что `/voice`, но ответ идёт ПОТОКОМ — NDJSON, по строке на событие.
+
+    Зачем: TTS доминирует в задержке (замер: ответ на 1000 символов — ~6.5 с
+    синтеза на F5, ~20 с на Spark), а гражданин у киоска всё это время слушает
+    тишину. Синтез идёт быстрее реального времени, поэтому достаточно дождаться
+    ПЕРВОГО куска — остальные успевают досинтезироваться, пока звучит предыдущий.
+
+        {"type":"meta","question":…,"answer":…,"suggest":…,"print":[…],
+         "provider":…,"format":"wav","chunks":N}      ← сразу после RAG, текст на экран
+        {"type":"audio","seq":0,"provider":…,"chars":…,"audio_b64":…}
+        …
+        {"type":"end"}                                 ← или {"type":"error","detail":…}
+
+    Ошибки ДО первого байта (STT/RAG) — обычные HTTP-коды, как у `/voice`.
+    После начала потока статус уже отправлен, поэтому сбой синтеза приходит
+    строкой `error`: текст ответа на экране у гражданина уже есть.
+    """
+    rid = uuid.uuid4().hex[:8]
+    audio = await _read_upload(data)
+    lang = language or settings.stt_default_language
+    rec = _new_record(rid, lang)
+    token = logging_setup.set_request_id(rid)
+    t_start = perf_counter()
+
+    def _finish() -> None:
+        rec["total_ms"] = _ms(t_start)
+        logging_setup.record_interaction(**rec)
+
+    # Семафор держим на ВЕСЬ путь, включая поток синтеза, поэтому берём его
+    # руками: освобождает генератор в finally (Starlette закрывает генератор и
+    # при обрыве соединения — гражданин ушёл от киоска, ресурс не залипает).
+    await _tts_sem.acquire()
+    try:
+        question, answer, suggestion, print_ids = await _answer_pipeline(
+            audio, data.filename or "audio.wav",
+            data.content_type or "audio/wav", lang, suggest, rec)
+    except BaseException:
+        _tts_sem.release()
+        _finish()
+        logging_setup.reset_request_id(token)
+        raise
+    logging_setup.reset_request_id(token)  # дальше работает генератор — со своим контекстом
+
+    async def events():
+        # Starlette крутит тело потока ОТДЕЛЬНОЙ задачей, то есть в другом
+        # контексте: токен эндпоинта здесь сбросить нельзя (ValueError), поэтому
+        # request-id ставим заново — иначе строки лога синтеза потеряют связь с
+        # обращением. Сбрасывать не нужно: контекст задачи умрёт вместе с ней.
+        logging_setup.set_request_id(rid)
+        try:
+            meta = {
+                "type": "meta", "question": question, "answer": answer,
+                "suggest": suggestion, "print": print_ids,
+                "provider": rec["provider"], "format": settings.tts_format,
+                # Символов в озвучиваемом тексте (после нормализации и вырезания
+                # экранных таблиц). Караоке-подсветка в потоке не может опираться
+                # на длительность — общая известна только в конце, — поэтому
+                # считает прогресс по доле символов: тут знаменатель, в кусках
+                # (`chars`) — слагаемые.
+                "speech_chars": len(tts.prepare_for_tts(answer, lang)[0]),
+            }
+            yield json.dumps(meta, ensure_ascii=False) + "\n"
+            if not settings.tts_enabled:
+                yield json.dumps({"type": "end"}) + "\n"
+                return
+            t = perf_counter()
+            try:
+                async for seq, chunk, provider, chars in tts.synthesize_stream(answer, lang):
+                    if seq == 0:
+                        # Воспринимаемая задержка: сколько гражданин ждал ЗВУКА.
+                        rec["tts_first_ms"] = _ms(t)
+                    rec["provider"] = provider
+                    yield json.dumps({
+                        "type": "audio", "seq": seq, "provider": provider,
+                        "chars": chars,
+                        "audio_b64": base64.b64encode(chunk).decode("ascii"),
+                    }) + "\n"
+            except Exception as e:
+                rec["error"] = "tts"
+                log.warning("TTS stream error [%s]: %r", lang, e)
+                yield json.dumps({"type": "error",
+                                  "detail": "Ошибка синтеза речи (TTS)."}) + "\n"
+                return
+            rec["tts_ms"] = _ms(t)
+            yield json.dumps({"type": "end"}) + "\n"
+        finally:
+            _tts_sem.release()
+            _finish()
+
+    # X-Accel-Buffering: nginx перед киоском иначе копит ответ целиком и съедает
+    # весь смысл потока.
+    return StreamingResponse(events(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no"})

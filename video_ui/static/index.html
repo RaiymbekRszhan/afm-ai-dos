@@ -245,11 +245,22 @@
      клавиатуры). Дальше свежесть держит no-cache из video_ui/server.py. -->
 <script src="/static/qrcode.js?v=20260720"></script>
 <script src="/static/answer_render.js?v=20260720b"></script>
+<script src="/static/stream_client.js?v=20260728"></script>
 <script>
 // ---------- режим киоска (?kiosk=1) ----------
 const params = new URLSearchParams(location.search);
 const KIOSK = params.get("kiosk") === "1";
 if (KIOSK) document.body.classList.add("kiosk");
+
+// ---------- потоковая озвучка (?stream=1) ----------
+// Обычный путь: ждём ВЕСЬ WAV (на длинном ответе это 6–20 c тишины у киоска).
+// Потоковый: текст на экран сразу, звук — кусками по мере синтеза, первый звук
+// через время ОДНОГО куска. Пока за флагом: дефолт прежний, ?stream=1 включает,
+// ?stream=0 гарантированно выключает. После приёмки на живом стеке поменять
+// STREAM_DEFAULT на true — откат тем же флагом.
+const STREAM_DEFAULT = false;
+const STREAM_TTS = params.get("stream") === null
+  ? STREAM_DEFAULT : params.get("stream") === "1";
 
 // ---------- полный экран (?kiosk=1) ----------
 // Прячем адресную строку и хром браузера, чтобы киоск не выглядел как вкладка.
@@ -313,8 +324,16 @@ const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAA
 const answerAudio = new Audio();
 let answerUrl = null, audioPrimed = false;
 
-answerAudio.addEventListener("ended", showIdle);
-answerAudio.addEventListener("error", showIdle);
+// В потоке «ended» — это конец КУСКА, а не ответа: играем следующий. Битый кусок
+// (error) тоже не должен обрывать ответ — идём дальше, текст на экране уже есть.
+answerAudio.addEventListener("ended", function () {
+  if (streaming) { playNextChunk(); return; }
+  showIdle();
+});
+answerAudio.addEventListener("error", function () {
+  if (streaming) { playNextChunk(); return; }
+  showIdle();
+});
 
 function primeAudio() {
   if (audioPrimed) return;
@@ -329,6 +348,49 @@ function b64ToBlob(b64, mime) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type: mime });
+}
+
+// ---------- потоковая очередь кусков ----------
+// В потоке ответ приходит несколькими WAV: играем их подряд ОДНИМ плеером
+// (у <audio> есть preservesPitch — Web Audio ускорял бы Spark вместе с питчем).
+// Паузы на стыках уже вшиты бэкендом в хвост каждого куска.
+const chunkQueue = createChunkQueue();
+let streaming = false;               // идёт ли сейчас потоковый ответ
+let streamProvider = null, streamFormat = "wav";
+
+function playNextChunk() {
+  const chunk = chunkQueue.next();
+  if (!chunk) {
+    // Кусков пока нет: либо поток кончился (уходим в idle), либо синтез не
+    // успевает — тогда ждём, оставив «говорящий» ролик, и продолжим с приходом.
+    if (chunkQueue.done()) finishAnswer();
+    return;
+  }
+  if (answerUrl) URL.revokeObjectURL(answerUrl);
+  answerUrl = URL.createObjectURL(chunk.blob);
+  answerAudio.src = answerUrl;
+  try { answerAudio.preservesPitch = true; answerAudio.webkitPreservesPitch = true; } catch (e) {}
+  answerAudio.playbackRate = speechRate(streamProvider);   // src сбрасывает темп
+  answerAudio.play().catch(function (e) {
+    st.textContent = "звук заблокирован браузером: " + e.message;
+    finishAnswer();
+  });
+}
+
+function finishAnswer() {
+  streaming = false;
+  karaokeWords.forEach(w => w.classList.add("spoken"));
+  karaokeIdx = karaokeWords.length;
+  showIdle();
+}
+
+function enqueueChunk(blob, chars, provider) {
+  streamProvider = provider || streamProvider;
+  chunkQueue.push({ blob: blob, chars: chars });
+  if (!chunkQueue.playing) {
+    if (!streaming) { streaming = true; showTalking(); }
+    playNextChunk();
+  }
 }
 
 function playAnswer(blob, lang, provider) {
@@ -355,6 +417,11 @@ function playAnswer(blob, lang, provider) {
 // и жмёт «Задать вопрос» снова. Вызывается в начале новой записи. pause() не
 // триггерит "ended", поэтому возврат в idle делаем сами.
 function stopAnswer() {
+  // Потоковый ответ — оборвать и запрос: досинтезировать то, что уже не слушают,
+  // значит зря держать TTS/GPU-ноду (бэкенд отпустит семафор на разрыве).
+  if (streamAbort) { try { streamAbort.abort(); } catch (e) {} streamAbort = null; }
+  streaming = false;
+  chunkQueue.reset();
   try { answerAudio.pause(); answerAudio.currentTime = 0; } catch (e) {}
   showIdle();
 }
@@ -440,7 +507,10 @@ function initKaraoke() {
 }
 function karaokeTick() {
   if (!karaokeWords.length || !answerAudio.duration) return;
-  const target = (answerAudio.currentTime / answerAudio.duration) * karaokeTotal;
+  // В потоке доля времени внутри КУСКА пересчитывается в долю всего ответа по
+  // символам (общая длительность станет известна только в конце) — см. stream_client.js.
+  const within = answerAudio.currentTime / answerAudio.duration;
+  const target = (streaming ? chunkQueue.progress(within) : within) * karaokeTotal;
   let acc = 0, i = 0;
   for (; i < karaokeWords.length; i++) {
     acc += parseFloat(karaokeWords[i].dataset.w) || 1;
@@ -453,6 +523,7 @@ function karaokeTick() {
 }
 answerAudio.addEventListener("timeupdate", karaokeTick);
 answerAudio.addEventListener("ended", () => {   // договорил — подсветить всё
+  if (streaming) return;                        // в потоке ответ ещё продолжается
   karaokeWords.forEach(w => w.classList.add("spoken"));
   karaokeIdx = karaokeWords.length;
 });
@@ -676,6 +747,7 @@ async function stopAndSend() {
   // поймёт, что реплика «да» = согласие ответить на исправленный вопрос.
   if (pendingSuggest) fd.append("suggest", pendingSuggest);
   try {
+    if (STREAM_TTS) { await askStreaming(fd, askedLang); return; }
     // /voice тут — прокси на рабочий бэкенд (:8000). Контракт — JSON-тело (N5):
     // {question, answer, suggest, print, provider, format, audio_b64}. Текст и
     // аудио в теле, не в заголовках: длинный табличный ответ доходит целиком.
@@ -697,12 +769,69 @@ async function stopAndSend() {
       showIdle();                        // TTS выключен — показываем только текст
     }
   } catch (e) {
+    if (e.name === "AbortError") return;   // посетитель сам прервал — не «ошибка»
     out.className = "";
     out.textContent = "Ошибка: " + e.message;
     st.textContent = "ошибка";
     showIdle();
   } finally {
     btn.disabled = false;
+  }
+}
+
+// ---------- потоковый ответ (?stream=1) ----------
+// Читаем NDJSON построчно: первая строка (meta) кладёт текст на экран сразу
+// после RAG, дальше идут куски озвучки — их складываем в очередь, плеер играет
+// подряд. Так гражданин слышит начало, пока досинтезируется остальное.
+let streamAbort = null;
+
+async function askStreaming(fd, askedLang) {
+  streamAbort = new AbortController();
+  chunkQueue.reset();
+  streamProvider = null;
+  const r = await fetch("/voice/stream", { method: "POST", body: fd,
+                                           signal: streamAbort.signal });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+  const parser = createNdjsonParser();
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      parser.feed(dec.decode(value, { stream: true }))
+            .forEach(ev => handleStreamEvent(ev, askedLang));
+    }
+    parser.flush().forEach(ev => handleStreamEvent(ev, askedLang));
+  } finally {
+    streamAbort = null;
+    btn.disabled = false;              // спрашивать снова можно, не дослушав
+  }
+  chunkQueue.finished = true;
+  if (chunkQueue.done()) showIdle();   // звука не было вовсе (TTS выключен)
+}
+
+function handleStreamEvent(ev, askedLang) {
+  if (ev.type === "meta") {
+    pendingSuggest = ev.suggest || null;
+    const printIds = (ev.print && ev.print.length) ? ev.print : null;
+    showQA(ev.question || "", ev.answer || "", askedLang, printIds);
+    autoScroll = true;                 // новый ответ — прокрутка снова наша
+    initKaraoke();
+    chunkQueue.totalChars = ev.speech_chars || 0;
+    streamProvider = ev.provider;
+    streamFormat = ev.format || "wav";
+    st.textContent = "ответ готов";
+  } else if (ev.type === "audio") {
+    enqueueChunk(b64ToBlob(ev.audio_b64, "audio/" + streamFormat), ev.chars, ev.provider);
+  } else if (ev.type === "error") {
+    // Статус 200 уже отдан, поэтому сбой синтеза приходит строкой. Текст ответа
+    // на экране остаётся — молчит только голос.
+    st.textContent = "ошибка озвучки: " + (ev.detail || "поток прерван");
+    chunkQueue.finished = true;
+    if (!chunkQueue.playing) finishAnswer();
+  } else if (ev.type === "end") {
+    chunkQueue.finished = true;
   }
 }
 
