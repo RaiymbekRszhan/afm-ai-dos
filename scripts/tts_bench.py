@@ -422,6 +422,22 @@ def preview(items: list[dict], planner) -> None:
             print(f"  [{i}] {len(c):3d} симв: {c[:90]}{'…' if len(c) > 90 else ''}")
 
 
+# Короткая фраза для прогрева: первый запрос к GPU-ноде АФМ обходится в разы
+# дороже последующих (замер 27.07: 13.5 c против 1.3 c на сопоставимой фразе —
+# RTF 0.95 против 8.5). Без прогрева этот штраф садится на первую фразу батареи
+# и портит и её метрику, и сравнение прогонов между собой.
+WARMUP = {"russian": "Проверка связи.", "kazakh": "Байланысты тексеру."}
+
+
+def warmup(args, items: list[dict]) -> None:
+    for lang in dict.fromkeys(it["lang"] for it in items):
+        try:
+            _, ms = speak(args.api, WARMUP[lang], lang, args.timeout)
+            print(f"[bench] прогрев {lang}: {ms} мс (в отчёт не идёт)", flush=True)
+        except Exception as e:
+            print(f"[bench] прогрев {lang} не удался: {e!r}")
+
+
 def run(args, items: list[dict], planner) -> list[dict]:
     rows: list[dict] = []
     for idx, it in enumerate(items, 1):
@@ -486,6 +502,9 @@ def main() -> int:
     p.add_argument("--preview", action="store_true", help="без сети: нормализация и нарезка")
     p.add_argument("--no-first-chunk", action="store_true",
                    help="не мерить отдельно первый кусок (на один запрос меньше)")
+    p.add_argument("--no-warmup", action="store_true",
+                   help="не прогревать TTS перед батареей (тогда первая фраза "
+                        "получит штраф холодного старта GPU-ноды)")
     args = p.parse_args()
 
     items = BATTERY
@@ -513,6 +532,8 @@ def main() -> int:
     os.makedirs(args.out, exist_ok=True)
     print(f"[bench] {args.api} -> {args.out} ({len(items)} фраз, повторов {args.repeat})")
 
+    if not args.no_warmup:
+        warmup(args, items)
     rows = run(args, items, planner)
 
     baseline = None
@@ -524,7 +545,8 @@ def main() -> int:
             print(f"[bench] база для сравнения не прочитана: {e!r}")
 
     meta = {"api": args.api, "ts": datetime.now().isoformat(timespec="seconds"),
-            "repeat": args.repeat, "baseline": args.baseline or None}
+            "repeat": args.repeat, "baseline": args.baseline or None,
+            "warmup": not args.no_warmup}
     with open(os.path.join(args.out, "report.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "rows": rows}, f, ensure_ascii=False, indent=2)
     write_markdown(rows, os.path.join(args.out, "report.md"), baseline)
