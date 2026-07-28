@@ -3,8 +3,12 @@
 `run_api.sh` хорош для отладки, но для киоска нужен **автозапуск при загрузке** и
 **перезапуск при падении**. Эти юниты делают именно это (вместо `run_api.sh`).
 
-4 сервиса = 4 юнита. `ai-dos-api` зависит от остальных трёх (поднимутся раньше).
-Пятый юнит — сторож `ai-dos-watchdog.timer`: `Restart=always` ловит только
+Сервис = юнит. Пилотный минимум — три: `ai-dos-rag` (источник ответа),
+`ai-dos-api` (оркестратор, зависит от rag) и `ai-dos-video-ui` (киоск-страница
+:8100 — фронтенд, который видит гражданин; зависит от api). Локальные
+`ai-dos-f5` / `ai-dos-spark` / `ai-dos-whisper-kk` нужны, только если TTS/STT
+крутятся на этой же машине, а не на сервере АФМ.
+Отдельный юнит — сторож `ai-dos-watchdog.timer`: `Restart=always` ловит только
 падение процесса, а таймер раз в 2 минуты дёргает `/health` и перезапускает
 `ai-dos-api`, если тот жив, но не отвечает 3 проверки подряд (зависший
 GPU-вызов, дедлок).
@@ -46,8 +50,8 @@ sed -i 's#/opt/ai-dos#/home/afm/STT#g; s/User=ai-dos/User=afm/g' ai-dos-*.servic
 ```bash
 sudo cp deploy/ai-dos-*.service deploy/ai-dos-watchdog.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-# Пилот: TTS/STT на сервере АФМ, локально нужны только rag + оркестратор:
-sudo systemctl enable --now ai-dos-rag ai-dos-api
+# Пилот: TTS/STT на сервере АФМ, локально нужны rag + оркестратор + киоск-страница:
+sudo systemctl enable --now ai-dos-rag ai-dos-api ai-dos-video-ui
 # ТОЛЬКО если гоняешь TTS/STT локально на ЭТОЙ машине (не на сервере АФМ):
 # sudo systemctl enable --now ai-dos-f5 ai-dos-spark        # локальный TTS
 # sudo systemctl enable --now ai-dos-whisper-kk             # локальный казахский STT
@@ -75,8 +79,14 @@ sudo systemctl stop ai-dos-f5        # остановить сервис
 - **Офлайн**: `HF_HUB_OFFLINE=1` уже в юнитах — модели должны быть скачаны заранее (DEPLOY.md).
 - **Обновил код/базу?** `sudo systemctl restart ai-dos-api` (и/или нужный сервис).
   После правки `rag/data/` — пересобери индекс (`ingest`) и `restart ai-dos-rag`.
-- Фронтенд пилота — киоск-страница `video_ui/` (:8100), поднимается вместе со
-  стеком (`run_api.sh`) или отдельным юнитом при желании.
+- **Фронтенд пилота** — киоск-страница `video_ui/` (:8100). Под systemd это
+  `ai-dos-video-ui.service` (в `run_api.sh` она стартует сама, `WITH_VIDEO_UI=1`).
+  Своего venv не требует — идёт из основного `/opt/ai-dos/.venv`. Бэкенд задаётся
+  в юните (`Environment=AIDOS_BACKEND=http://127.0.0.1:8000`) — это единственное
+  исключение из правила «топология в `.env`»: `video_ui` не читает `.env` проекта.
+  Проверка — `curl http://localhost:8100/health`: `backend_reachable:true` и
+  `videos:{idle.mp4:true, talk.mp4:true}` (ролики ~21 МБ, при копировании через
+  scp их легко забыть → чёрный экран на киоске).
 
 ## Сужение прав watchdog (перед боевой эксплуатацией)
 `ai-dos-watchdog.service` сейчас работает от root (нужен `systemctl restart`).

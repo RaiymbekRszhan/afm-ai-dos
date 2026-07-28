@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Приёмка деплоя Ai-dos ОДНОЙ командой. Проверяет все 4 сервиса и прогоняет
-# ru+kk: ответ RAG по базе и озвучку TTS — печатает PASS/FAIL по каждому шагу.
+# Приёмка деплоя Ai-dos ОДНОЙ командой. Проверяет все сервисы (вкл. фронтенд
+# :8100) и прогоняет ru+kk: ответ RAG по базе и озвучку TTS — печатает PASS/FAIL
+# по каждому шагу.
 # Запускать ПОСЛЕ старта стека (run_api.sh или systemd) — на самом сервере АФМ.
 #
 #   bash scripts/healthcheck.sh                 # сервисы + RAG-ответ + TTS (ru/kk)
 #   bash scripts/healthcheck.sh --full          # + сквозной голос STT→RAG→TTS (по refs/*.wav)
 #   HOST=192.168.1.50 bash scripts/healthcheck.sh   # проверить сервер по сети
+#   SKIP_UI=1 bash scripts/healthcheck.sh       # без киоск-страницы (стек поднят с WITH_VIDEO_UI=0)
 #
 # Код выхода: 0 — все проверки прошли; 1 — есть провал (годится для systemd/CI).
 set -uo pipefail
@@ -15,6 +17,8 @@ cd "$(dirname "$0")/.."          # корень проекта (нужен дл�
 HOST="${HOST:-localhost}"
 API="${API:-http://$HOST:8000}"   # оркестратор
 RAG="${RAG:-http://$HOST:8077}"   # RAG-сервис
+UI="${UI:-http://$HOST:8100}"     # киоск-страница «видео-аватар» = фронтенд пилота
+SKIP_UI="${SKIP_UI:-0}"           # 1 — стек поднят без :8100 (WITH_VIDEO_UI=0)
 # Адреса TTS-серверов здесь НЕ нужны: доступность берём из tts.servers.* в
 # $API/health (оркестратор пингует их по фактическим адресам сам, см. check_tts_srv).
 FULL=0; [ "${1:-}" = "--full" ] && FULL=1
@@ -74,6 +78,31 @@ check_health(){ # check_health "Имя" URL  — ждёт {"status":"ok"} на /
   else no "$name — $url/health" "$(printf '%s' "$body" | head -c 200)"; fi
 }
 
+check_ui(){ # фронтенд (:8100): жив, видит бэкенд, ролики аватара на месте
+  local body videos
+  body="$(curl -s --max-time 10 "$UI/health" 2>/dev/null)" || true
+  if [ -z "$body" ] || [ "$(printf '%s' "$body" | jget status)" != "ok" ]; then
+    no "Киоск-страница (фронтенд) — $UI не отвечает" \
+       "video_ui не запущен (WITH_VIDEO_UI=0 / юнит ai-dos-video-ui выключен?); если так и задумано — SKIP_UI=1"
+    return
+  fi
+  ok "Киоск-страница (фронтенд) — $UI/health → ok"
+  # Без этого гражданин увидит страницу, но на вопрос получит ошибку прокси.
+  case "$(printf '%s' "$body" | jget backend_reachable)" in
+    True|true) ok "Киоск видит бэкенд — $(printf '%s' "$body" | jget backend)";;
+    *) no "Киоск НЕ видит бэкенд — $(printf '%s' "$body" | jget backend)" \
+          "поправь AIDOS_BACKEND у video_ui (юнит/run.sh) или подними API";;
+  esac
+  # Ролики тяжёлые (~21 МБ) — при копировании через scp их легко забыть, и на
+  # киоске будет чёрный экран при живом стеке (регистр имён проверяет сам сервис).
+  videos="$(printf '%s' "$body" | jget videos)"
+  case "$videos" in
+    *false*|"") no "Ролики аватара не на месте" \
+                   "$videos — чёрный экран; скопируй video_ui/static/video/*.mp4";;
+    *) ok "Ролики аватара на месте (idle.mp4 + talk.mp4)";;
+  esac
+}
+
 check_ask(){ # check_ask lang "вопрос"  — ждёт СОДЕРЖАТЕЛЬНЫЙ ответ RAG по базе
   local lang="$1" q="$2" body ans
   # По умолчанию > LLM_TIMEOUT в rag/ragsvc/config.py (240 с) — иначе curl обрывает
@@ -119,6 +148,11 @@ printf "${B}Приёмка Ai-dos${N}  (HOST=%s, режим=%s)\n" "$HOST" "$([ 
 section "1. Сервисы живы"
 check_health "Оркестратор API" "$API"
 check_health "RAG-сервис"      "$RAG"
+if [ "$SKIP_UI" = "1" ]; then
+  printf "  ${Y}ℹ INFO${N}  Киоск-страница (:8100) — проверка пропущена (SKIP_UI=1)\n"
+else
+  check_ui
+fi
 
 # Какие TTS-провайдеры реально настроены (учитывает вариант «TTS как endpoint АФМ»).
 # Если API не ответил — пропускаем (его FAIL уже выше, гадать про TTS не нужно).
