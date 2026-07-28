@@ -965,18 +965,28 @@ def prepare_for_tts(text: str, language: str | None = None,
     return speech, parts
 
 
-async def _synthesize_all(text: str, language: str | None, provider: str) -> bytes:
-    """Весь ответ одним провайдером: нарезка -> синтез кусков -> склейка."""
+async def _synthesize_all(text: str, language: str | None, provider: str,
+                          fail_fast: bool = False) -> bytes:
+    """Весь ответ одним провайдером: нарезка -> синтез кусков -> склейка.
+
+    `fail_fast` — есть страховка (фолбэк), поэтому ПЕРВЫЙ кусок синтезируем без
+    повторов: если движок лежит (облако недоступно), повтор только удваивает
+    ожидание у киоска, а запасной движок ответит быстрее. Дальше повторы
+    остаются: там сбой означал бы пересинтез всего ответа заново.
+    """
     speech, parts = prepare_for_tts(text, language, provider)
+    head_retries = 0 if fail_fast else None
     # Склейка реализована для WAV; для иных форматов синтезируем одним куском.
     if settings.tts_format != "wav":
-        return await _synthesize_chunk(speech, language, provider)
+        return await _synthesize_chunk(speech, language, provider, head_retries)
     if not parts:
         raise RuntimeError("Нет произносимого текста для синтеза")
     if len(parts) == 1:
-        result = await _synthesize_chunk(parts[0], language, provider)
+        result = await _synthesize_chunk(parts[0], language, provider, head_retries)
     else:
-        audios = [await _synthesize_chunk(part, language, provider) for part in parts]
+        audios = [await _synthesize_chunk(part, language, provider,
+                                          head_retries if idx == 0 else None)
+                  for idx, part in enumerate(parts)]
         gap = settings.tts_f5_gap_ms if provider == "f5" else settings.tts_gap_ms
         result = _concat_wav(audios, parts, gap)
     # Шумовой хвост F5 в самом конце ответа плавно гасим в ноль (см. _F5_TAIL_FADE_MS).
@@ -1003,7 +1013,7 @@ async def synthesize_with_provider(text: str, language: str | None = None
         log.warning("TTS %s пропущен (недавний отказ), сразу фолбэк %s", primary, fallback)
         return await _synthesize_all(text, language, fallback), fallback
     try:
-        result = await _synthesize_all(text, language, primary)
+        result = await _synthesize_all(text, language, primary, fail_fast=bool(fallback))
     except Exception as e:
         if not fallback:
             raise
@@ -1080,7 +1090,11 @@ async def synthesize_stream(text: str, language: str | None = None):
         if not parts:
             raise RuntimeError("Нет произносимого текста для синтеза")
         try:
-            head = await _synthesize_chunk(parts[0], language, provider)
+            # Есть страховка -> первый кусок без повторов: лежачее облако не
+            # должно удваивать ожидание перед уходом на офлайн-движок.
+            head = await _synthesize_chunk(
+                parts[0], language, provider,
+                0 if (fallback and provider == primary) else None)
             break
         except Exception as e:
             if provider != primary or not fallback:
@@ -1136,22 +1150,26 @@ def _mark_up(provider: str) -> None:
     _provider_down.pop(provider, None)
 
 
-async def _synthesize_chunk(text: str, language: str | None, provider: str) -> bytes:
+async def _synthesize_chunk(text: str, language: str | None, provider: str,
+                            retries: int | None = None) -> bytes:
     """Синтез куска с повторами: единичный сетевой сбой не рушит весь ответ.
 
     Повторяем ТОЛЬКО то, что может пройти со второй попытки (сеть, 5xx, битый
     ответ). Наши собственные RuntimeError — это «провайдер не настроен»: их
     повтор не вылечит, отдаём сразу (и выше сработает фолбэк).
+    `retries` — сколько повторов (None = tts_retries из настроек; 0 — когда
+    наверху есть фолбэк и ждать второй попытки дороже, чем сменить движок).
     """
+    limit = settings.tts_retries if retries is None else retries
     last: Exception | None = None
-    for attempt in range(settings.tts_retries + 1):
+    for attempt in range(limit + 1):
         try:
             return await _synthesize_one(text, language, provider)
         except RuntimeError:
             raise
         except Exception as e:
             last = e
-            if attempt < settings.tts_retries:
+            if attempt < limit:
                 log.warning("TTS %s: кусок не синтезировался (%r), повтор %d",
                             provider, e, attempt + 1)
                 await asyncio.sleep(0.5 * (attempt + 1))
@@ -1448,9 +1466,14 @@ async def _eleven(text: str, language: str | None) -> bytes:
     sr = 24000  # PCM 16-бит моно; частоту фиксируем — куски склеиваются одинаковыми
     url = (f"{settings.elevenlabs_url.rstrip('/')}"
            f"/text-to-speech/{settings.elevenlabs_voice_id}?output_format=pcm_{sr}")
-    # Таймаут короткий (ELEVENLABS_TIMEOUT): облако недоступно -> быстрее уйдём
-    # на офлайн-фолбэк, чем гражданин устанет ждать у киоска.
-    async with httpx.AsyncClient(timeout=settings.elevenlabs_timeout) as client:
+    # Два разных таймаута. connect — короткий (ELEVENLABS_CONNECT_TIMEOUT): в
+    # сети без выхода наружу пакеты просто гасятся файрволом, и соединение висит
+    # до упора — это самый частый способ «облако недоступно», и платить за него
+    # полный таймаут нечего. read — полный (ELEVENLABS_TIMEOUT): облако
+    # достучалось, значит даём ему спокойно синтезировать длинный кусок.
+    timeout = httpx.Timeout(settings.elevenlabs_timeout,
+                            connect=settings.elevenlabs_connect_timeout)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             url,
             headers={"xi-api-key": settings.elevenlabs_api_key},

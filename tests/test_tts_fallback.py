@@ -120,6 +120,42 @@ def test_chunk_retry_saves_answer(monkeypatch):
     assert attempts["n"] == 2
 
 
+def test_first_chunk_not_retried_when_fallback_exists(monkeypatch):
+    """Облако лежит -> уходим на Spark СРАЗУ, не удваивая ожидание повтором.
+
+    Повтор лечит моргнувшую сеть, но когда движок недоступен целиком (в сети АФМ
+    файрвол просто гасит пакеты), вторая попытка — это ещё один полный таймаут
+    у киоска, хотя рядом есть офлайн-движок.
+    """
+    _providers(monkeypatch, retries=2)
+    calls = _record_calls(monkeypatch, fail_for={"eleven"})
+
+    _, provider = asyncio.run(tts.synthesize_with_provider("Сұрақ.", "kazakh"))
+    assert provider == "spark"
+    assert calls == ["eleven", "spark"]     # ровно одна попытка облака
+
+
+def test_later_chunk_still_retried(monkeypatch):
+    """А вот НЕ первый кусок повторяем: там сбой означал бы пересинтез всего
+    ответа заново (или обрыв на середине в потоке)."""
+    _providers(monkeypatch, primary="spark", fallback="", retries=1)
+    calls: list[str] = []
+
+    async def flaky(text, language=None, provider=None):
+        calls.append(text)
+        if len(calls) == 2:                 # второй кусок с первого раза не вышел
+            raise TimeoutError("сеть моргнула")
+        return wav_bytes()
+
+    monkeypatch.setattr(tts, "_synthesize_one", flaky)
+    monkeypatch.setattr(tts.asyncio, "sleep", _no_sleep)
+
+    text = " ".join(f"Сөйлем нөмір {i} тексеру үшін." for i in range(1, 40))
+    _, provider = asyncio.run(tts.synthesize_with_provider(text, "kazakh"))
+    assert provider == "spark"
+    assert calls[1] == calls[2]             # тот же кусок ушёл повторно
+
+
 def test_config_error_is_not_retried(monkeypatch):
     """«Провайдер не настроен» повтором не лечится — уходим на фолбэк сразу."""
     _providers(monkeypatch, retries=3)
