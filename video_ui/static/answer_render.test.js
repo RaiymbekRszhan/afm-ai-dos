@@ -122,7 +122,7 @@ test("detectPrintTemplates: обычный ответ без предложен�
 });
 
 test("speechRate: Spark ускоряем, ElevenLabs/F5 в норме (N7)", () => {
-  assert.equal(speechRate("spark"), 1.4);   // офлайн-фолбэк казахского — медленный
+  assert.equal(speechRate("spark"), 1.3);   // офлайн-фолбэк казахского — медленный
   assert.equal(speechRate("eleven"), 1.0);  // дефолтный казахский — в норме
   assert.equal(speechRate("f5"), 1.0);      // русский
   assert.equal(speechRate(undefined), 1.0); // нет данных — безопасный дефолт

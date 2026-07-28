@@ -403,7 +403,7 @@ function renderAnswer(container, text, qrContainer) {
 // медленно — ускоряем плеером; ElevenLabs (дефолтный kk) и F5 (ru) — в норме.
 // Разгон через playbackRate ничего не стоит (звук уже готов) и не роняет синтез,
 // в отличие от ручки SPARK_SPEED. Провайдер приходит в теле /voice (data.provider).
-var SPEECH_RATE_BY_PROVIDER = { spark: 1.4 };
+var SPEECH_RATE_BY_PROVIDER = { spark: 1.3 };
 function speechRate(provider) {
   return SPEECH_RATE_BY_PROVIDER[provider] || 1.0;
 }
