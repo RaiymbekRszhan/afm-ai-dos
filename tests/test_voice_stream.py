@@ -140,6 +140,25 @@ def test_synthesize_stream_bakes_pause_into_chunk_tail(monkeypatch):
     assert wav_nframes(items[-1][1]) == base                       # последнему не нужна
 
 
+def test_synthesize_stream_single_chunk_for_non_wav(monkeypatch):
+    """Не-WAV формат отдаём одним куском: паузы/гашение умеем только для WAV,
+    и звучание не должно разъезжаться с монолитным /voice."""
+    monkeypatch.setattr(tts.settings, "tts_provider", "say")
+    monkeypatch.setattr(tts.settings, "tts_fallback", "")
+    monkeypatch.setattr(tts.settings, "tts_format", "mp3")
+    sent: list[str] = []
+
+    async def fake_one(text, language=None, provider=None):
+        sent.append(text)
+        return b"ID3fake-mp3"
+
+    monkeypatch.setattr(tts, "_synthesize_one", fake_one)
+
+    items = _collect("Первое предложение. " * 30, "russian")
+    assert len(items) == 1
+    assert len(sent) == 1 and len(sent[0]) > tts.settings.tts_max_chars
+
+
 def test_synthesize_stream_falls_back_before_first_chunk(monkeypatch):
     """Пока ничего не отдано, отказ движка ещё можно пережить сменой на запасной."""
     tts._provider_down.clear()

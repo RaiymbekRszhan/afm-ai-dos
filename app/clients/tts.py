@@ -1071,7 +1071,12 @@ async def synthesize_stream(text: str, language: str | None = None):
     # Первый кусок синтезируем ДО выдачи: только пока ничего не отдано, отказ
     # ещё можно молча пережить сменой движка.
     while True:
-        _, parts = prepare_for_tts(text, language, provider)
+        speech, parts = prepare_for_tts(text, language, provider)
+        # Паузы на стыке и гашение хвоста умеем только для WAV, поэтому иной
+        # формат отдаём одним куском — ровно как монолитный путь (стриминга там
+        # не будет, зато звучание не разъедется с /voice).
+        if settings.tts_format != "wav":
+            parts = [speech]
         if not parts:
             raise RuntimeError("Нет произносимого текста для синтеза")
         try:
