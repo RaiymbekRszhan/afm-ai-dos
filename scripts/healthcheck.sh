@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Приёмка деплоя Ai-dos ОДНОЙ командой. Проверяет все 4 сервиса и прогоняет
-# ru+kk: ответ RAG по базе и озвучку TTS — печатает PASS/FAIL по каждому шагу.
+# Приёмка деплоя Ai-dos ОДНОЙ командой. Проверяет все сервисы (вкл. фронтенд
+# :8100) и прогоняет ru+kk: ответ RAG по базе и озвучку TTS — печатает PASS/FAIL
+# по каждому шагу.
 # Запускать ПОСЛЕ старта стека (run_api.sh или systemd) — на самом сервере АФМ.
 #
 #   bash scripts/healthcheck.sh                 # сервисы + RAG-ответ + TTS (ru/kk)
 #   bash scripts/healthcheck.sh --full          # + сквозной голос STT→RAG→TTS (по refs/*.wav)
 #   HOST=192.168.1.50 bash scripts/healthcheck.sh   # проверить сервер по сети
+#   SKIP_UI=1 bash scripts/healthcheck.sh       # без киоск-страницы (стек поднят с WITH_VIDEO_UI=0)
 #
 # Код выхода: 0 — все проверки прошли; 1 — есть провал (годится для systemd/CI).
 set -uo pipefail
@@ -15,8 +17,10 @@ cd "$(dirname "$0")/.."          # корень проекта (нужен дл�
 HOST="${HOST:-localhost}"
 API="${API:-http://$HOST:8000}"   # оркестратор
 RAG="${RAG:-http://$HOST:8077}"   # RAG-сервис
-F5="${F5:-http://$HOST:8810}"     # русский TTS (F5-TTS)
-SPARK="${SPARK:-http://$HOST:8809}" # казахский TTS
+UI="${UI:-http://$HOST:8100}"     # киоск-страница «видео-аватар» = фронтенд пилота
+SKIP_UI="${SKIP_UI:-0}"           # 1 — стек поднят без :8100 (WITH_VIDEO_UI=0)
+# Адреса TTS-серверов здесь НЕ нужны: доступность берём из tts.servers.* в
+# $API/health (оркестратор пингует их по фактическим адресам сам, см. check_tts_srv).
 FULL=0; [ "${1:-}" = "--full" ] && FULL=1
 OUT="$(mktemp -d)"                # сюда складываем синтезированные WAV для прослушки
 
@@ -51,6 +55,19 @@ print(json.dumps({a[i]: conv(a[i+1]) for i in range(0, len(a), 2)}, ensure_ascii
 ' "$@"
 }
 is_wav(){ [ -s "$1" ] && [ "$(head -c 4 "$1" 2>/dev/null)" = "RIFF" ]; }
+# /voice отдаёт JSON {answer, audio_b64, ...} (N5). «ok», если ответ непустой и
+# аудио (если есть) декодируется в WAV; audio_b64=null (TTS выкл) — тоже ок.
+voice_ok(){ python3 -c '
+import sys, json, base64
+try:
+    d = json.load(sys.stdin)
+    ans = d.get("answer") or ""
+    ab = d.get("audio_b64")
+    audio_ok = ab is None or base64.b64decode(ab)[:4] == b"RIFF"
+    print("ok" if ans and audio_ok else "")
+except Exception:
+    print("")
+'; }
 
 # --- Проверки ----------------------------------------------------------------
 check_health(){ # check_health "Имя" URL  — ждёт {"status":"ok"} на /health
@@ -59,6 +76,31 @@ check_health(){ # check_health "Имя" URL  — ждёт {"status":"ok"} на /
   if [ -z "$body" ]; then no "$name — $url не отвечает" "сервис не запущен или порт закрыт"; return; fi
   if [ "$(printf '%s' "$body" | jget status)" = "ok" ]; then ok "$name — $url/health → ok"
   else no "$name — $url/health" "$(printf '%s' "$body" | head -c 200)"; fi
+}
+
+check_ui(){ # фронтенд (:8100): жив, видит бэкенд, ролики аватара на месте
+  local body videos
+  body="$(curl -s --max-time 10 "$UI/health" 2>/dev/null)" || true
+  if [ -z "$body" ] || [ "$(printf '%s' "$body" | jget status)" != "ok" ]; then
+    no "Киоск-страница (фронтенд) — $UI не отвечает" \
+       "video_ui не запущен (WITH_VIDEO_UI=0 / юнит ai-dos-video-ui выключен?); если так и задумано — SKIP_UI=1"
+    return
+  fi
+  ok "Киоск-страница (фронтенд) — $UI/health → ok"
+  # Без этого гражданин увидит страницу, но на вопрос получит ошибку прокси.
+  case "$(printf '%s' "$body" | jget backend_reachable)" in
+    True|true) ok "Киоск видит бэкенд — $(printf '%s' "$body" | jget backend)";;
+    *) no "Киоск НЕ видит бэкенд — $(printf '%s' "$body" | jget backend)" \
+          "поправь AIDOS_BACKEND у video_ui (юнит/run.sh) или подними API";;
+  esac
+  # Ролики тяжёлые (~21 МБ) — при копировании через scp их легко забыть, и на
+  # киоске будет чёрный экран при живом стеке (регистр имён проверяет сам сервис).
+  videos="$(printf '%s' "$body" | jget videos)"
+  case "$videos" in
+    *false*|"") no "Ролики аватара не на месте" \
+                   "$videos — чёрный экран; скопируй video_ui/static/video/*.mp4";;
+    *) ok "Ролики аватара на месте (idle.mp4 + talk.mp4)";;
+  esac
 }
 
 check_ask(){ # check_ask lang "вопрос"  — ждёт СОДЕРЖАТЕЛЬНЫЙ ответ RAG по базе
@@ -90,14 +132,14 @@ check_speak(){ # check_speak russian|kazakh "текст" имя_файла.wav
   else no "TTS $lang — ответ не WAV" "$(head -c 120 "$file")"; fi
 }
 
-check_voice(){ # check_voice russian|kazakh refs/файл.wav имя_выхода.wav
+check_voice(){ # check_voice russian|kazakh refs/файл.wav имя_выхода.json
   local lang="$1" ref="$2" out="$OUT/$3" code
   if [ ! -f "$ref" ]; then no "Сквозной голос $lang — нет файла $ref"; return; fi
   code="$(curl -s --max-time "${VOICE_TIMEOUT:-300}" -o "$out" -w '%{http_code}' \
         -X POST "$API/voice" -F "data=@$ref" -F "language=$lang")" || true
   if [ "$code" != "200" ]; then no "Сквозной голос $lang — HTTP $code" "$(head -c 200 "$out")"; return; fi
-  if is_wav "$out"; then ok "Сквозной голос $lang (STT→RAG→TTS) → $out"
-  else no "Сквозной голос $lang — ответ не WAV" "$(head -c 120 "$out")"; fi
+  if [ "$(voice_ok < "$out")" = "ok" ]; then ok "Сквозной голос $lang (STT→RAG→TTS) — текст+WAV в JSON"
+  else no "Сквозной голос $lang — в ответе нет текста/аудио" "$(head -c 200 "$out")"; fi
 }
 
 # --- Запуск ------------------------------------------------------------------
@@ -106,6 +148,11 @@ printf "${B}Приёмка Ai-dos${N}  (HOST=%s, режим=%s)\n" "$HOST" "$([ 
 section "1. Сервисы живы"
 check_health "Оркестратор API" "$API"
 check_health "RAG-сервис"      "$RAG"
+if [ "$SKIP_UI" = "1" ]; then
+  printf "  ${Y}ℹ INFO${N}  Киоск-страница (:8100) — проверка пропущена (SKIP_UI=1)\n"
+else
+  check_ui
+fi
 
 # Какие TTS-провайдеры реально настроены (учитывает вариант «TTS как endpoint АФМ»).
 # Если API не ответил — пропускаем (его FAIL уже выше, гадать про TTS не нужно).
@@ -117,10 +164,12 @@ if [ -n "$api_health" ]; then
   # f5_server ИЛИ GPU-сервер АФМ) и кладёт статус в tts.servers.* — берём его
   # оттуда, а не гадаем URL (иначе при удалённом F5 ложный FAIL на localhost:8810).
   check_tts_srv(){ # check_tts_srv f5|spark "Имя"
-    local key="$1" name="$2"
+    local key="$1" name="$2" status
+    status="$(printf '%s' "$api_health" | jget "tts.servers.$key.status")"
     case "$(printf '%s' "$api_health" | jget "tts.servers.$key.reachable")" in
-      True|true) ok "$name — reachable (по данным $API/health)";;
-      *) no "$name — недоступен" "см. tts.servers.$key в $API/health";;
+      # reachable = сервер ОТВЕТИЛ (даже 404: у F5 на GPU нет /health, но он жив).
+      True|true) ok "$name — отвечает${status:+ (HTTP $status)}";;
+      *) no "$name — недоступен" "$(printf '%s' "$api_health" | jget "tts.servers.$key.error")";;
     esac
   }
   case " $ru_prov $kk_prov " in *" f5 "*)    check_tts_srv f5    "F5 (русский TTS)";;    esac
@@ -141,8 +190,8 @@ check_speak kazakh  "Сәлеметсіз бе! Бұл тексеру."         
 
 if [ "$FULL" = 1 ]; then
   section "4. Сквозной голос: аудио → STT → RAG → TTS (по образцам refs/)"
-  check_voice russian refs/ref_ru.wav voice_ru.wav
-  check_voice kazakh  refs/ref_kk.wav voice_kk.wav
+  check_voice russian refs/ref_ru.wav voice_ru.json
+  check_voice kazakh  refs/ref_kk.wav voice_kk.json
 fi
 
 # --- Итог --------------------------------------------------------------------

@@ -51,6 +51,21 @@ class Settings(BaseSettings):
     #   openai — внешний OpenAI-совместимый /audio/speech сервер
     tts_provider: str = "f5"        # русский/по умолчанию: f5 | say | openai | eleven
     tts_kk_provider: str = "spark"  # казахский: spark | eleven | say | openai
+    # Запасной провайдер, если основной не ответил (нет интернета к eleven, упал
+    # сервер). Без него отказ облака = гражданин не слышит НИЧЕГО: в логах стенда
+    # 27.07 казахский вопрос с eleven ждал 78 с и получил 502, хотя Spark был жив.
+    # Пусто = без фолбэка (прежнее поведение). Фолбэк ru пуст: F5 — единственный
+    # офлайн-движок русского, подменять его нечем.
+    tts_fallback: str = ""
+    tts_kk_fallback: str = "spark"
+    # Сколько секунд не дёргать провайдера после его отказа. В офлайн-сети без
+    # этого КАЖДЫЙ казахский вопрос сначала платил бы полный таймаут облака.
+    # Первый запрос ждёт, следующие минуту идут сразу на фолбэк.
+    tts_fallback_cooldown: float = 60.0
+    # Повторов на ОДИН кусок при сетевой ошибке/5xx (сверх первой попытки).
+    # Длинный ответ — до ~5 кусков; единичный сбой не должен рушить весь ответ
+    # (у Spark ретраи есть на своей стороне, у F5 их не было вовсе — R2 аудита).
+    tts_retries: int = 1
     f5_url: str = ""  # HTTP-эндпоинт F5-TTS-сервера (русский TTS)
     # ElevenLabs (провайдер eleven). Ключ — из .env, в git не попадает. voice_id
     # выбирается в аккаунте (мужской для офицера). eleven_v3 — самая многоязычная
@@ -59,6 +74,15 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = ""
     elevenlabs_model: str = "eleven_v3"
     elevenlabs_url: str = "https://api.elevenlabs.io/v1"
+    # Таймаут облака — заметно короче общего (180 с): при недоступном интернете
+    # гражданин не должен стоять у киоска, пока сокет умирает своей смертью.
+    # 25 с хватает на самый длинный кусок (800 симв.) с запасом.
+    elevenlabs_timeout: float = 25.0
+    # Отдельно — таймаут УСТАНОВКИ соединения. Сеть без выхода наружу обычно не
+    # отвечает «нет маршрута», а молча гасит пакеты: соединение висит до полного
+    # таймаута. До api.elevenlabs.io, когда доступ есть, коннект укладывается в
+    # секунду — поэтому 5 с достаточно, а «интернета нет» стоит 5 с, а не 25.
+    elevenlabs_connect_timeout: float = 5.0
     # eleven сам держит длинный текст — не рубим на мелкие куски, как F5 (меньше швов).
     elevenlabs_max_chars: int = 800
     # Клиентский референс для F5-серверов, которые ждут ref_audio+ref_text в КАЖДОМ
@@ -131,6 +155,10 @@ class Settings(BaseSettings):
     # тысяч символов (llm_max_tokens=512); 4000 — заметный запас сверху.
     max_speak_chars: int = 4000
 
+    # Swagger `/docs` и схема `/openapi.json`: в проде выключены (N6) — не раскрываем
+    # схему API в сети киоска. ENABLE_DOCS=1 включает (для отладки за TLS-прокси).
+    enable_docs: bool = False
+
     # Загрузка аудио: предел размера файла (защита от перегруза памяти).
     max_upload_mb: int = 25
     # Сколько запросов /voice обрабатывать одновременно. /voice — самый дорогой
@@ -151,15 +179,21 @@ class Settings(BaseSettings):
     log_answers: bool = True         # писать текст ответа (для последующего анализа LLM-ответов)
     log_retention_days: int = 30     # сколько суточных JSONL-файлов держать (= дней хранения)
 
-    # Известные провайдеры TTS без спец-проверки конфига (openai проверяется отдельно).
-    _KNOWN_TTS_PROVIDERS = ("f5", "spark", "say", "eleven")
-
     def _provider_configured(self, provider: str) -> bool:
         if provider == "openai":
             return bool(self.tts_base_url and self.tts_model)
         if provider == "eleven":
             return bool(self.elevenlabs_api_key and self.elevenlabs_voice_id)
-        return provider in self._KNOWN_TTS_PROVIDERS
+        # f5/spark — сетевые сервисы: без адреса синтез невозможен. Проверяем URL,
+        # иначе /health рапортует "включён", а /voice падает 502 уже у гражданина
+        # (N3). "say" — локальный (macOS), URL не нужен.
+        if provider == "f5":
+            return bool(self.f5_url)
+        if provider == "spark":
+            return bool(self.spark_url)
+        if provider == "say":
+            return True
+        return False
 
     @property
     def tts_enabled(self) -> bool:

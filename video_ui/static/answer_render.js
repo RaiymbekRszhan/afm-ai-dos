@@ -142,7 +142,9 @@ function pickNumericColumn(rows) {
 // словам ответа, как у QR-порталов: без изменений в бэкенде/RAG. Возвращаем
 // id-шники образцов ("fl"/"ul"/"priem") в порядке показа; пусто — печати нет.
 // Печатает их video_ui/static/templates/pdf/{id}-{lang}.pdf (см. doPrint в index.html).
-var PRINT_RE_APP = /заявлени|обращени|жалоб|пожалов|ходатайств|подать|подаёт|податч|подач|арыз|шағым|өтініш/i;
+// Синхронно с service.py::_PRINT_RE_APP на бэкенде (N9); контракт сверяет
+// tests/fixtures/print_triggers.json (pytest + node гоняют один и тот же набор).
+var PRINT_RE_APP = /заявлени|обращени|жалоб|пожалов|ходатайств|подать|подаёт|подач|арыз|шағым|өтініш/i;
 // «Приём» — только личный приём. Голое каз. «қабылдау» не берём (значит и
 // «принять» — шешім/заң қабылдау). Синхронно с service.py на бэкенде — НО:
 // в JS (в отличие от Python re, где \w Unicode-aware) \w — это [A-Za-z0-9_],
@@ -396,10 +398,21 @@ function renderAnswer(container, text, qrContainer) {
   return rich || hasQr;
 }
 
+// ---------- темп проговаривания по TTS-провайдеру (N7) ----------
+// Темп зависит от ДВИЖКА, а не от языка: Spark (офлайн-фолбэк казахского) говорит
+// медленно — ускоряем плеером; ElevenLabs (дефолтный kk) и F5 (ru) — в норме.
+// Разгон через playbackRate ничего не стоит (звук уже готов) и не роняет синтез,
+// в отличие от ручки SPARK_SPEED. Провайдер приходит в теле /voice (data.provider).
+var SPEECH_RATE_BY_PROVIDER = { spark: 1.3 };
+function speechRate(provider) {
+  return SPEECH_RATE_BY_PROVIDER[provider] || 1.0;
+}
+
 /* для node-тестов (в браузере module нет) */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { parseAnswer: parseAnswer, parseNum: parseNum,
                      pickNumericColumn: pickNumericColumn,
                      extractLinks: extractLinks, wordWeight: wordWeight,
-                     detectPrintTemplates: detectPrintTemplates };
+                     detectPrintTemplates: detectPrintTemplates,
+                     speechRate: speechRate };
 }

@@ -29,10 +29,76 @@ def test_hard_split_long_sentence():
     assert all(len(p) <= 40 for p in parts)
 
 
+def test_split_does_not_end_chunk_on_conjunction():
+    """Кусок не обрывается на союзе/предлоге — иначе TTS договаривает «...и»
+    как законченную реплику, а продолжение уезжает за паузу шва."""
+    text = ("штраф до семисот месячных расчётных показателей по статье двести "
+            "четырнадцатой Кодекса об административных правонарушениях Республики "
+            "Казахстан и статье двести восемнадцатой Уголовного кодекса")
+    parts = tts._split_for_tts(text, 180, 180)
+    assert len(parts) > 1
+    for part in parts:
+        assert part.split()[-1].lower() not in tts._DANGLING_WORDS, part
+    # слова не потерялись и не задвоились
+    assert " ".join(parts) == text
+
+
+def test_move_dangling_carries_words_to_next_chunk():
+    assert tts._move_dangling("Республики Казахстан и", "статьёй") == (
+        "Республики Казахстан", "и статьёй")
+    # несколько служебных слов подряд уезжают целиком
+    assert tts._move_dangling("данные и в", "течение дня") == (
+        "данные", "и в течение дня")
+    # кусок из одного служебного слова не опустошаем
+    assert tts._move_dangling("и", "далее") == ("и", "далее")
+    # обычное слово на конце не трогаем
+    assert tts._move_dangling("сумма штрафа", "составляет") == (
+        "сумма штрафа", "составляет")
+
+
 def test_split_groups_sentences_for_f5():
     # короткие предложения группируются в один крупный кусок (group_max большой)
     text = "Первое. Второе. Третье. Четвёртое."
     assert tts._split_for_tts(text, 180, 600) == [text]
+
+
+# ---------- TTS: подготовка текста и нарезка под провайдера ----------
+def test_prepare_for_tts_normalizes_and_drops_display_blocks():
+    """Возвращает то, что реально уйдёт в TTS: без таблицы, с раскрытыми числами."""
+    speech, chunks = tts.prepare_for_tts(
+        "Штраф до 700 МРП.\n[ТАБЛИЦА]\nБанк | Номер\nKaspi | 9999\n[/ТАБЛИЦА]", "russian")
+    assert "ТАБЛИЦА" not in speech and "9999" not in speech
+    assert "семисот месячных расчётных показателей" in speech
+    assert chunks == [speech]
+
+
+def test_prepare_for_tts_speaks_screen_notice_for_table_only_answer():
+    """Ответ из одной таблицы: озвучиваем отсылку к экрану, а не пустоту."""
+    speech, chunks = tts.prepare_for_tts("[ТАБЛИЦА]\nБанк | Номер\n[/ТАБЛИЦА]", "russian")
+    assert speech == "Ответ показан на экране."
+    assert chunks == [speech]
+    kk_speech, _ = tts.prepare_for_tts("[КЕСТЕ]\nБанк | Нөмір\n[/КЕСТЕ]", "kazakh")
+    assert kk_speech == "Жауап экранда көрсетілген."
+
+
+def test_prepare_for_tts_chunk_limit_follows_provider(monkeypatch):
+    """Лимит куска берётся у провайдера языка: f5 — группа, spark/eleven — свои."""
+    text = " ".join(f"Предложение номер {i} для проверки нарезки." for i in range(1, 30))
+
+    monkeypatch.setattr(settings, "tts_provider", "f5")
+    _, f5_chunks = tts.prepare_for_tts(text, "russian")
+    assert all(len(c) <= settings.tts_group_chars for c in f5_chunks)
+
+    monkeypatch.setattr(settings, "tts_kk_provider", "spark")
+    _, spark_chunks = tts.prepare_for_tts(text, "kazakh")
+    spark_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
+    assert all(len(c) <= spark_max for c in spark_chunks)
+
+    monkeypatch.setattr(settings, "tts_kk_provider", "eleven")
+    _, eleven_chunks = tts.prepare_for_tts(text, "kazakh")
+    assert all(len(c) <= settings.elevenlabs_max_chars for c in eleven_chunks)
+    # eleven держит длинный текст сам -> кусков заведомо меньше, чем у f5/spark
+    assert len(eleven_chunks) < len(f5_chunks)
 
 
 # ---------- TTS: нормализация аббревиатур (только для звука) ----------
@@ -210,6 +276,26 @@ def test_normalize_kk_ordinals_for_legal_refs():
     assert "екі мың жиырма төртінші жылы" in N("2024 жылы")  # год -> порядковое
     # с раскрытием аббревиатуры падеж + порядковое уживаются
     assert "екі жүз он төртінші бабында" in N("ҚК-нің 214-бабында")
+
+
+def test_normalize_ru_dates_are_ordinal():
+    """День месяца — порядковое в родительном, год добивает правило года."""
+    out = tts._normalize_for_tts("Заявление подано 1 января 2024 года.", "russian")
+    assert "первого января" in out
+    assert "две тысячи двадцать четвёртого года" in out
+    # после предлога тоже дата, а не количественное («до пятнадцати марта»)
+    assert "до пятнадцатого марта" in tts._normalize_for_tts("до 15 марта", "russian")
+    assert "третьего февраля" in tts._normalize_for_tts("3 февраля 2026 года", "russian")
+    assert "двадцать второго мая" in tts._normalize_for_tts("22 мая", "russian")
+    # не дата — обычное количественное
+    assert "сорок пять" in tts._normalize_for_tts("45 мая", "russian")
+
+
+def test_normalize_kk_dates_are_ordinal():
+    """«15 наурыз» -> «он бесінші наурыз»; падежное окончание месяца сохраняется."""
+    out = tts._normalize_for_tts("Өтініш 15 наурызда берілді.", "kazakh")
+    assert "он бесінші наурызда" in out
+    assert "бірінші қаңтардан" in tts._normalize_for_tts("1 қаңтардан бастап", "kazakh")
 
 
 def test_normalize_kk_percent_and_decimal():

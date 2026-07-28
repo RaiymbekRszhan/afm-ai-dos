@@ -9,7 +9,10 @@ export F5_VOCAB_FILE="$(pwd)/models/f5-russian/F5TTS_v1_Base/vocab.txt"
 
 # Референс голоса (тембр). ref_ru_f5.wav = первые 11 c от ref_ru.wav (<12 c, F5 не
 # обрезает), под него снят транскрипт refs/ref_ru.txt (см. f5_server/transcribe_ref.py).
-export F5_REF_AUDIO="$(pwd)/refs/ref_ru_f5.wav"
+# Берём _padded-вариант — ТОТ ЖЕ, что и боевой путь на GPU АФМ (run_api.sh): без
+# тишины по краям F5 клонирует резкий старт и съедает атаку первого слова, и
+# локальный фолбэк звучал бы иначе, чем бой (см. f5_server/pad_ref.py).
+export F5_REF_AUDIO="$(pwd)/refs/ref_ru_f5_padded.wav"
 # Транскрипт референса ОБЯЗАТЕЛЕН: иначе F5 авто-транскрибирует Whisper'ом, а это
 # требует ffmpeg (на этой машине его нет) и тянет 1.6 ГБ. Файл уже подготовлен.
 export F5_REF_TEXT="$(cat refs/ref_ru.txt 2>/dev/null || true)"

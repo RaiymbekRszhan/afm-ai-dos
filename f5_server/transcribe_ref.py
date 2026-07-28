@@ -1,5 +1,11 @@
-"""Готовит референс для F5: обрезает refs/ref_ru.wav до <12 c (F5 иначе режет сам) и
-снимает транскрипт Whisper'ом -> refs/ref_ru_f5.wav + refs/ref_ru.txt.
+"""Готовит референс для F5: обрезает refs/ref_ru.wav до <12 c (F5 иначе режет сам),
+снимает транскрипт Whisper'ом и добавляет тишину по краям ->
+refs/ref_ru_f5.wav + refs/ref_ru_f5_padded.wav + refs/ref_ru.txt.
+
+В бою используется ИМЕННО _padded (см. f5_server/pad_ref.py — там про манеру
+«стартовать мгновенно», которую F5 копирует с непаддингованного образца).
+Раньше этот шаг был только в голове: скрипт писал ref_ru_f5.wav, а бой читал
+ref_ru_f5_padded.wav — сменивший голос по инструкции не слышал никаких изменений.
 
 Нужен ОДИН раз (результат коммитится в репозиторий и едет на офлайн-сеть АФМ).
 Перезапускать только если МЕНЯЕШЬ референсный голос. Требует ffmpeg (ставит setup.sh
@@ -36,6 +42,12 @@ if sr != SR:  # whisper ждёт 16к; на этой машине референ
 clip = audio[: int(CLIP_SEC * SR)]
 sf.write(DST_WAV, clip, SR, subtype="PCM_16")
 print(f"[ref] {DST_WAV}: {len(clip)/SR:.1f} c")
+
+# Боевой референс — с тишиной по краям (иначе F5 клонирует резкий старт).
+from pad_ref import pad_wav, padded_path  # noqa: E402  (лежит рядом, только stdlib)
+
+padded = pad_wav(DST_WAV, padded_path(DST_WAV))
+print(f"[ref] {padded}: это и есть F5_REF_AUDIO в бою")
 
 asr = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3-turbo",
                torch_dtype=torch.float32, device="cpu")

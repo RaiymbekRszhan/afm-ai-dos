@@ -1,0 +1,32 @@
+[Unit]
+Description=Ai-dos киоск-страница «видео-аватар» (фронтенд пилота, порт 8100)
+# Оркестратор (:8000) — единственная зависимость: сюда проксируются вопросы.
+# Порядок мягкий: страница поднимется и при лежащем API (покажет ошибку на вопрос),
+# а /health честно отдаст backend_reachable=false.
+After=network-online.target ai-dos-api.service
+Wants=network-online.target ai-dos-api.service
+
+[Service]
+Type=simple
+User=ai-dos
+WorkingDirectory=/opt/ai-dos
+# Свой venv не нужен — fastapi/uvicorn/httpx уже в основном .venv (см. DEPLOY.md).
+# Бэкенд на ЭТОЙ же машине; если API вынесен на другой хост — поправь адрес.
+Environment=AIDOS_BACKEND=http://127.0.0.1:8000
+# 0.0.0.0: к странице ходит киоск-машина по сети (сам оркестратор при этом закрыт
+# на 127.0.0.1 — наружу торчит только этот фронтенд, см. ai-dos-api.service).
+ExecStart=/opt/ai-dos/.venv/bin/uvicorn video_ui.server:app --host 0.0.0.0 --port 8100
+Restart=always
+RestartSec=5
+
+# Базовый sandbox (принимает запросы граждан, работает 24/7). Читает только
+# статику из /opt/ai-dos/video_ui — писать ему никуда не нужно.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

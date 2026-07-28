@@ -46,6 +46,12 @@ USE_ELEVEN="${USE_ELEVEN:-0}"
 if [ "$USE_ELEVEN" = "1" ]; then
   export TTS_PROVIDER="${TTS_PROVIDER:-eleven}"
   export TTS_KK_PROVIDER="${TTS_KK_PROVIDER:-eleven}"
+  # Оба языка в облаке -> оба остаются без звука, если интернет пропадёт. Даём
+  # каждому офлайн-страховку: русский досинтезирует F5, казахский — Spark
+  # (адреса ниже экспортируются в любом режиме). Фолбэк срабатывает автоматом,
+  # провайдер в ответе /voice будет ФАКТИЧЕСКИЙ — киоск подберёт темп.
+  export TTS_FALLBACK="${TTS_FALLBACK:-f5}"
+  export TTS_KK_FALLBACK="${TTS_KK_FALLBACK:-spark}"
 fi
 
 # Русский TTS по умолчанию — с GPU-сервера АФМ (F5_URL :8991), казахский — ElevenLabs
@@ -104,6 +110,10 @@ else
   # spark_server, JSON-контракт {text, language}); при eleven адрес просто не используется.
   export SPARK_URL="${SPARK_URL:-http://192.168.165.2:8992/tts}"
 fi
+# Казахский в облаке -> без интернета он молчал бы совсем (27.07 на стенде: 78 с
+# ожидания и 502 при живом Spark рядом). TTS_KK_FALLBACK досинтезирует ответ
+# офлайн-движком; пустая строка отключает фолбэк.
+export TTS_KK_FALLBACK="${TTS_KK_FALLBACK:-spark}"
 
 # Источник ответа — внешний RAG-сервис
 export RAG_URL="${RAG_URL:-http://localhost:8077/ask}"
@@ -114,4 +124,7 @@ export RAG_URL="${RAG_URL:-http://localhost:8077/ask}"
 WITH_VIDEO_UI="${WITH_VIDEO_UI:-1}"
 if [ "$WITH_VIDEO_UI" = "1" ]; then bash video_ui/run.sh & fi
 
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# По умолчанию оркестратор слушает 127.0.0.1: снаружи к нему ходит только
+# video_ui (:8100) с той же машины (см. N6). Открыть на всю сеть (за TLS-прокси):
+# API_HOST=0.0.0.0 bash run_api.sh (в systemd — Environment=API_HOST=0.0.0.0).
+uvicorn app.main:app --host "${API_HOST:-127.0.0.1}" --port 8000

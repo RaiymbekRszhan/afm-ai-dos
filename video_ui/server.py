@@ -15,11 +15,12 @@
 Запуск: bash run_api.sh (весь стек) или bash video_ui/run.sh (только страница).
 """
 
+import json
 import os
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -110,12 +111,12 @@ async def health():
 @app.post("/voice")
 async def voice(data: UploadFile = File(...), language: str = Form("russian"),
                 suggest: str = Form(default=None)):
-    """Вопрос → рабочий бэкенд (:8000) → WAV ответа + текст в заголовках.
+    """Вопрос → рабочий бэкенд (:8000) → JSON-ответ (текст + аудио в base64).
 
-    Тело и заголовки прокидываем как есть: контракт /voice бэкенда —
-    WAV + percent-encoded X-Question/X-Answer (X-Suggest —
-    подсказка «возможно, вы хотели спросить…», страница вернёт её полем suggest
-    со следующим вопросом)."""
+    Тело прокидываем как есть: контракт /voice бэкенда — JSON
+    {question, answer, suggest, print, provider, format, audio_b64} (N5).
+    `suggest` — подсказка «возможно, вы хотели спросить…», страница вернёт её
+    полем suggest со следующим вопросом."""
     limit = int(MAX_UPLOAD_MB * 1024 * 1024)
 
     def _too_big(n: int) -> HTTPException:
@@ -147,10 +148,64 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
         except Exception:
             detail = r.text[:200]
         raise HTTPException(status_code=r.status_code, detail=detail)
-    headers = {}
-    for h in ("x-question", "x-answer", "x-suggest", "x-print"):
-        if r.headers.get(h):
-            headers[h.title()] = r.headers[h]
+    # Контракт /voice — JSON-тело {question, answer, suggest, print, provider,
+    # format, audio_b64} (N5): текст и аудио в теле, не в заголовках. Пробрасываем
+    # как есть.
     return Response(content=r.content,
-                    media_type=r.headers.get("content-type", "audio/wav"),
-                    headers=headers)
+                    media_type=r.headers.get("content-type", "application/json"))
+
+
+@app.post("/voice/stream")
+async def voice_stream(data: UploadFile = File(...), language: str = Form("russian"),
+                       suggest: str = Form(default=None)):
+    """То же, что /voice, но ответ бэкенда льётся ПОТОКОМ (NDJSON) — насквозь.
+
+    Смысл потока в том, что первая строка (текст) и первый кусок озвучки
+    доходят до киоска, пока досинтезируется остальное; поэтому здесь нельзя
+    буферизовать — читаем и отдаём по мере поступления.
+    """
+    limit = int(MAX_UPLOAD_MB * 1024 * 1024)
+    if data.size is not None and data.size > limit:
+        raise HTTPException(status_code=413,
+                            detail=f"Файл больше {MAX_UPLOAD_MB:g} МБ")
+    audio = await data.read()
+    if len(audio) > limit:
+        raise HTTPException(status_code=413,
+                            detail=f"Файл больше {MAX_UPLOAD_MB:g} МБ")
+    files = {"data": (data.filename or "q.wav", audio, data.content_type or "audio/wav")}
+    form = {"language": language}
+    if suggest:
+        form["suggest"] = suggest
+
+    async def relay():
+        # Клиент httpx живёт ВНУТРИ генератора: закроется вместе с потоком (в
+        # т.ч. если гражданин ушёл от киоска и браузер оборвал соединение).
+        try:
+            async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as c:
+                async with c.stream("POST", BACKEND + "/voice/stream",
+                                    files=files, data=form) as r:
+                    if r.status_code != 200:
+                        body = await r.aread()
+                        detail = _error_detail(body, r)
+                        yield json.dumps({"type": "error", "detail": detail},
+                                         ensure_ascii=False) + "\n"
+                        return
+                    async for line in r.aiter_lines():
+                        if line:
+                            yield line + "\n"
+        except Exception as e:
+            # Наружу — обобщённо (детали httpx раскрывают топологию сети).
+            print(f"[video_ui] поток от {BACKEND} оборвался: {e!r}")
+            yield json.dumps({"type": "error", "detail": "Рабочий бэкенд недоступен."},
+                             ensure_ascii=False) + "\n"
+
+    return StreamingResponse(relay(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no"})
+
+
+def _error_detail(body: bytes, resp) -> str:
+    try:
+        return json.loads(body).get("detail", "") or f"HTTP {resp.status_code}"
+    except Exception:
+        return f"HTTP {resp.status_code}"

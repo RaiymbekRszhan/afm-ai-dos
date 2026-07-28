@@ -9,6 +9,10 @@ import os
 os.environ["STT_KK_USE_WHISPER"] = "false"   # не грузим Whisper в lifespan
 os.environ["STT_CORRECTION"] = "false"        # не дёргаем LLM-коррекцию
 os.environ["LOG_ANALYTICS"] = "false"         # обычные тесты не пишут JSONL/logs/ (см. test_logging)
+# f5/spark теперь требуют адрес (N3), иначе tts_enabled=False и /voice отдаёт JSON
+# без звука. Задаём фиктивные URL — сам синтез в тестах замокан (см. fixture client).
+os.environ.setdefault("F5_URL", "http://f5.test:8810/tts")
+os.environ.setdefault("SPARK_URL", "http://spark.test:8809/tts")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,6 +42,15 @@ def client(monkeypatch):
     async def fake_synthesize(text, language=None):
         return wav_bytes()
 
+    async def fake_synthesize_with_provider(text, language=None):
+        # /voice берёт ФАКТИЧЕСКИЙ провайдер отсюда (после возможного фолбэка).
+        return wav_bytes(), tts._provider_for(language)
+
+    async def fake_tts_healthy():
+        # Детальную health-пробу TTS проверяет tests/test_tts_health.py;
+        # эндпоинт-тесты остаются офлайн (без httpx к f5.test/spark.test).
+        return {"f5": {"reachable": True, "status": 200}}
+
     async def fake_correct(text, language=None):
         return text
 
@@ -45,6 +58,8 @@ def client(monkeypatch):
     monkeypatch.setattr(rag, "ask", fake_ask)
     monkeypatch.setattr(rag, "healthy", fake_healthy)
     monkeypatch.setattr(tts, "synthesize", fake_synthesize)
+    monkeypatch.setattr(tts, "synthesize_with_provider", fake_synthesize_with_provider)
+    monkeypatch.setattr(tts, "healthy", fake_tts_healthy)
     monkeypatch.setattr(service, "correct_transcript", fake_correct)
 
     with TestClient(main.app) as c:

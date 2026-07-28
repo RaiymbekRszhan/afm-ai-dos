@@ -4,6 +4,8 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   parseAnswer,
   parseNum,
@@ -11,6 +13,7 @@ const {
   extractLinks,
   wordWeight,
   detectPrintTemplates,
+  speechRate,
 } = require("./answer_render.js");
 
 test("parseAnswer: чистая проза без таблиц", () => {
@@ -116,4 +119,22 @@ test("detectPrintTemplates: 'личный приём' с кириллическ�
 
 test("detectPrintTemplates: обычный ответ без предложения печати", () => {
   assert.deepEqual(detectPrintTemplates("Штраф составляет 100 МРП."), []);
+});
+
+test("speechRate: Spark ускоряем, ElevenLabs/F5 в норме (N7)", () => {
+  assert.equal(speechRate("spark"), 1.3);   // офлайн-фолбэк казахского — медленный
+  assert.equal(speechRate("eleven"), 1.0);  // дефолтный казахский — в норме
+  assert.equal(speechRate("f5"), 1.0);      // русский
+  assert.equal(speechRate(undefined), 1.0); // нет данных — безопасный дефолт
+});
+
+test("detectPrintTemplates: контракт с бэкендом (общий fixture, N9)", () => {
+  // Тот же набор, что гоняет pytest над service.detect_print_templates
+  // (tests/test_print_triggers.py) — обе стороны обязаны совпасть с ним, значит
+  // и друг с другом. Синхронизирует фронт (answer_render.js) и бэк (service.py).
+  const fixture = path.join(__dirname, "..", "..", "tests", "fixtures", "print_triggers.json");
+  const cases = JSON.parse(fs.readFileSync(fixture, "utf8"));
+  for (const c of cases) {
+    assert.deepEqual(detectPrintTemplates(c.text), c.expect, c.note);
+  }
 });

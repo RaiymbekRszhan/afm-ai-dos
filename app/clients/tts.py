@@ -8,13 +8,17 @@
 """
 import asyncio
 import io
+import logging
 import os
 import re
 import tempfile
+import time
 import wave
 from urllib.parse import urlparse, urlunparse
 
 from app.config import settings
+
+log = logging.getLogger("ai_dos.tts")
 
 
 def _health_from(url: str) -> str:
@@ -285,6 +289,14 @@ _GOV_RE = re.compile(
 # Год: только 4-значное число перед «год/года/году» (муж. род).
 _YEAR_CASE = {"год": ("m", "nom"), "года": ("m", "gen"), "году": ("m", "prep")}
 _YEAR_RE = re.compile(r"\b(\d{4})\s+(год|года|году)\b", re.IGNORECASE)
+# Дата: день месяца — ПОРЯДКОВОЕ в родительном («1 января» -> «первого января»).
+# Без этого правила день читался количественным («один января»), а после предлога
+# ещё и уезжал в родительный количественного («до 15 марта» -> «до пятнадцати
+# марта»). Месяц в дате всегда стоит в родительном, поэтому список — только его
+# формы. Год рядом добивает _YEAR_RE («2024 года» -> «...четвёртого года»).
+_RU_MONTHS = ("января|февраля|марта|апреля|мая|июня|июля|августа|сентября|"
+              "октября|ноября|декабря")
+_RU_DATE_RE = re.compile(rf"\b(\d{{1,2}})\s+({_RU_MONTHS})\b", re.IGNORECASE)
 
 
 def _ord_gov_sub(m: "re.Match") -> str:
@@ -295,6 +307,13 @@ def _ord_gov_sub(m: "re.Match") -> str:
 def _ord_year_sub(m: "re.Match") -> str:
     gender, case = _YEAR_CASE[m.group(2).lower()]
     return f"{_ordinal_ru(int(m.group(1)), gender, case)} {m.group(2)}"
+
+
+def _ord_date_sub(m: "re.Match") -> str:
+    day = int(m.group(1))
+    if not 1 <= day <= 31:          # не дата (например, «45 мая») — не трогаем
+        return m.group(0)
+    return f"{_ordinal_ru(day, 'm', 'gen')} {m.group(2)}"
 
 
 # Родительный падеж количественных после «от/до/свыше/…»: «от 45 до 450 МРП» ->
@@ -433,6 +452,9 @@ def _ru_numbers(text: str) -> str:
         lambda m: _ru_phone_words(m.group(0)), text)
     if _num2words is None:
         return text
+    # Даты — ДО правил предлогов: иначе «до 15 марта» уйдёт в количественный
+    # родительный («до пятнадцати марта»).
+    text = _RU_DATE_RE.sub(_ord_date_sub, text)    # «1 января» -> «первого января»
     text = _GOV_RE.sub(_ord_gov_sub, text)         # статья/пункт/часть N -> порядковое
     text = _YEAR_RE.sub(_ord_year_sub, text)       # NNNN год/года/году -> порядковое
     text = _RU_GEN_PCT_RE.sub(_ru_gen_pct_sub, text)    # от/до N% -> родительный
@@ -553,6 +575,11 @@ def _kk_pct_sub(m: "re.Match") -> str:
 _KK_ORD_HYPHEN_RE = re.compile(rf"\b(\d{{1,4}})-([{_KK_LET}]+)")
 # Год через пробел: «2024 жыл/жылы/жылғы» -> порядковое.
 _KK_YEAR_RE = re.compile(r"\b(\d{4})\s+(жыл\w*)", re.IGNORECASE)
+# Дата: день месяца — порядковое, как в русском («15 наурыз» -> «он бесінші
+# наурыз»). Месяц берём с любым падежным окончанием («наурызда», «қаңтардан»).
+_KK_MONTHS = ("қаңтар|ақпан|наурыз|сәуір|мамыр|маусым|шілде|тамыз|қыркүйек|"
+              "қазан|қараша|желтоқсан")
+_KK_DATE_RE = re.compile(rf"\b(\d{{1,2}})\s+({_KK_MONTHS})(\w*)", re.IGNORECASE)
 # Сам суффикс порядкового, записанный после дефиса («2-ші»): его НЕ оставляем
 # отдельным словом — порядковое числительное уже содержит нужное окончание.
 _KK_ORD_SUFFIXES = {"ші", "шы", "ыншы", "інші", "ншы", "нші"}
@@ -568,6 +595,13 @@ def _kk_ord_hyphen_sub(m: "re.Match") -> str:
 
 def _kk_ord_year_sub(m: "re.Match") -> str:
     return f"{_kk_ordinal(int(m.group(1)))} {m.group(2)}"
+
+
+def _kk_ord_date_sub(m: "re.Match") -> str:
+    day = int(m.group(1))
+    if not 1 <= day <= 31:          # не дата — оставляем числу общее правило
+        return m.group(0)
+    return f"{_kk_ordinal(day)} {m.group(2)}{m.group(3)}"
 
 
 # Телефон казахской фразы: как в русском (_ru_phone_words), но ключевое слово
@@ -623,6 +657,7 @@ def _kk_numbers(text: str) -> str:
         lambda m: _kk_phone_words(m.group(0)), text)
     text = _RU_LONG_CODE_RE.sub(                    # слитные 10+ цифр (сотовый/ЖСН)
         lambda m: _kk_phone_words(m.group(0)), text)
+    text = _KK_DATE_RE.sub(_kk_ord_date_sub, text)          # «15 наурыз» -> порядковое
     text = _KK_ORD_HYPHEN_RE.sub(_kk_ord_hyphen_sub, text)  # N-бап -> порядковое
     text = _KK_YEAR_RE.sub(_kk_ord_year_sub, text)          # NNNN жыл -> порядковое
     text = re.sub(r"(\d+(?:,\d+)?)\s*%", _kk_pct_sub, text)  # проценты -> пайыз
@@ -743,6 +778,30 @@ def _break_at_clause(chunk: str) -> tuple[str, str]:
     return chunk, ""
 
 
+# Служебные слова, на которых кусок обрывать НЕЛЬЗЯ. Куски синтезируются порознь,
+# и TTS договаривает кусок как законченную реплику: обрыв на союзе даёт «...и»
+# с падающей интонацией, паузу шва, и только потом продолжение («Республики
+# Казахстан И / статьёй 218...»). Такое слово переносим в следующий кусок — там
+# оно и по смыслу. Список — рус. союзы/предлоги + каз. союзы/послелоги; языки
+# не пересекаются, поэтому набор общий.
+_DANGLING_WORDS = {
+    "и", "а", "но", "или", "либо", "да", "же", "ли", "что", "чтобы", "как", "если",
+    "когда", "чем", "в", "во", "на", "по", "до", "от", "из", "за", "к", "ко", "с",
+    "со", "о", "об", "обо", "у", "для", "при", "про", "над", "под", "перед",
+    "между", "через", "без", "кроме", "после", "около", "свыше", "более", "менее",
+    "және", "немесе", "мен", "бен", "пен", "үшін", "туралы", "бойынша", "кейін",
+    "дейін", "бастап", "арқылы",
+}
+
+
+def _move_dangling(head: str, tail: str) -> tuple[str, str]:
+    """Переносит служебные слова с конца куска в начало следующего."""
+    words = head.split()
+    while len(words) > 1 and words[-1].lower() in _DANGLING_WORDS:
+        tail = f"{words.pop()} {tail}".strip()
+    return " ".join(words), tail
+
+
 def _hard_split(sentence: str, max_chars: int) -> list[str]:
     """Слишком длинное предложение режем на куски не длиннее лимита.
 
@@ -750,7 +809,8 @@ def _hard_split(sentence: str, max_chars: int) -> list[str]:
     кусок, оборванный посреди фразы, TTS озвучивает как законченную реплику —
     даёт падающую интонацию и комкает хвост на ровном месте. По запятой конец
     куска попадает туда, где пауза уместна, и шов не слышен. Если знаков нет
-    (длинное перечисление одними словами) — прежний словесный фолбэк.
+    (длинное перечисление одними словами) — словесный фолбэк, но и там кусок не
+    заканчивается служебным словом (см. _move_dangling).
 
     Увеличивать max_chars вместо этого нельзя: время синтеза растёт квадратично
     (замер на Spark: 100 симв. -> 18 c, 330 симв. -> 117 c).
@@ -760,6 +820,7 @@ def _hard_split(sentence: str, max_chars: int) -> list[str]:
     for word in sentence.split():
         if cur and len(cur) + 1 + len(word) > max_chars:
             head, tail = _break_at_clause(cur)
+            head, tail = _move_dangling(head, tail)  # не обрывать кусок на союзе
             parts.append(head)
             cur = f"{tail} {word}".strip() if tail else word
         else:
@@ -866,10 +927,17 @@ def _concat_wav(parts: list[bytes], texts: list[str] | None = None,
     return out.getvalue()
 
 
-async def synthesize(text: str, language: str | None = None) -> bytes:
-    """Текст -> аудио (WAV-байты). Длинный текст режется и склеивается."""
-    if not text.strip():
-        raise RuntimeError("Пустой текст для синтеза")
+def prepare_for_tts(text: str, language: str | None = None,
+                    provider: str | None = None) -> tuple[str, list[str]]:
+    """Что реально уйдёт в TTS: (текст для озвучки, куски для синтеза).
+
+    `provider` — явный движок (у фолбэка свои лимиты куска: eleven держит 800
+    символов, Spark 260, F5 группирует по 240); по умолчанию — движок языка.
+
+    Вынесено из synthesize() отдельной функцией, чтобы бенч
+    (`python -m scripts.tts_bench`) показывал РОВНО ту нарезку и нормализацию,
+    что идут в бой, а не их копию, которая со временем разъедется.
+    """
     # Экранные таблицы не озвучиваем (их рендерит фронтенд). Если ответ состоял
     # из одной таблицы — киоск не должен получить 5xx: озвучиваем отсылку к экрану.
     speech = strip_display_blocks(text)
@@ -878,42 +946,173 @@ async def synthesize(text: str, language: str | None = None) -> bytes:
                   if _resolve_lang(language) == "kk"
                   else "Ответ показан на экране.")
     # Раскрываем аббревиатуры/латиницу в произносимый вид (только для звука).
-    text = _normalize_for_tts(speech, language)
-    # Склейка реализована для WAV; для иных форматов синтезируем одним куском.
-    if settings.tts_format != "wav":
-        return await _synthesize_one(text, language)
+    speech = _normalize_for_tts(speech, language)
     # F5 сам делит текст на предложения — отдаём крупные куски (меньше швов).
     # Spark своей нарезки не имеет: режем сами, но его предел (3000) куда выше
     # F5-шных 180, поэтому даём предложению запас — чтобы разрез попал на запятую,
     # а не в середину фразы (иначе Spark комкает хвост огрызка).
-    if _provider_for(language) == "eleven":
+    provider = provider or _provider_for(language)
+    if provider == "eleven":
         # eleven держит длинный текст сам — крупные куски, минимум швов.
-        sent_max = settings.elevenlabs_max_chars
-        group = sent_max
-    elif _provider_for(language) == "spark":
-        sent_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
-        group = sent_max
+        sent_max = group = settings.elevenlabs_max_chars
+    elif provider == "spark":
+        sent_max = group = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     else:
         sent_max = settings.tts_max_chars
-        group = (settings.tts_group_chars
-                 if _provider_for(language) == "f5"
-                 else settings.tts_max_chars)
-    parts = _split_for_tts(text, sent_max, group)
+        group = settings.tts_group_chars if provider == "f5" else settings.tts_max_chars
     # Выкидываем куски без букв (одни цифры/знаки) — TTS на них падает.
-    parts = [p for p in parts if _has_speech(p)]
+    parts = [p for p in _split_for_tts(speech, sent_max, group) if _has_speech(p)]
+    return speech, parts
+
+
+async def _synthesize_all(text: str, language: str | None, provider: str,
+                          fail_fast: bool = False) -> bytes:
+    """Весь ответ одним провайдером: нарезка -> синтез кусков -> склейка.
+
+    `fail_fast` — есть страховка (фолбэк), поэтому ПЕРВЫЙ кусок синтезируем без
+    повторов: если движок лежит (облако недоступно), повтор только удваивает
+    ожидание у киоска, а запасной движок ответит быстрее. Дальше повторы
+    остаются: там сбой означал бы пересинтез всего ответа заново.
+    """
+    speech, parts = prepare_for_tts(text, language, provider)
+    head_retries = 0 if fail_fast else None
+    # Склейка реализована для WAV; для иных форматов синтезируем одним куском.
+    if settings.tts_format != "wav":
+        return await _synthesize_chunk(speech, language, provider, head_retries)
     if not parts:
         raise RuntimeError("Нет произносимого текста для синтеза")
     if len(parts) == 1:
-        result = await _synthesize_one(parts[0], language)
+        result = await _synthesize_chunk(parts[0], language, provider, head_retries)
     else:
-        audios = [await _synthesize_one(part, language) for part in parts]
-        gap = (settings.tts_f5_gap_ms if _provider_for(language) == "f5"
-               else settings.tts_gap_ms)
+        audios = [await _synthesize_chunk(part, language, provider,
+                                          head_retries if idx == 0 else None)
+                  for idx, part in enumerate(parts)]
+        gap = settings.tts_f5_gap_ms if provider == "f5" else settings.tts_gap_ms
         result = _concat_wav(audios, parts, gap)
     # Шумовой хвост F5 в самом конце ответа плавно гасим в ноль (см. _F5_TAIL_FADE_MS).
-    if _provider_for(language) == "f5" and settings.tts_format == "wav":
+    if provider == "f5" and settings.tts_format == "wav":
         result = _fade_out_tail(result, _F5_TAIL_FADE_MS)
     return result
+
+
+async def synthesize_with_provider(text: str, language: str | None = None
+                                   ) -> tuple[bytes, str]:
+    """Текст -> (аудио, ПРОВАЙДЕР, которым в итоге озвучили).
+
+    Провайдер важен вызывающему: киоск по нему выбирает темп проигрывания
+    (Spark медленный — ускоряем плеером), и после фолбэка это уже не тот
+    провайдер, что настроен для языка.
+    """
+    if not text.strip():
+        raise RuntimeError("Пустой текст для синтеза")
+    primary = _provider_for(language)
+    fallback = _fallback_for(language)
+    # Провайдер, отказавший только что, пропускаем без попытки: иначе каждый
+    # запрос в офлайн-сети платит полный таймаут облака (см. tts_fallback_cooldown).
+    if fallback and _in_cooldown(primary):
+        log.warning("TTS %s пропущен (недавний отказ), сразу фолбэк %s", primary, fallback)
+        return await _synthesize_all(text, language, fallback), fallback
+    try:
+        result = await _synthesize_all(text, language, primary, fail_fast=bool(fallback))
+    except Exception as e:
+        if not fallback:
+            raise
+        _mark_down(primary)
+        log.warning("TTS %s не смог (%r) -> фолбэк %s", primary, e, fallback)
+        return await _synthesize_all(text, language, fallback), fallback
+    _mark_up(primary)
+    return result, primary
+
+
+async def synthesize(text: str, language: str | None = None) -> bytes:
+    """Текст -> аудио (WAV-байты). Длинный текст режется и склеивается."""
+    audio, _ = await synthesize_with_provider(text, language)
+    return audio
+
+
+def _append_silence(wav_bytes: bytes, ms: int) -> bytes:
+    """Дописывает `ms` тишины в конец WAV (не WAV — отдаём как есть).
+
+    В монолитном пути паузу на стыке ставит склейка (_concat_wav). В потоковом
+    куски играются порознь, склейки нет — значит паузу нужно вшить в хвост
+    куска, иначе следующий начнётся впритык и «влезет», не дав предыдущему
+    договорить (та самая настройка 280/140 и 300/150, подобранная на слух).
+    """
+    if ms <= 0:
+        return wav_bytes
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as r:
+            nch, sw, fr = r.getnchannels(), r.getsampwidth(), r.getframerate()
+            frames = r.readframes(r.getnframes())
+    except (wave.Error, EOFError):
+        return wav_bytes
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(nch)
+        w.setsampwidth(sw)
+        w.setframerate(fr)
+        w.writeframes(frames + b"\x00" * (int(fr * ms / 1000) * nch * sw))
+    return out.getvalue()
+
+
+async def synthesize_stream(text: str, language: str | None = None):
+    """Куски озвучки ПО МЕРЕ синтеза: (номер, WAV, провайдер, символов в куске).
+
+    Ради этого и делался стриминг: гражданин слышит первый кусок, пока
+    досинтезируются остальные. Синтез идёт быстрее реального времени (F5 на GPU
+    АФМ — примерно в 8 раз), поэтому очередь не пустеет, а ожидание падает с
+    полного времени ответа до времени ОДНОГО первого куска.
+
+    Паузы на стыках вшиты в хвост куска (см. _append_silence), гашение хвоста
+    F5 — в последний кусок: звучать должно ровно как склеенный WAV.
+
+    Фолбэк на запасной движок возможен ТОЛЬКО до первого выданного куска: менять
+    голос на середине ответа хуже, чем честно оборвать (гражданин уже слышит
+    начало, а текст целиком на экране с самого начала).
+    """
+    if not text.strip():
+        raise RuntimeError("Пустой текст для синтеза")
+    primary = _provider_for(language)
+    fallback = _fallback_for(language)
+    provider = fallback if (fallback and _in_cooldown(primary)) else primary
+    if provider != primary:
+        log.warning("TTS %s пропущен (недавний отказ), сразу фолбэк %s", primary, provider)
+
+    # Первый кусок синтезируем ДО выдачи: только пока ничего не отдано, отказ
+    # ещё можно молча пережить сменой движка.
+    while True:
+        speech, parts = prepare_for_tts(text, language, provider)
+        # Паузы на стыке и гашение хвоста умеем только для WAV, поэтому иной
+        # формат отдаём одним куском — ровно как монолитный путь (стриминга там
+        # не будет, зато звучание не разъедется с /voice).
+        if settings.tts_format != "wav":
+            parts = [speech]
+        if not parts:
+            raise RuntimeError("Нет произносимого текста для синтеза")
+        try:
+            # Есть страховка -> первый кусок без повторов: лежачее облако не
+            # должно удваивать ожидание перед уходом на офлайн-движок.
+            head = await _synthesize_chunk(
+                parts[0], language, provider,
+                0 if (fallback and provider == primary) else None)
+            break
+        except Exception as e:
+            if provider != primary or not fallback:
+                raise
+            _mark_down(primary)
+            log.warning("TTS %s не смог (%r) -> фолбэк %s", primary, e, fallback)
+            provider = fallback
+    if provider == primary:
+        _mark_up(primary)
+
+    base_gap = settings.tts_f5_gap_ms if provider == "f5" else settings.tts_gap_ms
+    for idx, part in enumerate(parts):
+        audio = head if idx == 0 else await _synthesize_chunk(part, language, provider)
+        if idx < len(parts) - 1:
+            audio = _append_silence(audio, _gap_ms_after(part, base_gap))
+        elif provider == "f5" and settings.tts_format == "wav":
+            audio = _fade_out_tail(audio, _F5_TAIL_FADE_MS)
+        yield idx, audio, provider, len(part)
 
 
 def _provider_for(language: str | None) -> str:
@@ -921,9 +1120,66 @@ def _provider_for(language: str | None) -> str:
     return settings.tts_kk_provider if _resolve_lang(language) == "kk" else settings.tts_provider
 
 
-async def _synthesize_one(text: str, language: str | None = None) -> bytes:
-    """Синтез одного фрагмента. Провайдер выбирается по языку."""
-    provider = _provider_for(language)
+def _fallback_for(language: str | None) -> str:
+    """Запасной провайдер языка (пусто — фолбэка нет). Сам себе не фолбэк."""
+    fb = (settings.tts_kk_fallback if _resolve_lang(language) == "kk"
+          else settings.tts_fallback).strip()
+    return fb if fb and fb != _provider_for(language) else ""
+
+
+# Провайдер -> момент последнего отказа (monotonic). Предохранитель: пока идёт
+# кулдаун, провайдер не дёргаем вовсе — см. synthesize_with_provider.
+_provider_down: dict[str, float] = {}
+
+
+def _in_cooldown(provider: str) -> bool:
+    failed_at = _provider_down.get(provider)
+    if failed_at is None:
+        return False
+    if time.monotonic() - failed_at < settings.tts_fallback_cooldown:
+        return True
+    del _provider_down[provider]      # кулдаун истёк — можно пробовать снова
+    return False
+
+
+def _mark_down(provider: str) -> None:
+    _provider_down[provider] = time.monotonic()
+
+
+def _mark_up(provider: str) -> None:
+    _provider_down.pop(provider, None)
+
+
+async def _synthesize_chunk(text: str, language: str | None, provider: str,
+                            retries: int | None = None) -> bytes:
+    """Синтез куска с повторами: единичный сетевой сбой не рушит весь ответ.
+
+    Повторяем ТОЛЬКО то, что может пройти со второй попытки (сеть, 5xx, битый
+    ответ). Наши собственные RuntimeError — это «провайдер не настроен»: их
+    повтор не вылечит, отдаём сразу (и выше сработает фолбэк).
+    `retries` — сколько повторов (None = tts_retries из настроек; 0 — когда
+    наверху есть фолбэк и ждать второй попытки дороже, чем сменить движок).
+    """
+    limit = settings.tts_retries if retries is None else retries
+    last: Exception | None = None
+    for attempt in range(limit + 1):
+        try:
+            return await _synthesize_one(text, language, provider)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            last = e
+            if attempt < limit:
+                log.warning("TTS %s: кусок не синтезировался (%r), повтор %d",
+                            provider, e, attempt + 1)
+                await asyncio.sleep(0.5 * (attempt + 1))
+    raise last  # type: ignore[misc]
+
+
+async def _synthesize_one(text: str, language: str | None = None,
+                          provider: str | None = None) -> bytes:
+    """Синтез одного фрагмента. Провайдер — явный либо по языку."""
+    provider = provider or _provider_for(language)
     if provider == "say":
         return await _say(text, language)
     if provider == "openai":
@@ -1210,7 +1466,14 @@ async def _eleven(text: str, language: str | None) -> bytes:
     sr = 24000  # PCM 16-бит моно; частоту фиксируем — куски склеиваются одинаковыми
     url = (f"{settings.elevenlabs_url.rstrip('/')}"
            f"/text-to-speech/{settings.elevenlabs_voice_id}?output_format=pcm_{sr}")
-    async with httpx.AsyncClient(timeout=180) as client:
+    # Два разных таймаута. connect — короткий (ELEVENLABS_CONNECT_TIMEOUT): в
+    # сети без выхода наружу пакеты просто гасятся файрволом, и соединение висит
+    # до упора — это самый частый способ «облако недоступно», и платить за него
+    # полный таймаут нечего. read — полный (ELEVENLABS_TIMEOUT): облако
+    # достучалось, значит даём ему спокойно синтезировать длинный кусок.
+    timeout = httpx.Timeout(settings.elevenlabs_timeout,
+                            connect=settings.elevenlabs_connect_timeout)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             url,
             headers={"xi-api-key": settings.elevenlabs_api_key},
@@ -1250,25 +1513,76 @@ async def _openai(text: str) -> bytes:
 
 
 # ---------- Health: доступность TTS-серверов (для /health оркестратора) ----------
+async def _probe_responds(client, url: str) -> dict:
+    """Сервер жив, если ОТВЕТИЛ на HTTP-запрос — даже 404/405.
+
+    У multipart-F5 на GPU-ноде АФМ нет эндпоинта `/health`, и прежний
+    `raise_for_status()` красил 404 в `reachable:false` навсегда — приёмка не
+    проходила, а настоящее падение F5 было не отличить от этого шума (N1).
+    Теперь недоступность = ТОЛЬКО транспортная ошибка/таймаут; любой HTTP-ответ
+    (значит, порт слушает и процесс жив) = reachable, со статусом для диагностики.
+    """
+    try:
+        resp = await client.get(_health_from(url))
+    except Exception as e:
+        return {"reachable": False, "error": str(e)}
+    return {"reachable": True, "status": resp.status_code}
+
+
+# Кэш health-пробы ElevenLabs: (monotonic-время, результат). Проба ходит в облако —
+# не дёргаем её на КАЖДЫЙ /health (дашборд/watchdog опрашивают часто), держим ответ
+# несколько секунд. GET /user символы не тратит, но сеть АФМ офлайн — лишний запрос
+# всё равно ни к чему.
+_eleven_health_cache: tuple[float, dict] | None = None
+_ELEVEN_HEALTH_TTL = 30.0
+
+
+async def _eleven_reachable(client) -> dict:
+    """Доступность облачного ElevenLabs (дефолтный казахский TTS, N4).
+
+    Кэшируется на _ELEVEN_HEALTH_TTL секунд. reachable=True только на 2xx: 401
+    (плохой ключ) — это НЕдоступно для синтеза, а не «жив».
+    """
+    global _eleven_health_cache
+    now = time.monotonic()
+    if _eleven_health_cache is not None and now - _eleven_health_cache[0] < _ELEVEN_HEALTH_TTL:
+        return _eleven_health_cache[1]
+    if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id):
+        result = {"reachable": False, "error": "не заданы ELEVENLABS_API_KEY/VOICE_ID"}
+    else:
+        url = f"{settings.elevenlabs_url.rstrip('/')}/user"
+        try:
+            resp = await client.get(url, headers={"xi-api-key": settings.elevenlabs_api_key})
+            if resp.status_code < 400:
+                result = {"reachable": True}
+            else:
+                result = {"reachable": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            result = {"reachable": False, "error": str(e)}
+    _eleven_health_cache = (now, result)
+    return result
+
+
 async def healthy() -> dict:
-    """Пингует /health у выбранных TTS-серверов (f5/spark). Пусто, если они не нужны."""
+    """Доступность выбранных TTS-серверов для `/health` оркестратора.
+
+    f5/spark — по факту HTTP-ответа (см. _probe_responds); eleven — по 2xx на
+    /user с кэшем (см. _eleven_reachable). Пусто, если провайдер не задействован.
+
+    Фолбэк-провайдеры проверяются наравне с основными: молча умерший Spark — это
+    отсутствие страховки на случай, когда пропадёт интернет к eleven, и знать об
+    этом надо ДО того, как он понадобится.
+    """
     import httpx
 
-    providers = {settings.tts_provider, settings.tts_kk_provider}
-    targets: dict[str, str] = {}
-    if "f5" in providers and settings.f5_url:
-        targets["f5"] = settings.f5_url
-    if "spark" in providers and settings.spark_url:
-        targets["spark"] = settings.spark_url
-
+    providers = {settings.tts_provider, settings.tts_kk_provider,
+                 settings.tts_fallback, settings.tts_kk_fallback} - {""}
     out: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=3.0) as client:
-        for name, url in targets.items():
-            health_url = _health_from(url)
-            try:
-                resp = await client.get(health_url)
-                resp.raise_for_status()
-                out[name] = {"reachable": True}
-            except Exception as e:
-                out[name] = {"reachable": False, "error": str(e)}
+        if "f5" in providers and settings.f5_url:
+            out["f5"] = await _probe_responds(client, settings.f5_url)
+        if "spark" in providers and settings.spark_url:
+            out["spark"] = await _probe_responds(client, settings.spark_url)
+        if "eleven" in providers:
+            out["eleven"] = await _eleven_reachable(client)
     return out

@@ -1,13 +1,17 @@
 # Развёртывание на сервере АФМ
 
-Проект = **4 сервиса**, которые крутятся вместе (лучше на GPU-сервере):
+Проект = **5 сервисов**, которые крутятся вместе (лучше на GPU-сервере):
 
 | Сервис | Порт | venv | Что делает |
 |--------|------|------|-----------|
 | Основной API | 8000 | `.venv` | оркестратор + STT-роутинг + вызов RAG/TTS |
 | RAG-сервис | 8077 | `rag/.venv` | ответ строго по базе РК (LightRAG + LLM/эмбеддинги АФМ) |
-| F5-сервер | 8810 | `.venv-f5` | русский TTS (F5-TTS + ударения; референс refs/ref_ru_f5.wav) |
-| Spark-сервер | 8809 | `.venv-spark` | казахский TTS (голос по умолчанию) |
+| **video_ui (фронтенд)** | **8100** | `.venv` | **киоск-страница «видео-аватар»: ролики, таблицы/графики, QR, печать бланков; вопросы проксирует на :8000. Это то, что видит гражданин** |
+| F5-сервер | 8810 | `.venv-f5` | русский TTS (F5-TTS + ударения; референс refs/ref_ru_f5.wav) — опц., локальный TTS |
+| Spark-сервер | 8809 | `.venv-spark` | казахский TTS — опц., офлайн-фолбэк |
+
+`video_ui` **своего venv не требует** — работает в основном `.venv` (fastapi/uvicorn/httpx
+уже там), отдельного шага установки у него нет.
 
 ⚠️ **venv `rag/` нельзя сливать с основным** — `lightrag`/`torch` конфликтуют с голосовым слоем.
 
@@ -52,18 +56,55 @@ curl -m 5 http://192.168.165.2:8806/v1/models   # эмбеддинги (нужн
 
 ---
 
-## ШАГ 1. Скопировать проект с Mac (scp)
-⚠️ **venv НЕ копируем** — они под macOS, на Linux-сервере не заработают (пересоздаём на месте).
+## ШАГ 1. Доставить проект на сервер
+
+**Копировать с Mac НЕ нужно.** В репозитории лежит всё, что требуется деплою:
+код, база знаний `rag/data/`, ролики аватара `video_ui/static/video/*.mp4` (21 МБ),
+образцы голоса `refs/*.wav`, словарь `rag/vendor/tiktoken/`, юниты `deploy/`.
+Единственное, чего в git нет и не будет, — **`.env` с секретами** (ключ ElevenLabs);
+он собирается на сервере из `.env.example` на шаге 6.
+
+⚠️ **venv и индекс НЕ переносим** — они пересоздаются на месте (шаги 2–3): сборки под
+macOS на Linux не работают.
+
+### Вариант А (основной) — `git clone` на сервере
+Годится, если с сервера виден GitHub (проверка — ШАГ 0):
+```bash
+git clone https://github.com/RaiymbekRszhan/afm-ai-dos.git ~/STT
+cd ~/STT
+```
+Обновление потом — без всякого копирования:
+```bash
+cd ~/STT && git pull
+sudo systemctl restart ai-dos-api ai-dos-video-ui     # и ai-dos-rag, если менялась rag/data (+ ingest)
+```
+
+### Вариант Б — сервер без интернета (снимок одним файлом)
+GitHub с контура АФМ (`192.168.165.x`) недоступен, поэтому снимок берётся на машине
+с репозиторием (Mac, ноутбук с git) и везётся одним файлом ~31 МБ:
+```bash
+git archive --format=tar.gz -o ai-dos.tar.gz main     # снимок ветки main, без .git
+scp ai-dos.tar.gz ПОЛЬЗОВАТЕЛЬ@СЕРВЕР:~/
+ssh ПОЛЬЗОВАТЕЛЬ@СЕРВЕР 'mkdir -p ~/STT && tar -xzf ~/ai-dos.tar.gz -C ~/STT'
+```
+Обновление = новый архив тем же способом (это снимок, `git pull` на сервере не будет).
+Нужна история git на сервере — вместо архива `git bundle create ai-dos.bundle main`
+и `git clone ai-dos.bundle ~/STT` (файл заметно больше: в истории лежат старые артефакты).
+
+<details><summary>Вариант В — построчный <code>scp</code> папок (если снимок почему-то не подходит)</summary>
 
 С Mac, из папки проекта:
 ```bash
-# код + база знаний + образцы голоса + RAG-сервис + запуск/деплой
-scp -r app scripts f5_server spark_server rag refs \
+# код + фронтенд + база знаний + образцы голоса + RAG-сервис + запуск/деплой
+scp -r app video_ui scripts f5_server spark_server rag refs \
        requirements.txt pyproject.toml run_api.sh deploy \
        .env.example README.md \
        ПОЛЬЗОВАТЕЛЬ@СЕРВЕР:~/STT/
 ```
 `refs/` (твои образцы голоса) **обязательно** — их нельзя скачать.
+`video_ui/` — **фронтенд пилота** (~23 МБ, из них 21 МБ — ролики аватара
+`video_ui/static/video/*.mp4`); без него стек поднимется, но экрана киоска не будет
+(`run_api.sh` стартует `video_ui` в фоне — пропажа папки видна только в логе).
 `run_api.sh` и `deploy/` нужны на шаге 7 (запуск) — без них деплой по инструкции не соберётся.
 
 ⚠️ `scp -r rag` копирует **всё** содержимое, включая `rag/.venv` (сборка под macOS,
@@ -74,8 +115,11 @@ ssh ПОЛЬЗОВАТЕЛЬ@СЕРВЕР 'rm -rf ~/STT/rag/.venv ~/STT/rag/rag_
 ```
 (Либо копируй через `rsync -a --exclude='.venv' --exclude='rag_storage' rag/ …` — scp исключать не умеет.)
 
+</details>
+
 **НЕ нужны на сервере** (пересоздаются/скачиваются): `.venv*`, `rag/.venv`, `rag/rag_storage/`,
-`rag/_convert/`, `spark_tts_repo/`, `models/`.
+`rag/_convert/`, `spark_tts_repo/`, `models/`. Вариантам А и Б это достаётся даром —
+всё перечисленное в `.gitignore`.
 
 ---
 
@@ -169,7 +213,8 @@ ELEVENLABS_VOICE_ID=...
 # Это дефолт run_api.sh БЕЗ USE_ELEVEN.
 TTS_PROVIDER=f5
 F5_URL=http://192.168.165.2:8991/tts
-F5_REF_AUDIO=refs/ref_ru_f5.wav      # референс тембра (шлётся в каждый запрос)
+F5_REF_AUDIO=refs/ref_ru_f5_padded.wav  # референс тембра (шлётся в каждый запрос);
+                                     # _padded = с тишиной по краям, иначе резкий старт
 F5_REF_TEXT=@refs/ref_ru.txt         # "@путь" = прочитать транскрипт из файла
 TTS_KK_PROVIDER=spark
 SPARK_URL=http://192.168.165.2:8992/tts
@@ -190,7 +235,7 @@ LLM/эмбеддинги RAG-сервиса настраиваются отде�
 
 **Через systemd:** в `deploy/ai-dos-api.service` поставь
 `Environment=F5_URL=http://192.168.165.2:8991/tts`,
-`Environment=F5_REF_AUDIO=refs/ref_ru_f5.wav`,
+`Environment=F5_REF_AUDIO=refs/ref_ru_f5_padded.wav`,
 `Environment=F5_REF_TEXT=@refs/ref_ru.txt`,
 `Environment=SPARK_URL=http://192.168.165.2:8992/tts` и отключи локальные TTS-юниты
 `ai-dos-f5`/`ai-dos-spark` (`systemctl disable --now ai-dos-f5 ai-dos-spark`).
@@ -208,14 +253,22 @@ TTS (`USE_LOCAL_F5=1` / `USE_LOCAL_SPARK=1`); по умолчанию TTS бер
 ```bash
 (cd rag && source .venv/bin/activate && uvicorn ragsvc.server:app --host 127.0.0.1 --port 8077)
 source .venv/bin/activate && HF_HUB_OFFLINE=1 uvicorn app.main:app --host 0.0.0.0 --port 8000
+bash video_ui/run.sh                 # 8100 — киоск-страница (фронтенд), тот же .venv
 # локальный TTS (опционально): bash f5_server/run.sh  # 8810 (ru) ; bash spark_server/run.sh  # 8809 (kk)
 ```
+Фронтенд на другой машине (бэкенд по сети) или на другом порту:
+```bash
+AIDOS_BACKEND=http://192.168.165.10:8000 bash video_ui/run.sh
+VIDEO_UI_PORT=8101 bash video_ui/run.sh
+```
+Открыть киоск: `http://СЕРВЕР:8100/` (микрофон в браузере требует HTTPS или
+`localhost` — на Windows-киоске это решает `deploy/kiosk-start.bat`, см. `video_ui/README.md`).
 
 ---
 
 ## ШАГ 8. Проверить — приёмка ОДНОЙ командой
 ```bash
-bash scripts/healthcheck.sh          # все 4 сервиса + RAG-ответ + TTS (ru/kk), PASS/FAIL
+bash scripts/healthcheck.sh          # все сервисы (вкл. фронтенд :8100) + RAG-ответ + TTS (ru/kk), PASS/FAIL
 bash scripts/healthcheck.sh --full   # + сквозной голос STT→RAG→TTS (по образцам refs/)
 ```
 Печатает по строке на каждый шаг (✔/✘), в конце — итог и папку с синтезированными
@@ -230,6 +283,8 @@ WAV для прослушки. Код выхода 0 = всё прошло (мо
 ```bash
 curl http://localhost:8000/health        # status:ok, rag.reachable:true, tts.enabled:true
 curl -m 5 http://localhost:8077/health    # RAG-сервис жив
+curl -m 5 http://localhost:8100/health    # фронтенд: backend_reachable:true, videos.*:true
+                                          #   (videos:false = ролики не доехали → чёрный экран)
 
 # ответ строго по базе
 curl -s -X POST http://localhost:8077/ask -H 'Content-Type: application/json' \
@@ -242,7 +297,8 @@ curl -X POST http://localhost:8000/speak -H 'Content-Type: application/json' \
 curl -X POST http://localhost:8000/speak -H 'Content-Type: application/json' \
   -d '{"text":"Сәлеметсіз бе!","language":"kazakh"}' --output kk.wav
 ```
-Или открой `http://СЕРВЕР:8000/` в браузере — тест-страница с микрофоном.
+Или открой `http://СЕРВЕР:8100/` — киоск-страница пилота (что видит гражданин);
+`http://СЕРВЕР:8000/` — служебная тест-страница с микрофоном.
 
 </details>
 
