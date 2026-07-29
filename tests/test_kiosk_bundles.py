@@ -75,9 +75,10 @@ def test_check_bat_accepts_crlf(tmp_path, monkeypatch):
     assert mkb.check_bat() == good.read_bytes()
 
 
-def test_real_bat_in_repo_is_crlf(monkeypatch):
-    """Тот самый файл, который поедет на 20 точек."""
-    data = mkb.check_bat()
+@pytest.mark.parametrize("reader", [mkb.check_bat, mkb.check_autostart])
+def test_real_bats_in_repo_are_crlf(reader):
+    """Те самые файлы, которые поедут на 20 точек."""
+    data = reader()
     assert data.count(b"\n") - data.count(b"\r\n") == 0
 
 
@@ -96,12 +97,14 @@ def test_bundle_contents(tmp_path, monkeypatch, fleet_file):
     assert mkb.main() == 0
 
     z = zipfile.ZipFile(tmp_path / "bundles" / "aidos-kiosk-astana.zip")
-    assert sorted(z.namelist()) == ["README.txt", "kiosk-id.txt", "kiosk-start.bat"]
+    assert sorted(z.namelist()) == [
+        "README.txt", "install-autostart.bat", "kiosk-id.txt", "kiosk-start.bat"]
 
     # cmd читает файл через `set /p` — лишний байт уехал бы прямо в имя точки.
     assert z.read("kiosk-id.txt") == b"astana\r\n"
     # .bat должен доехать байт в байт: любая перекодировка ломает cmd.
     assert z.read("kiosk-start.bat") == mkb.BAT.read_bytes()
+    assert z.read("install-autostart.bat") == mkb.AUTOSTART.read_bytes()
     # BOM: без него старый notepad покажет кириллицу кракозябрами.
     readme = z.read("README.txt")
     assert readme.startswith(b"\xef\xbb\xbf")
