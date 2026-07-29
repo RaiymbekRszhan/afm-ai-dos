@@ -708,6 +708,9 @@ syncBadge();
 // Авто-стоп: тишина дольше SILENCE_MS после речи — завершаем запись сами.
 const SILENCE_PEAK = 0.015;
 const SILENCE_MS = 2000;
+// Короче этого (в секундах) запись в STT НЕ шлём — см. stopAndSend: на тишине
+// и обрывках движок «дорисовывает» текст, и киоск отвечает на выдуманный вопрос.
+const MIN_SPEECH_SEC = 0.6;
 let hasSpoken = false, lastVoiceMs = 0, stopping = false;
 
 async function startRecording() {
@@ -740,6 +743,23 @@ async function stopAndSend() {
   btn.classList.remove("rec"); btn.textContent = "🎙 Задать вопрос";
   proc.disconnect(); src.disconnect(); stream.getTracks().forEach(t => t.stop());
   const len = chunks.reduce((a, c) => a + c.length, 0);
+  // ТИШИНУ НЕ ОТПРАВЛЯЕМ. Посетитель нажал «Задать вопрос» и передумал, или
+  // рядом просто шумно — движок STT на пустой записи выдумывает текст: в логах
+  // 29.07 это «Редактор субтитров А.Семкин Корректор А.Кулакова» и «деду, деду,
+  // деду…» (обрывки из обучающих данных). Дальше киоск честно ищет ответ на
+  // выдуманный вопрос, тратит облако и показывает гражданину отказ. hasSpoken
+  // ставит детектор пика выше; длину проверяем отдельно — от короткого хлопка
+  // он тоже срабатывает.
+  if (!hasSpoken || len / (ctx.sampleRate || 16000) < MIN_SPEECH_SEC) {
+    ctx.close();
+    stopping = false;
+    btn.disabled = false;
+    showIdle();
+    st.textContent = langSel.value === "kazakh"
+      ? "Дыбыс естілмеді — қайта сұрап көріңіз"
+      : "Не услышал вопрос — попробуйте ещё раз";
+    return;
+  }
   const flat = new Float32Array(len);
   let off = 0; for (const c of chunks) { flat.set(c, off); off += c.length; }
   const wav = encodeWav(flat, ctx.sampleRate);

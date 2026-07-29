@@ -77,9 +77,24 @@ def main() -> None:
     ap.add_argument("--dir", default="logs", help="каталог с interactions.jsonl (по умолч. logs)")
     ap.add_argument("--days", type=int, default=None, help="только за последние N суток")
     ap.add_argument("--top", type=int, default=20, help="сколько частых вопросов показать")
+    # Нагрузочные прогоны (scripts.load_test помечает их kiosk=loadtest) и
+    # приёмки бьют одним и тем же образцом голоса — в топе вопросов они забивают
+    # первые строки и портят долю «нет в базе». По умолчанию их не показываем.
+    ap.add_argument("--exclude-kiosk", default="loadtest",
+                    help="не учитывать эти точки (через запятую); пусто — учитывать все")
+    ap.add_argument("--kiosk", default=None,
+                    help="ТОЛЬКО эта точка (например astana-01)")
     args = ap.parse_args()
 
     rows = _load(args.dir, args.days)
+    skipped = 0
+    if args.kiosk:
+        rows = [r for r in rows if (r.get("kiosk") or "") == args.kiosk]
+    elif args.exclude_kiosk.strip():
+        drop = {k.strip() for k in args.exclude_kiosk.split(",") if k.strip()}
+        before = len(rows)
+        rows = [r for r in rows if (r.get("kiosk") or "") not in drop]
+        skipped = before - len(rows)
     total = len(rows)
     if not total:
         print(f"Нет записей в {args.dir!r}"
@@ -97,6 +112,11 @@ def main() -> None:
     providers = Counter(r.get("provider", "?") for r in ok)
 
     print(f"\n=== Ai-dos: отчёт по обращениям ({period}) ===\n")
+    if args.kiosk:
+        print(f"Только точка:         {args.kiosk}")
+    elif skipped:
+        print(f"Отброшено служебных:  {skipped} (прогоны/приёмки: {args.exclude_kiosk};"
+              f" показать всё — --exclude-kiosk '')")
     print(f"Всего обращений:      {total}")
     print(f"  успешных:           {len(ok)} ({_pct(len(ok), total)})")
     print(f"  с ошибкой:          {len(errors)} ({_pct(len(errors), total)})"
