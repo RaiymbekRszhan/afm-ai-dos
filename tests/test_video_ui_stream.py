@@ -103,3 +103,41 @@ def test_proxy_rejects_oversized_upload(monkeypatch):
     r = c.post("/voice/stream", files={"data": ("q.wav", big, "audio/wav")},
                data={"language": "russian"})
     assert r.status_code == 413
+
+
+# ---------------------------------------------------------------------------
+# Номер киоска: страница шлёт его полем `kiosk`, прокси обязан донести до
+# бэкенда — иначе в логах 20 точек снова сольются в одну кучу.
+# ---------------------------------------------------------------------------
+
+def test_proxy_forwards_kiosk_id(monkeypatch):
+    seen = {}
+
+    class _Capturing(_FakeClient):
+        def stream(self, method, url, **kw):
+            seen.update(kw.get("data") or {})
+            return _FakeStream([json.dumps({"type": "end"})])
+
+    monkeypatch.setattr(video_ui.httpx, "AsyncClient", lambda *a, **k: _Capturing())
+    c = TestClient(video_ui.app)
+    r = c.post("/voice/stream", files={"data": ("q.wav", b"RIFFfake", "audio/wav")},
+               data={"language": "russian", "kiosk": "astana-01"})
+    assert r.status_code == 200
+    assert seen.get("kiosk") == "astana-01"
+
+
+def test_proxy_omits_kiosk_when_not_sent(monkeypatch):
+    """Без номера поле не появляется — бэкенд отличает «не прислали» от пустого."""
+    seen = {}
+
+    class _Capturing(_FakeClient):
+        def stream(self, method, url, **kw):
+            seen.update({"data": kw.get("data") or {}})
+            return _FakeStream([json.dumps({"type": "end"})])
+
+    monkeypatch.setattr(video_ui.httpx, "AsyncClient", lambda *a, **k: _Capturing())
+    c = TestClient(video_ui.app)
+    r = c.post("/voice/stream", files={"data": ("q.wav", b"RIFFfake", "audio/wav")},
+               data={"language": "russian"})
+    assert r.status_code == 200
+    assert "kiosk" not in seen["data"]

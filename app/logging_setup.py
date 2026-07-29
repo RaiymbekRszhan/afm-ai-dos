@@ -118,6 +118,9 @@ def record_interaction(
     *,
     request_id: str,
     lang: str,
+    # Номер точки (20 киосков в пилоте): без него по логам не понять, какая
+    # молчит и на какой сыплется STT. Чистится в app.main._clean_kiosk.
+    kiosk: str | None = None,
     question: str | None = None,
     answer: str | None = None,
     corrected: bool = False,
@@ -143,9 +146,9 @@ def record_interaction(
     ops = logging.getLogger("ai_dos.api")
     # Человекочитаемая строка в journald (быстро глазами по journalctl).
     ops.info(
-        "interaction lang=%s stt=%sms rag=%sms tts=%sms first=%sms total=%sms "
+        "interaction kiosk=%s lang=%s stt=%sms rag=%sms tts=%sms first=%sms total=%sms "
         "found=%s suggest=%s print=%s provider=%s error=%s",
-        lang, stt_ms, rag_ms, tts_ms, tts_first_ms, total_ms,
+        kiosk or "-", lang, stt_ms, rag_ms, tts_ms, tts_first_ms, total_ms,
         answer_found, int(suggested), ",".join(print_ids or []) or "-",
         provider or "-", error or "-",
     )
@@ -154,6 +157,7 @@ def record_interaction(
     rec = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "id": request_id,
+        "kiosk": kiosk,
         "lang": lang,
         "question": _redact_question(question),
         "corrected": corrected,

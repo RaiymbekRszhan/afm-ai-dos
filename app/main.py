@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from time import perf_counter
@@ -219,11 +220,29 @@ async def speak_endpoint(req: SpeakRequest):
         logging_setup.reset_request_id(token)
 
 
-def _new_record(rid: str, lang: str) -> dict:
+_KIOSK_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _clean_kiosk(kiosk: str | None) -> str | None:
+    """Номер точки из запроса -> безопасная метка для логов (или None).
+
+    Значение приходит от киоска, то есть снаружи: в journald и в JSONL оно
+    попадает как есть, поэтому перевод строки в нём подделал бы соседнюю запись
+    (log injection), а длинная строка раздула бы каждую строку аналитики.
+    Оставляем буквы/цифры/`._-` и режем до 32 символов — этого хватает на
+    `astana-01` и на `%COMPUTERNAME%`."""
+    if not kiosk:
+        return None
+    cleaned = _KIOSK_RE.sub("", kiosk)[:32]
+    return cleaned or None
+
+
+def _new_record(rid: str, lang: str, kiosk: str | None = None) -> dict:
     """Заготовка строки аналитики: собирается по ходу, пишется один раз в finally
     (в т.ч. на пути ошибки — видно, какая стадия упала и сколько заняла)."""
     return {
-        "request_id": rid, "lang": lang, "provider": tts._provider_for(lang),
+        "request_id": rid, "lang": lang, "kiosk": _clean_kiosk(kiosk),
+        "provider": tts._provider_for(lang),
         "corrected": False, "suggested": False, "print_ids": [], "answer_found": None,
         "question": None, "answer": None,
         "stt_ms": None, "rag_ms": None, "tts_ms": None, "tts_first_ms": None,
@@ -315,6 +334,8 @@ async def voice_endpoint(
     data: UploadFile = File(...),
     language: str = Form(default=None),
     suggest: str = Form(default=None),
+    # Номер точки (20 киосков в пилоте) — только метка для логов, на ответ не влияет.
+    kiosk: str = Form(default=None),
 ):
     """Полный пайплайн: аудио → STT → RAG+LLM → (TTS). Ответ — ОДНИМ JSON.
 
@@ -334,7 +355,7 @@ async def voice_endpoint(
     rid = uuid.uuid4().hex[:8]
     audio = await _read_upload(data)  # может дать 413 ДО старта пайплайна — не логируем
     lang = language or settings.stt_default_language
-    rec = _new_record(rid, lang)
+    rec = _new_record(rid, lang, kiosk)
     token = logging_setup.set_request_id(rid)
     t_start = perf_counter()
     try:
@@ -387,6 +408,7 @@ async def voice_stream_endpoint(
     data: UploadFile = File(...),
     language: str = Form(default=None),
     suggest: str = Form(default=None),
+    kiosk: str = Form(default=None),
 ):
     """То же, что `/voice`, но ответ идёт ПОТОКОМ — NDJSON, по строке на событие.
 
@@ -408,7 +430,7 @@ async def voice_stream_endpoint(
     rid = uuid.uuid4().hex[:8]
     audio = await _read_upload(data)
     lang = language or settings.stt_default_language
-    rec = _new_record(rid, lang)
+    rec = _new_record(rid, lang, kiosk)
     token = logging_setup.set_request_id(rid)
     t_start = perf_counter()
 

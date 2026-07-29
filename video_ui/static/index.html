@@ -252,6 +252,14 @@ const params = new URLSearchParams(location.search);
 const KIOSK = params.get("kiosk") === "1";
 if (KIOSK) document.body.classList.add("kiosk");
 
+// ---------- номер киоска (?id=astana-01) ----------
+// Точек в пилоте два десятка, и в логах они были неразличимы: непонятно, какая
+// молчит вторые сутки, а на какой сыплется STT. Номер приходит параметром URL
+// (kiosk-start.bat подставляет туда %COMPUTERNAME%) и уезжает полем `kiosk`
+// с каждым вопросом. Чистим тут же: в лог сервера попадёт чужая строка, а
+// переводы строк/длинный мусор ломали бы JSONL — оставляем буквы, цифры, ._-
+const KIOSK_ID = (params.get("id") || "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32);
+
 // ---------- потоковая озвучка (?stream=1) ----------
 // Обычный путь: ждём ВЕСЬ WAV (на длинном ответе это 6–20 c тишины у киоска).
 // Потоковый: текст на экран сразу, звук — кусками по мере синтеза, первый звук
@@ -746,6 +754,8 @@ async function stopAndSend() {
   // Подсказка с прошлого ответа («возможно, вы хотели спросить…»): бэкенд по ней
   // поймёт, что реплика «да» = согласие ответить на исправленный вопрос.
   if (pendingSuggest) fd.append("suggest", pendingSuggest);
+  // Номер точки — в аналитику (поле `kiosk` в interactions.jsonl и в journald).
+  if (KIOSK_ID) fd.append("kiosk", KIOSK_ID);
   try {
     if (STREAM_TTS) { await askStreaming(fd, askedLang); return; }
     // /voice тут — прокси на рабочий бэкенд (:8000). Контракт — JSON-тело (N5):

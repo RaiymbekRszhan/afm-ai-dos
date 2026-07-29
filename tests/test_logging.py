@@ -130,3 +130,44 @@ def test_error_path_is_recorded(client, monkeypatch):
     assert isinstance(rec["stt_ms"], int)               # стадия STT замерена
     assert rec["rag_ms"] is None                         # RAG не дошёл до замера
     assert isinstance(rec["total_ms"], int)             # общий тайминг записан всегда
+
+
+# ---------------------------------------------------------------------------
+# Номер киоска (20 точек в пилоте): метка из запроса должна доезжать до JSONL,
+# но она приходит СНАРУЖИ — значит, чистится, иначе перевод строки в ней
+# подделал бы соседнюю запись лога (log injection), а длинная строка раздула бы
+# каждую запись.
+# ---------------------------------------------------------------------------
+
+def test_kiosk_id_lands_in_jsonl(client):
+    files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
+    r = client.post("/voice", files=files,
+                    data={"language": "russian", "kiosk": "astana-01"})
+    assert r.status_code == 200
+    assert _read_jsonl(client._log_dir)[0]["kiosk"] == "astana-01"
+
+
+def test_kiosk_id_absent_is_none(client):
+    assert _post_voice(client).status_code == 200
+    assert _read_jsonl(client._log_dir)[0]["kiosk"] is None
+
+
+def test_kiosk_id_is_sanitized(client):
+    files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
+    dirty = "astana\n{\"id\":\"fake\"} 01" + "x" * 60      # перевод строки + длина
+    r = client.post("/voice", files=files,
+                    data={"language": "russian", "kiosk": dirty})
+    assert r.status_code == 200
+    rows = _read_jsonl(client._log_dir)                    # одна строка, а не две
+    assert len(rows) == 1
+    kiosk = rows[0]["kiosk"]
+    assert "\n" not in kiosk and '"' not in kiosk and len(kiosk) <= 32
+
+
+def test_kiosk_id_only_junk_is_none(client):
+    """Мусор без единого разрешённого символа = метки нет (а не пустая строка)."""
+    files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
+    r = client.post("/voice", files=files,
+                    data={"language": "russian", "kiosk": "«»\n\t "})
+    assert r.status_code == 200
+    assert _read_jsonl(client._log_dir)[0]["kiosk"] is None

@@ -416,6 +416,50 @@ eleven — split routing на киоск-машине.
 
 ---
 
+## Много киосков (пилот — 20 точек)
+
+Сервер один, киоски — тонкие клиенты: браузер на `http://СЕРВЕР/?kiosk=1`.
+Ставить на них нечего (ни Python, ни venv) — только `deploy/kiosk-start.bat`
+и ярлык на него в автозагрузке (`Win+R` → `shell:startup`).
+
+**Файл на всех точках ОДИН И ТОТ ЖЕ.** Номер киоска берётся из имени машины
+(`%COMPUTERNAME%`) и уезжает в URL параметром `id=`, поэтому редактировать
+`.bat` на каждой точке не нужно. Имена машин безликие (`WIN-8KJ2…`) — положи
+рядом с `.bat` файл `kiosk-id.txt` с одной строкой вроде `astana-01`, он
+перебьёт имя машины.
+
+⚠️ **Переводы строк.** `.bat` должен доехать до Windows с CRLF (в репозитории
+это держит `.gitattributes`). Скачаешь файл кнопкой «Raw» с GitHub — получишь
+LF, и cmd.exe споткнётся на метках: `The system cannot find the batch label
+specified - waitloop`. Бери файл из checkout'а на Windows либо конвертируй
+(Notepad++ → *Конец строк → Windows*).
+
+**Перед раскаткой по филиалам** проверь с самой киоск-машины, что сервер виден
+из её сети (это WAN, а не соседняя розетка):
+```cmd
+ping СЕРВЕР
+curl http://СЕРВЕР/health
+```
+
+**Ёмкость.** Все точки бьют в один бэкенд, и одновременных обращений он
+обслуживает `MAX_CONCURRENT_VOICE` (дефолт **2**, [app/config.py](app/config.py)) —
+семафор охватывает весь путь STT→RAG→TTS, остальные ждут очереди. Ориентир по
+логам: русский ответ ~2-4 с, казахский на Spark ~13 с. При 1-3 одновременных
+говорящих дефолта хватает; прежде чем поднимать лимит — замерь, сколько
+параллельных запросов держит TTS-нода (её и защищает семафор).
+
+**Кто и как работает — по точкам:**
+```bash
+.venv/bin/python -m scripts.interactions_report --dir logs --days 7
+```
+Раздел «По киоскам» покажет по строке на точку: обращений, доля «нет в базе»,
+ошибки, медиана полного цикла. Точка без обращений за сутки — повод сходить
+посмотреть, жив ли экран; аномальная доля «нет в базе» на одной точке при
+нормальной на других — обычно микрофон (шум, не тот вход по умолчанию).
+В journald тот же номер: `journalctl -u ai-dos-api | grep 'kiosk=astana-01'`.
+
+---
+
 ## Логи и аналитика
 
 Два независимых потока (реализация — `app/logging_setup.py`):
@@ -425,8 +469,8 @@ eleven — split routing на киоск-машине.
   journalctl -u ai-dos-api -f                    # живой поток
   journalctl -u ai-dos-api | grep interaction    # строки по каждому /voice
   ```
-  Пример строки: `interaction lang=ru stt=320ms rag=1450ms tts=2100ms total=3.9s found=True suggest=0 print=fl provider=f5 error=-`. Ротацию journald держит сам (`SystemMaxUse` в `journald.conf`).
-- **Аналитика — по строке JSONL на каждый `/voice`** в `logs/interactions.jsonl` (суточная ротация, `backupCount=LOG_RETENTION_DAYS` → старые файлы **сами удаляются = ретеншен**). Поля: `question`, `answer`, `lang`, `answer_found`, `suggested`, `print_ids`, `provider`, тайминги стадий, `error`.
+  Пример строки: `interaction kiosk=astana-01 lang=ru stt=320ms rag=1450ms tts=2100ms total=3.9s found=True suggest=0 print=fl provider=f5 error=-` (`kiosk=-`, если точка не прислала номер). Ротацию journald держит сам (`SystemMaxUse` в `journald.conf`).
+- **Аналитика — по строке JSONL на каждый `/voice`** в `logs/interactions.jsonl` (суточная ротация, `backupCount=LOG_RETENTION_DAYS` → старые файлы **сами удаляются = ретеншен**). Поля: `kiosk` (номер точки), `question`, `answer`, `lang`, `answer_found`, `suggested`, `print_ids`, `provider`, тайминги стадий, `error`.
 
 ⚠️ **`logs/` содержит ПДн граждан** — в git не коммитится (`.gitignore`), с сервера наружу не выносить без согласования.
 

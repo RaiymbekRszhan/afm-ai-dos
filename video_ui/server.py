@@ -110,7 +110,7 @@ async def health():
 
 @app.post("/voice")
 async def voice(data: UploadFile = File(...), language: str = Form("russian"),
-                suggest: str = Form(default=None)):
+                suggest: str = Form(default=None), kiosk: str = Form(default=None)):
     """Вопрос → рабочий бэкенд (:8000) → JSON-ответ (текст + аудио в base64).
 
     Тело прокидываем как есть: контракт /voice бэкенда — JSON
@@ -134,6 +134,9 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
     form = {"language": language}
     if suggest:
         form["suggest"] = suggest
+    # Номер точки (?id= на странице) — только в аналитику бэкенда; на ответ не влияет.
+    if kiosk:
+        form["kiosk"] = kiosk
     try:
         async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as c:
             r = await c.post(BACKEND + "/voice", files=files, data=form)
@@ -157,7 +160,7 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
 
 @app.post("/voice/stream")
 async def voice_stream(data: UploadFile = File(...), language: str = Form("russian"),
-                       suggest: str = Form(default=None)):
+                       suggest: str = Form(default=None), kiosk: str = Form(default=None)):
     """То же, что /voice, но ответ бэкенда льётся ПОТОКОМ (NDJSON) — насквозь.
 
     Смысл потока в том, что первая строка (текст) и первый кусок озвучки
@@ -176,6 +179,8 @@ async def voice_stream(data: UploadFile = File(...), language: str = Form("russi
     form = {"language": language}
     if suggest:
         form["suggest"] = suggest
+    if kiosk:
+        form["kiosk"] = kiosk
 
     async def relay():
         # Клиент httpx живёт ВНУТРИ генератора: закроется вместе с потоком (в

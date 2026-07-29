@@ -116,6 +116,30 @@ def main() -> None:
     print(_lat_line("tts", [r.get("tts_ms") for r in ok]))
     print()
 
+    # Разбивка по точкам: при двух десятках киосков средние числа врут — одна
+    # мёртвая точка (0 обращений) или одна проблемная (все вопросы в fallback)
+    # в общей куче не видна. Строка на киоск: сколько спрашивали, сколько
+    # промахов по базе, сколько ошибок, медиана полного цикла.
+    by_kiosk = Counter(r.get("kiosk") or "-" for r in rows)
+    if len(by_kiosk) > 1 or "-" not in by_kiosk:
+        print("По киоскам:")
+        # Ширина колонки — по самому длинному номеру (%COMPUTERNAME% бывает
+        # длиннее «astana-01»), иначе таблица разъезжается ровно там, где её
+        # читают глазами.
+        w = max(10, min(32, max(len(k) for k in by_kiosk)))
+        print(f"  {'киоск':<{w}} {'обращений':>9} {'нет в базе':>12} {'ошибок':>7} {'total p50':>10}")
+        for kid, n in by_kiosk.most_common():
+            k_rows = [r for r in rows if (r.get("kiosk") or "-") == kid]
+            k_ok = [r for r in k_rows if not r.get("error")]
+            k_fb = [r for r in k_ok if r.get("answer_found") is False]
+            k_err = [r for r in k_rows if r.get("error")]
+            # is not None, а не «истинность»: total_ms=0 (быстрый мок/кэш) — это
+            # значение, а не отсутствие замера.
+            p50 = _percentile([r["total_ms"] for r in k_ok if r.get("total_ms") is not None], 50)
+            print(f"  {kid:<{w}} {n:>9} {len(k_fb):>6} {_pct(len(k_fb), len(k_ok)):>5}"
+                  f" {len(k_err):>7} {(f'{p50} мс') if p50 is not None else '—':>10}")
+        print()
+
     # Топ вопросов (только если тексты писались — log_questions=full).
     questions = [r["question"] for r in rows if r.get("question")]
     if questions:
