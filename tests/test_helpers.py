@@ -501,3 +501,58 @@ def test_looks_degenerate_ignores_short_replies():
 def test_not_recognized_phrase_by_language():
     assert "микрофон" in service.not_recognized_phrase("russian").lower()
     assert "микрофон" in service.not_recognized_phrase("kazakh").lower()
+
+
+# ---------------------------------------------------------------------------
+# Шум, принятый за речь. Клиентский детектор (vad.js) пропускает то, что реально
+# звучало, но движок STT превращает шум в обрывки: «Пи», «Псссссссс», а на
+# полной тишине — в куски субтитров («Продолжение следует.»). Все примеры —
+# с живого киоска 29.07.
+# ---------------------------------------------------------------------------
+
+def test_not_speech_known_artifacts():
+    assert service.looks_not_speech("Продолжение следует.") is True
+    assert service.looks_not_speech("Редактор субтитров А.Семкин Корректор А.Кулакова") is True
+    assert service.looks_not_speech("Спасибо за просмотр!") is True
+
+
+def test_not_speech_char_run():
+    assert service.looks_not_speech("Псссссссссссссс") is True
+    assert service.looks_not_speech("Аааааа") is True
+
+
+def test_not_speech_too_short():
+    assert service.looks_not_speech("Пи") is True
+    assert service.looks_not_speech("") is True
+    assert service.looks_not_speech("   ") is True
+
+
+def test_not_speech_keeps_affirmative():
+    """«Да»/«иә» — рабочая реплика в диалоге уточнения, не шум."""
+    assert service.looks_not_speech("да") is False
+    assert service.looks_not_speech("иә") is False
+
+
+def test_not_speech_keeps_real_questions():
+    for q in ("Какие штрафы за неуплату налогов?",
+              "Кто является субъектами финансового мониторинга?",
+              "Штраф",                       # одно слово, но осмысленное
+              "Қаржы мониторингі субъектілері кім?"):
+        assert service.looks_not_speech(q) is False, q
+
+
+def test_degenerate_short_full_loop():
+    """«Тихо, тихо, тихо» — вся реплика из повторов, слов мало (с киоска 29.07)."""
+    assert service.looks_degenerate("Тихо, тихо, тихо.") is True
+    assert service.looks_degenerate("деду, деду, деду") is True
+
+
+def test_degenerate_keeps_affirmative_repeats():
+    """«Да, да, да» — согласие на уточнение, отшивать нельзя."""
+    assert service.looks_degenerate("да, да, да") is False
+    assert service.looks_degenerate("иә, иә, иә") is False
+
+
+def test_degenerate_keeps_normal_question_with_repeat():
+    """Повтор внутри осмысленного вопроса — не петля."""
+    assert service.looks_degenerate("Какие штрафы, какие сроки по ПОД ФТ?") is False

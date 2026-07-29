@@ -284,7 +284,7 @@ async def _answer_pipeline(audio: bytes, filename: str, content_type: str,
     # в RAG не идём вовсе — просим повторить (аватар это проговорит).
     # ⚠️ Оцениваем ИСХОДНЫЙ текст: после схлопывания петля выглядит нормальным
     # коротким вопросом, и проверка бы не срабатывала никогда.
-    degenerate = service.looks_degenerate(question)
+    degenerate = service.looks_degenerate(question) or service.looks_not_speech(question)
     question = service.collapse_repeats(question)
     if degenerate:
         rec["question"] = question
