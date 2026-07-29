@@ -456,3 +456,48 @@ def test_resolve_lang():
 def test_health_url_derived_from_ask():
     assert rag._health_url().endswith("/health")
     assert "/ask" not in rag._health_url()
+
+
+# ---------------------------------------------------------------------------
+# Петли распознавания. На шуме движок STT залипает и выдаёт одно слово десятки
+# раз («Елбасы, елбасы, елбасы…» — реальный случай с киоска 29.07). Такой
+# «вопрос» уезжал в RAG целиком и разворачивался простынёй на экране.
+# ---------------------------------------------------------------------------
+
+def test_collapse_repeats_single_word():
+    text = "Елбасы, " * 30 + "елбасы"
+    assert service.collapse_repeats(text) == "Елбасы,"
+
+
+def test_collapse_repeats_phrase():
+    assert service.collapse_repeats("деду, деду, деду, деду вот ему") == "деду, вот ему"
+    assert service.collapse_repeats("тихо тихо тихо") == "тихо"
+
+
+def test_collapse_repeats_keeps_normal_question():
+    q = "Какие штрафы за невыполнение требований ПОД ФТ?"
+    assert service.collapse_repeats(q) == q
+
+
+def test_collapse_repeats_keeps_double_word():
+    """Два повтора — не петля: «очень очень важно» человек может сказать."""
+    assert service.collapse_repeats("это очень очень важно") == "это очень очень важно"
+
+
+def test_looks_degenerate_on_loop():
+    assert service.looks_degenerate("елбасы " * 40) is True
+
+
+def test_looks_degenerate_false_on_real_question():
+    assert service.looks_degenerate(
+        "Кто является субъектами финансового мониторинга в Республике Казахстан?") is False
+
+
+def test_looks_degenerate_ignores_short_replies():
+    """«Да, да, да» — согласие, а не петля: коротким репликам верим."""
+    assert service.looks_degenerate("да, да, да") is False
+
+
+def test_not_recognized_phrase_by_language():
+    assert "микрофон" in service.not_recognized_phrase("russian").lower()
+    assert "микрофон" in service.not_recognized_phrase("kazakh").lower()

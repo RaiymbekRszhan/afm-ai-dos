@@ -277,6 +277,23 @@ async def _answer_pipeline(audio: bytes, filename: str, content_type: str,
         raise HTTPException(status_code=400,
                             detail="Не удалось распознать речь. Повторите вопрос.")
 
+    # Движок STT на шуме уходит в петлю («Елбасы, елбасы, елбасы…» ×50 в логах
+    # киоска 29.07). Схлопываем повторы ДО всего остального: и поиск идёт по
+    # осмысленному тексту, и на экране вопрос вместо простыни, и в аналитике
+    # читаемая строка. Если после схлопывания видно, что это была именно петля,
+    # в RAG не идём вовсе — просим повторить (аватар это проговорит).
+    # ⚠️ Оцениваем ИСХОДНЫЙ текст: после схлопывания петля выглядит нормальным
+    # коротким вопросом, и проверка бы не срабатывала никогда.
+    degenerate = service.looks_degenerate(question)
+    question = service.collapse_repeats(question)
+    if degenerate:
+        rec["question"] = question
+        rec["answer_found"] = False
+        answer = service.not_recognized_phrase(lang)
+        rec["answer"] = answer
+        log.info("STT-петля: вопрос не распознан, отвечаем просьбой повторить")
+        return question, answer, None, []
+
     # «Да» в ответ на наше «возможно, вы хотели спросить …?» — отвечаем на
     # исправленный вопрос. Любая другая реплика — обычный новый вопрос.
     suggest_used = False

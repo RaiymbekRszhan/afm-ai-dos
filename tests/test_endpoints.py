@@ -185,3 +185,42 @@ def test_voice_upload_too_large(client, monkeypatch):
     files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
     r = client.post("/voice", files=files, data={"language": "russian"})
     assert r.status_code == 413
+
+
+def test_voice_stt_loop_asks_to_repeat(client, monkeypatch):
+    """Петля распознавания («Елбасы×50») -> в RAG не идём, просим повторить.
+
+    Реальный случай с киоска 29.07: движок STT залип на шуме, «вопрос» уехал в
+    поиск целиком и развернулся простынёй на экране, а гражданин получил
+    случайный ответ по базе."""
+    from app.clients import rag, stt
+
+    called = {"rag": 0}
+
+    async def loop_transcribe(audio, filename, language=None, content_type="audio/wav"):
+        return "Елбасы, " * 40 + "елбасы"
+
+    async def counting_ask(question, language=None, with_sources=True):
+        called["rag"] += 1
+        return {"answer": "не должно вызываться", "sources": ""}
+
+    monkeypatch.setattr(stt, "transcribe", loop_transcribe)
+    monkeypatch.setattr(rag, "ask", counting_ask)
+    files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
+    r = client.post("/voice", files=files, data={"language": "russian"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert called["rag"] == 0                          # поиск по мусору не запускали
+    assert "не расслышал" in body["answer"].lower()    # аватар просит повторить
+    assert len(body["question"]) < 40                  # на экране не простыня
+    assert body["suggest"] is None
+    assert body["print"] == []
+
+
+def test_voice_normal_question_untouched(client):
+    """Обычный вопрос схлопывание повторов не трогает (регрессия к предыдущему)."""
+    files = {"data": ("a.wav", wav_bytes(), "audio/wav")}
+    r = client.post("/voice", files=files, data={"language": "russian"})
+    assert r.status_code == 200
+    assert "не расслышал" not in r.json()["answer"].lower()
