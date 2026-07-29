@@ -19,7 +19,7 @@ import json
 import os
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -93,6 +93,52 @@ async def favicon():
     if os.path.exists(path):
         return FileResponse(path, media_type="image/png")
     return Response(status_code=204)
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_page():
+    """Админка «статус + рубильник».
+
+    Живёт здесь, а не на :8000, по вынужденной причине: оркестратор на сервере
+    закрыт на 127.0.0.1, и снаружи его никто не откроет. Сама проверка токена —
+    на бэкенде: страница только рисует, решает доступ он.
+    """
+    return FileResponse(os.path.join(_STATIC_DIR, "admin.html"))
+
+
+@app.post("/kiosk/ping")
+async def kiosk_ping(kiosk: str = Form(default=None)):
+    """Heartbeat киоска — насквозь на бэкенд. Сбой сети не должен ломать
+    страницу: молчим 503, страница просто попробует в следующий раз."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(BACKEND + "/kiosk/ping", data={"kiosk": kiosk or ""})
+    except Exception:
+        raise HTTPException(status_code=503, detail="Бэкенд недоступен.")
+    return Response(content=r.content, status_code=r.status_code,
+                    media_type=r.headers.get("content-type", "application/json"))
+
+
+@app.api_route("/admin/kiosks", methods=["GET", "POST"], include_in_schema=False)
+async def admin_kiosks(request: Request):
+    """API админки — насквозь на бэкенд вместе с токеном.
+
+    Токен НЕ проверяем здесь: единственный источник правды — оркестратор,
+    иначе получится два места, где решается доступ, и они разойдутся.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            if request.method == "GET":
+                r = await c.get(BACKEND + "/admin/kiosks",
+                                params=dict(request.query_params))
+            else:
+                r = await c.post(BACKEND + "/admin/kiosks",
+                                 data=dict(await request.form()))
+    except Exception as e:
+        print(f"[video_ui] backend {BACKEND} недоступен: {e!r}")
+        raise HTTPException(status_code=502, detail="Рабочий бэкенд недоступен.")
+    return Response(content=r.content, status_code=r.status_code,
+                    media_type=r.headers.get("content-type", "application/json"))
 
 
 @app.get("/health")

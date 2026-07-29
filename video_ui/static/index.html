@@ -881,9 +881,52 @@ function handleStreamEvent(ev, askedLang) {
 }
 
 btn.onclick = () => {
+  if (blockedMessage) return;      // точка отключена оператором — записывать нечего
   primeAudio();                    // снимаем autoplay-блок внутри жеста
   if (recording) stopAndSend(); else startRecording();
 };
+
+// ---------- пинг: точка отмечается живой и узнаёт, не отключили ли её ----------
+// Два дела за один дешёвый запрос. Без него сервер до первого вопроса не знает,
+// жива ли точка вообще (погасшую видно только по ОТСУТСТВИЮ строк в отчёте), а
+// гражданин узнаёт об отключении лишь ПОСЛЕ того, как подошёл, нажал и
+// продиктовал вопрос.
+let blockedMessage = null;
+let pingTimer = null;
+
+function applyBlocked(message) {
+  if (message === blockedMessage) return;   // ничего не изменилось — не дёргаем экран
+  blockedMessage = message;
+  if (message) {
+    btn.disabled = true;
+    out.className = "";
+    out.textContent = message;
+  } else {
+    btn.disabled = false;
+    showIdle();
+  }
+}
+
+async function pingServer() {
+  let next = 60;
+  try {
+    const fd = new FormData();
+    fd.append("kiosk", KIOSK_ID);
+    const r = await fetch("/kiosk/ping", { method: "POST", body: fd });
+    if (r.ok) {
+      const s = await r.json();
+      applyBlocked(s.enabled ? null : (s.message || ""));
+      next = s.ping_seconds || next;
+    }
+    // Сеть моргнула или бэкенд лежит — молчим: киоск не должен пугать
+    // гражданина сообщением из-за одного неудачного пинга. Экран поменяется,
+    // только когда сервер ЯВНО скажет, что точка отключена.
+  } catch (e) { /* киоск не падает из-за пинга */ }
+  pingTimer = setTimeout(pingServer, Math.max(15, next) * 1000);
+}
+
+// Без номера точки heartbeat бессмыслен: серверу нечего запоминать.
+if (KIOSK_ID) pingServer();
 </script>
 </body>
 </html>

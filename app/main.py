@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from time import perf_counter
@@ -146,6 +147,63 @@ async def health():
     }
 
 
+@app.post("/kiosk/ping")
+async def kiosk_ping(kiosk: str = Form(default=None)):
+    """Точка отмечается живой и узнаёт, не отключили ли её.
+
+    Два дела за один дешёвый запрос. Первое — heartbeat: без него погасшую точку
+    видно только по ОТСУТСТВИЮ строк в отчёте, то есть постфактум и на глаз.
+    Второе — киоск узнаёт об отключении ДО того, как гражданин заговорит: иначе
+    он подойдёт, нажмёт, продиктует вопрос и только потом получит отказ.
+    """
+    kiosk_id = _clean_kiosk(kiosk)
+    kiosks.touch_ping(kiosk_id)
+    blocked = kiosks.disabled_message(kiosk_id)
+    return {
+        "enabled": blocked is None,
+        "message": blocked or "",
+        "ping_seconds": settings.kiosk_ping_seconds,
+    }
+
+
+@app.get("/admin/kiosks")
+async def admin_kiosks(token: str = None):
+    """Состояние флота для админки: кто жив, кто отключён."""
+    _require_admin(token)
+    return {
+        "kiosks": kiosks.status_rows(),
+        "maintenance": kiosks.maintenance_message(),
+        "offline_after_s": settings.kiosk_offline_after_s,
+    }
+
+
+@app.post("/admin/kiosks")
+async def admin_set_kiosk(
+    token: str = Form(default=None),
+    kiosk: str = Form(...),
+    enabled: bool = Form(...),
+    message: str = Form(default=""),
+):
+    """Включить/выключить точку из админки.
+
+    Пишем в тот же `kiosks-disabled.txt`, что правят руками по ssh: два пути
+    управления одним состоянием разошлись бы в первый же день.
+    """
+    _require_admin(token)
+    kiosk_id = kiosk if kiosk == kiosks.ALL else _clean_kiosk(kiosk)
+    if not kiosk_id:
+        raise HTTPException(status_code=400, detail="Не указана точка.")
+    try:
+        kiosks.set_enabled(kiosk_id, enabled, message)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        log.warning("не записал список отключённых киосков: %r", e)
+        raise HTTPException(status_code=500, detail="Не удалось сохранить список.")
+    log.info("admin: киоск %s -> %s", kiosk_id, "включён" if enabled else "отключён")
+    return {"kiosks": kiosks.status_rows(), "maintenance": kiosks.maintenance_message()}
+
+
 @app.post("/transcribe", response_model=TranscribeResponse)
 async def transcribe_endpoint(
     data: UploadFile = File(...),
@@ -235,6 +293,19 @@ def _clean_kiosk(kiosk: str | None) -> str | None:
         return None
     cleaned = _KIOSK_RE.sub("", kiosk)[:32]
     return cleaned or None
+
+
+def _require_admin(token: str | None) -> None:
+    """Админка живёт на киоск-странице, а её видят все 20 регионов на :80.
+
+    Пустой ADMIN_TOKEN = админки нет вовсе (404, а не 401): не подсказываем, что
+    тут вообще есть что открывать. Сравнение через compare_digest — токен
+    короткий, и перебор по времени ответа тут не нужен никому.
+    """
+    if not settings.admin_token:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not token or not secrets.compare_digest(token, settings.admin_token):
+        raise HTTPException(status_code=403, detail="Неверный токен администратора.")
 
 
 def _new_record(rid: str, lang: str, kiosk: str | None = None) -> dict:
@@ -376,6 +447,8 @@ async def voice_endpoint(
     token = logging_setup.set_request_id(rid)
     t_start = perf_counter()
     try:
+        # Вопрос = точка жива, даже если она старой версии и не умеет пинговать.
+        kiosks.touch_ask(rec["kiosk"])
         # Точка отключена оператором — разворачиваем ДО STT/RAG/TTS: платить за
         # облако и держать слот семафора ради отказа незачем. Обращение при этом
         # логируется (error=disabled): полезно видеть, что у погашенной точки
@@ -463,6 +536,7 @@ async def voice_stream_endpoint(
         rec["total_ms"] = _ms(t_start)
         logging_setup.record_interaction(**rec)
 
+    kiosks.touch_ask(rec["kiosk"])
     # Тот же рубильник, что и в /voice: до потока ошибка отдаётся обычным HTTP.
     blocked = kiosks.disabled_message(rec["kiosk"])
     if blocked:

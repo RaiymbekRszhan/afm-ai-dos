@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Ai-dos — киоски</title>
+<!--
+  Админка флота: кто жив и кто отключён.
+
+  Открывается с токеном в адресе: /admin?token=…  Токен НЕ проверяется здесь —
+  единственный источник правды оркестратор (ADMIN_TOKEN), страница только
+  рисует. Отсюда же следствие: ссылка = пароль, пересылать её нельзя.
+
+  Без внешних библиотек: сеть АФМ без интернета, CDN недоступны.
+-->
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --line: #30363d; --text: #e6edf6;
+    --muted: #8b949e; --ok: #3fb950; --off: #f85149; --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+         margin-bottom: 16px; }
+  button { font: inherit; color: var(--text); background: #21262d;
+           border: 1px solid var(--line); border-radius: 6px;
+           padding: 7px 14px; cursor: pointer; }
+  button:hover { border-color: #8b949e; }
+  button[disabled] { opacity: .5; cursor: default; }
+  button.off { background: #4c1a17; border-color: #7d2a24; }
+  button.on  { background: #12341c; border-color: #1f6f34; }
+  .maint { background: #3a2d0b; border: 1px solid var(--warn);
+           border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+       color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         margin-right: 7px; vertical-align: middle; }
+  .live { background: var(--ok); }
+  .dead { background: var(--off); }
+  .never { background: var(--line); }
+  .id { color: var(--muted); font-size: 12px; }
+  .msg { color: var(--warn); font-size: 13px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .err { background: #4c1a17; border: 1px solid #7d2a24; border-radius: 8px;
+         padding: 12px 14px; margin-bottom: 16px; }
+  @media (max-width: 720px) {
+    .hide-s { display: none; }
+    .wrap { padding: 16px 10px 48px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Киоски Ai-dos</h1>
+  <div class="sub" id="sub">загружаю…</div>
+
+  <div id="err" class="err" style="display:none"></div>
+  <div id="maint" class="maint" style="display:none"></div>
+
+  <div class="bar">
+    <button id="refresh">Обновить</button>
+    <button id="allOff" class="off">Отключить ВСЕ (тех. работы)</button>
+    <button id="allOn" class="on" style="display:none">Снять тех. работы</button>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th>Точка</th>
+      <th>Связь</th>
+      <th class="num hide-s">Вопросов</th>
+      <th class="num hide-s">Последний</th>
+      <th>Состояние</th>
+      <th></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const rowsEl = document.getElementById("rows");
+const subEl = document.getElementById("sub");
+const errEl = document.getElementById("err");
+const maintEl = document.getElementById("maint");
+const allOff = document.getElementById("allOff");
+const allOn = document.getElementById("allOn");
+
+// «450 с» читается хуже, чем «7 мин»: оператор смотрит на это мельком.
+function ago(sec) {
+  if (sec === null || sec === undefined) return "—";
+  if (sec < 90) return sec + " с";
+  if (sec < 5400) return Math.round(sec / 60) + " мин";
+  return Math.round(sec / 3600) + " ч";
+}
+
+function showError(text) {
+  errEl.textContent = text;
+  errEl.style.display = text ? "" : "none";
+}
+
+async function api(method, body) {
+  const url = "/admin/kiosks" + (method === "GET" ? "?token=" + encodeURIComponent(TOKEN) : "");
+  const opt = { method };
+  if (body) { body.append("token", TOKEN); opt.body = body; }
+  const r = await fetch(url, opt);
+  if (r.status === 404) throw new Error("Админка выключена: на сервере не задан ADMIN_TOKEN.");
+  if (r.status === 403) throw new Error("Неверный токен. Проверьте ссылку.");
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.detail || ("Ошибка " + r.status));
+  }
+  return r.json();
+}
+
+function render(data) {
+  const rows = data.kiosks || [];
+  const maint = data.maintenance;
+  const live = rows.filter(r => r.online).length;
+  const off = rows.filter(r => !r.enabled).length;
+  subEl.textContent = `${rows.length} точек · на связи ${live} · отключено ${off}` +
+    ` · молчит дольше ${Math.round((data.offline_after_s || 300) / 60)} мин = не на связи`;
+
+  maintEl.style.display = maint ? "" : "none";
+  maintEl.textContent = maint ? "Тех. работы: приём остановлен на ВСЕХ точках. Текст на экранах: «" + maint + "»" : "";
+  allOff.style.display = maint ? "none" : "";
+  allOn.style.display = maint ? "" : "none";
+
+  rowsEl.innerHTML = "";
+  for (const k of rows) {
+    const tr = document.createElement("tr");
+
+    const name = document.createElement("td");
+    name.innerHTML = `${k.human}<br><span class="id">${k.kiosk}` +
+                     (k.in_fleet ? "" : " · нет в списке флота") + `</span>`;
+
+    const link = document.createElement("td");
+    const cls = k.ping_ago_s === null ? "never" : (k.online ? "live" : "dead");
+    const txt = k.ping_ago_s === null ? "не включалась"
+                                      : (k.online ? "на связи" : "молчит " + ago(k.ping_ago_s));
+    link.innerHTML = `<span class="dot ${cls}"></span>${txt}`;
+
+    const asks = document.createElement("td");
+    asks.className = "num hide-s";
+    asks.textContent = k.asks || 0;
+
+    const last = document.createElement("td");
+    last.className = "num hide-s";
+    last.textContent = ago(k.ask_ago_s);
+
+    const state = document.createElement("td");
+    state.innerHTML = k.enabled
+      ? "работает"
+      : `отключена<br><span class="msg">${k.message || ""}</span>`;
+
+    const act = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = k.enabled ? "off" : "on";
+    btn.textContent = k.enabled ? "Отключить" : "Включить";
+    // Отключена окном тех. работ, а не лично: точечная кнопка тут ничего не
+    // решит — сначала надо снять «*», иначе оператор жмёт и не понимает, почему
+    // ничего не меняется.
+    btn.disabled = !k.enabled && !k.disabled_here;
+    btn.onclick = () => toggle(k, btn);
+    act.appendChild(btn);
+
+    tr.append(name, link, asks, last, state, act);
+    rowsEl.appendChild(tr);
+  }
+}
+
+async function toggle(k, btn) {
+  const enable = !k.enabled;
+  let message = "";
+  if (!enable) {
+    message = prompt("Что показать гражданину на экране этой точки?",
+                     "Сервис временно недоступен. Приносим извинения.");
+    if (message === null) return;              // передумали
+  }
+  btn.disabled = true;
+  try {
+    const fd = new FormData();
+    fd.append("kiosk", k.kiosk);
+    fd.append("enabled", enable ? "true" : "false");
+    fd.append("message", message);
+    render(await api("POST", fd));
+    showError("");
+  } catch (e) {
+    showError(e.message);
+    btn.disabled = false;
+  }
+}
+
+async function maintenance(on) {
+  let message = "";
+  if (on) {
+    message = prompt("Текст на экранах ВСЕХ точек:",
+                     "Идут технические работы, приносим извинения.");
+    if (message === null) return;
+  }
+  try {
+    const fd = new FormData();
+    fd.append("kiosk", "*");
+    fd.append("enabled", on ? "false" : "true");
+    fd.append("message", message);
+    render(await api("POST", fd));
+    showError("");
+  } catch (e) { showError(e.message); }
+}
+
+async function load() {
+  try {
+    render(await api("GET"));
+    showError("");
+  } catch (e) {
+    showError(e.message);
+    subEl.textContent = "нет данных";
+  }
+}
+
+document.getElementById("refresh").onclick = load;
+allOff.onclick = () => maintenance(true);
+allOn.onclick = () => maintenance(false);
+load();
+// Статус живой: без автообновления оператор смотрит на устаревшую картинку и
+// думает, что точка молчит, хотя она вернулась минуту назад.
+setInterval(load, 30000);
+</script>
+</body>
+</html>

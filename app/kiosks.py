@@ -1,28 +1,40 @@
-"""Рубильник по точкам: какие киоски сейчас не принимают вопросы.
+"""Флот киосков: кто жив, кто отключён, и рубильник по точкам.
 
-Зачем: точка может быть не готова (ремонт, регион ещё не согласован) или её
-нужно временно погасить, а физически до неё — другой город. Список лежит
-ФАЙЛОМ на сервере и перечитывается по времени изменения, поэтому отключение
-региона = дописать строку. Перезапускать оркестратор не нужно: на киоске в
-этот момент может идти разговор с гражданином.
+Три вещи в одном месте, потому что это одно состояние:
 
-    # kiosks-disabled.txt в корне проекта (путь — KIOSKS_DISABLED_FILE)
+* **рубильник** — какие точки сейчас не принимают вопросы. Список лежит ФАЙЛОМ
+  (`kiosks-disabled.txt`) и перечитывается по времени изменения, поэтому его
+  можно править и руками по ssh, и из админки — оба пути видят одно и то же;
+* **heartbeat** — когда точка последний раз давала о себе знать. Страница киоска
+  пингует `/kiosk/ping`, сервер запоминает время. Без этого погасшую точку видно
+  только по отсутствию строк в отчёте, то есть постфактум и на глаз;
+* **список флота** — `deploy/kiosks.txt`, чтобы в админке были все 20 регионов
+  с человеческими названиями, включая те, что не включались ни разу.
+
+Формат файла отключений:
+
     turkestan   Киоск на ремонте до 5 августа
     zhetysu
     #vko        строка с # выключена — точка снова работает
 
-Текст после id — то, что увидит гражданин на экране. Без текста берётся
-`DEFAULT_MESSAGE`. Особый id `*` гасит приём на ВСЕХ точках сразу (окно
-обслуживания), включая запросы без номера точки.
+Текст после id — то, что увидит гражданин. Без текста берётся `DEFAULT_MESSAGE`.
+Особый id `*` гасит приём на ВСЕХ точках (окно обслуживания).
 
-⚠️ Это рубильник ЭКСПЛУАТАЦИОННЫЙ, а НЕ защита доступа. Номер точки приходит
-от браузера (`?id=` в адресе страницы) и подделывается тривиально: выключить
-свой киоск он позволяет, закрыть доступ чужому — нет. Для настоящей границы
-нужны списки IP или токен на точку.
+⚠️ Рубильник ЭКСПЛУАТАЦИОННЫЙ, а НЕ защита доступа. Номер точки приходит от
+браузера (`?id=` в адресе) и подделывается тривиально: выключить свой киоск он
+позволяет, закрыть доступ чужому — нет. Для настоящей границы нужны списки IP
+или токен на точку.
+
+⚠️ Heartbeat живёт В ПАМЯТИ процесса: после перезапуска `ai-dos-api` все точки
+покажутся молчащими, пока не придёт следующий пинг (до `KIOSK_PING_SECONDS`).
+Это осознанный размен — состояние «кто жив» дешевле пересобрать, чем хранить.
 """
 from __future__ import annotations
 
 import logging
+import os
+import re
+import time
 from pathlib import Path
 
 from app.config import settings
@@ -36,8 +48,27 @@ DEFAULT_MESSAGE = "Сервис временно недоступен. Прин�
 # Особый id: гасит все точки разом.
 ALL = "*"
 
-# Кэш: (отпечаток файла, таблица). Отпечаток None = файла нет.
+# Тот же набор символов, что у санитайзера страницы и `_clean_kiosk` в main.
+_ID_CHARS = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+
+
+def valid_id(kiosk_id: str) -> bool:
+    """`*` (окно обслуживания) либо нормальный id точки.
+
+    Кроме набора символов требуем хотя бы одну букву или цифру: id из одних
+    точек и дефисов в отчёте читается как сбой, а не как название региона.
+    """
+    if kiosk_id == ALL:
+        return True
+    return bool(_ID_CHARS.match(kiosk_id)) and any(c.isalnum() for c in kiosk_id)
+
+# Кэш файла отключений: (отпечаток, таблица). Отпечаток None = файла нет.
 _cache: tuple[tuple[int, int] | None, dict[str, str]] | None = None
+# Кэш списка флота — тот же приём.
+_fleet_cache: tuple[tuple[int, int] | None, list[tuple[str, str]]] | None = None
+
+# Живость точек: kiosk -> {"ping": ts, "ask": ts, "asks": n}. В памяти процесса.
+_seen: dict[str, dict[str, float]] = {}
 
 
 def _stamp(path: Path) -> tuple[int, int] | None:
@@ -49,6 +80,7 @@ def _stamp(path: Path) -> tuple[int, int] | None:
     return (st.st_mtime_ns, st.st_size)
 
 
+# ---------- рубильник ----------
 def _parse(text: str) -> dict[str, str]:
     table: dict[str, str] = {}
     for raw in text.splitlines():
@@ -88,7 +120,138 @@ def disabled_message(kiosk: str | None) -> str | None:
     return table.get(kiosk) if kiosk else None
 
 
+def set_enabled(kiosk_id: str, enabled: bool, message: str = "") -> None:
+    """Включить/выключить точку, сохранив остальные строки файла.
+
+    Пишем через временный файл и os.replace: читатель (соседний запрос) увидит
+    либо старую версию целиком, либо новую, но не половину.
+    """
+    if not valid_id(kiosk_id):
+        raise ValueError(f"недопустимый id точки: {kiosk_id!r}")
+    # Перевод строки в тексте разрезал бы файл и подделал соседнюю запись —
+    # ровно та же причина, по которой чистится kiosk в /voice.
+    message = " ".join(message.split()).strip()
+
+    path = Path(settings.kiosks_disabled_file)
+    try:
+        old = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        old = []
+
+    out: list[str] = []
+    found = False
+    for raw in old:
+        stripped = raw.strip()
+        body = stripped[1:].strip() if stripped.startswith("#") else stripped
+        if body and body.partition(" ")[0] == kiosk_id:
+            found = True
+            if not enabled:  # переписываем строку свежим текстом
+                out.append(f"{kiosk_id} {message}".strip())
+            continue         # включаем — строку просто убираем
+        out.append(raw)
+    if not enabled and not found:
+        out.append(f"{kiosk_id} {message}".strip())
+
+    text = "\n".join(out).strip()
+    text = text + "\n" if text else ""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+    reset_cache()
+
+
+# ---------- список флота ----------
+def _parse_fleet(text: str) -> list[tuple[str, str]]:
+    """`deploy/kiosks.txt`: строки «<id> <человеческое название>».
+
+    Разбор намеренно продублирован в scripts/make_kiosk_bundles.py: сборщик
+    архивов обязан работать на голой stdlib, без pydantic и настроек.
+    """
+    fleet: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        kiosk_id, _, human = line.partition(" ")
+        if valid_id(kiosk_id):
+            fleet.append((kiosk_id, human.strip() or kiosk_id))
+    return fleet
+
+
+def fleet() -> list[tuple[str, str]]:
+    global _fleet_cache
+    path = Path(settings.kiosks_file)
+    stamp = _stamp(path)
+    if _fleet_cache is not None and _fleet_cache[0] == stamp:
+        return _fleet_cache[1]
+    rows: list[tuple[str, str]] = []
+    if stamp is not None:
+        try:
+            rows = _parse_fleet(path.read_text(encoding="utf-8"))
+        except OSError as e:
+            log.warning("список киосков %s не прочитан: %r", path, e)
+    _fleet_cache = (stamp, rows)
+    return rows
+
+
+# ---------- heartbeat ----------
+def touch_ping(kiosk: str | None) -> None:
+    """Точка дала о себе знать (периодический пинг со страницы)."""
+    if kiosk:
+        _seen.setdefault(kiosk, {})["ping"] = time.time()
+
+
+def touch_ask(kiosk: str | None) -> None:
+    """С точки задали вопрос — она жива даже без пинга (старая версия страницы)."""
+    if not kiosk:
+        return
+    rec = _seen.setdefault(kiosk, {})
+    now = time.time()
+    rec["ping"] = now
+    rec["ask"] = now
+    rec["asks"] = rec.get("asks", 0) + 1
+
+
+def status_rows(now: float | None = None) -> list[dict]:
+    """Строки для админки: весь флот + точки, которых нет в списке, но они пингуют."""
+    now = now if now is not None else time.time()
+    table = _table()
+    maintenance = table.get(ALL)
+    known = fleet()
+    extra = sorted(set(_seen) - {k for k, _ in known})
+    rows = []
+    for kiosk_id, human in known + [(k, k) for k in extra]:
+        seen = _seen.get(kiosk_id, {})
+        own = table.get(kiosk_id)
+        ping = seen.get("ping")
+        rows.append({
+            "kiosk": kiosk_id,
+            "human": human,
+            # Точка отключена либо лично, либо общим окном обслуживания.
+            "enabled": own is None and maintenance is None,
+            "disabled_here": own is not None,
+            "message": own or maintenance or "",
+            "online": ping is not None and (now - ping) <= settings.kiosk_offline_after_s,
+            "ping_ago_s": int(now - ping) if ping else None,
+            "ask_ago_s": int(now - seen["ask"]) if seen.get("ask") else None,
+            "asks": int(seen.get("asks", 0)),
+            "in_fleet": kiosk_id not in extra,
+        })
+    return rows
+
+
+def maintenance_message() -> str | None:
+    """Текст окна обслуживания (`*`), если оно включено."""
+    return _table().get(ALL)
+
+
 def reset_cache() -> None:
-    """Забыть прочитанное (нужно тестам: они подменяют путь на лету)."""
-    global _cache
+    """Забыть прочитанное (нужно тестам и после записи файла)."""
+    global _cache, _fleet_cache
     _cache = None
+    _fleet_cache = None
+
+
+def reset_seen() -> None:
+    """Забыть живость точек (тесты)."""
+    _seen.clear()
