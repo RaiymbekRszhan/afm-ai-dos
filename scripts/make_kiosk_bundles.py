@@ -131,6 +131,17 @@ def main() -> int:
         return 0
 
     OUT.mkdir(parents=True, exist_ok=True)
+
+    # Переименовали точку — от прошлой сборки остался архив со старым id.
+    # Отправить его региону = записать город в логи чужим именем, поэтому
+    # чистим сами. При --only не трогаем: там собирается одна точка из многих.
+    if not args.only:
+        keep = {f"aidos-kiosk-{k}.zip" for k, _ in fleet}
+        for stale in sorted(OUT.glob("aidos-kiosk-*.zip")):
+            if stale.name not in keep:
+                stale.unlink()
+                print(f"убран устаревший архив: {stale.name}")
+
     made = []
     for kiosk_id, human in fleet:
         path = OUT / f"aidos-kiosk-{kiosk_id}.zip"
