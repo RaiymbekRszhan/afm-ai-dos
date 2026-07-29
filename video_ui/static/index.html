@@ -246,6 +246,7 @@
 <script src="/static/qrcode.js?v=20260720"></script>
 <script src="/static/answer_render.js?v=20260720b"></script>
 <script src="/static/stream_client.js?v=20260728"></script>
+<script src="/static/vad.js?v=20260729"></script>
 <script>
 // ---------- режим киоска (?kiosk=1) ----------
 const params = new URLSearchParams(location.search);
@@ -706,12 +707,13 @@ langBadge.onclick = () => {
 syncBadge();
 
 // Авто-стоп: тишина дольше SILENCE_MS после речи — завершаем запись сами.
-const SILENCE_PEAK = 0.015;
 const SILENCE_MS = 2000;
-// Короче этого (в секундах) запись в STT НЕ шлём — см. stopAndSend: на тишине
-// и обрывках движок «дорисовывает» текст, и киоск отвечает на выдуманный вопрос.
-const MIN_SPEECH_SEC = 0.6;
-let hasSpoken = false, lastVoiceMs = 0, stopping = false;
+// Была ли речь — решает детектор из vad.js (адаптивный порог от фонового шума
+// + накопленное время звучания). Прежний одиночный порог амплитуды в фойе
+// срабатывал на вдохе и стуке, и тишина уходила в STT, а тот выдумывал вопрос
+// («Продолжение следует.», «Редактор субтитров…» — реальные случаи с киоска).
+let vad = null;
+let stopping = false;
 
 async function startRecording() {
   stopAnswer();   // аватар ещё договаривает прошлый ответ? обрываем — посетитель хочет спросить заново
@@ -722,15 +724,16 @@ async function startRecording() {
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   src = ctx.createMediaStreamSource(stream);
   proc = ctx.createScriptProcessor(4096, 1, 1);
-  chunks = []; hasSpoken = false; stopping = false;
+  chunks = []; stopping = false;
+  vad = AidosVad.createVad();
   proc.onaudioprocess = e => {
     const buf = e.inputBuffer.getChannelData(0);
     chunks.push(new Float32Array(buf));
-    let peak = 0;
-    for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i]); if (v > peak) peak = v; }
-    const now = performance.now();
-    if (peak > SILENCE_PEAK) { hasSpoken = true; lastVoiceMs = now; }
-    else if (hasSpoken && now - lastVoiceMs > SILENCE_MS) { stopAndSend(); }
+    // RMS, а не пик: одиночный щелчок даёт большой пик при крошечном RMS.
+    vad.push(AidosVad.rmsOf(buf), buf.length / ctx.sampleRate * 1000);
+    // Останавливаемся сами, когда после РЕЧИ пошла тишина: пауза до первого
+    // слова (посетитель собирается с мыслями) в счётчик не идёт — это в vad.js.
+    if (vad.hasSpeech() && vad.silenceMs() > SILENCE_MS) stopAndSend();
   };
   src.connect(proc); proc.connect(ctx.destination);
   recording = true; btn.classList.add("rec"); btn.textContent = "⏹ Готово, отправить";
@@ -747,10 +750,10 @@ async function stopAndSend() {
   // рядом просто шумно — движок STT на пустой записи выдумывает текст: в логах
   // 29.07 это «Редактор субтитров А.Семкин Корректор А.Кулакова» и «деду, деду,
   // деду…» (обрывки из обучающих данных). Дальше киоск честно ищет ответ на
-  // выдуманный вопрос, тратит облако и показывает гражданину отказ. hasSpoken
-  // ставит детектор пика выше; длину проверяем отдельно — от короткого хлопка
-  // он тоже срабатывает.
-  if (!hasSpoken || len / (ctx.sampleRate || 16000) < MIN_SPEECH_SEC) {
+  // выдуманный вопрос, тратит облако и показывает гражданину отказ. Решает
+  // детектор из vad.js: порог считается от фонового шума ЭТОЙ записи, и нужно
+  // накопить 300 мс звучания — вдох, стук и чужой разговор порог не проходят.
+  if (!vad || !vad.hasSpeech()) {
     ctx.close();
     stopping = false;
     btn.disabled = false;
