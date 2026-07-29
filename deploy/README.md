@@ -46,6 +46,21 @@ cd deploy
 sed -i 's#/opt/ai-dos#/home/afm/STT#g; s/User=ai-dos/User=afm/g' ai-dos-*.service
 ```
 
+## Машинно-зависимые ключи запуска — `/etc/default/ai-dos`
+Порт киоск-страницы, путь к кэшу tiktoken, `SSL_CERT_FILE` для TLS-прокси — всё,
+что зависит от КОНКРЕТНОЙ машины, а не от проекта. Юниты читают этот файл
+(`EnvironmentFile=-/etc/default/ai-dos`, минус = «нет файла — не беда»).
+
+```bash
+sudo cp deploy/ai-dos.env.example /etc/default/ai-dos
+sudo nano /etc/default/ai-dos
+```
+Зачем отдельный файл: раньше это правили прямо в `run_api.sh` и `video_ui/run.sh`
+на сервере, и каждое обновление кода стирало правки — страница уезжала с `:80`
+на `:8100` (все киоски видели «недоступно»), а RAG не стартовал без верного пути
+к словарю. ⚠️ Топологию TTS/STT и секреты сюда класть НЕЛЬЗЯ (см. N2 выше):
+их место — `.env` в корне проекта.
+
 ## Установка
 ```bash
 sudo cp deploy/ai-dos-*.service deploy/ai-dos-watchdog.timer /etc/systemd/system/

@@ -9,7 +9,12 @@ User=ai-dos
 WorkingDirectory=/opt/ai-dos/rag
 # Зовёт LLM/эмбеддинги АФМ по HTTP (адреса в rag/.env). Индекс — rag_storage/ (ingest заранее).
 # Словарь tiktoken завендорен (иначе качается из интернета, которого на сервере нет).
+# ⚠️ На конкретной машине рабочий кэш может лежать в ДРУГОМ каталоге (на сервере
+# АФМ его пришлось пересоздать: версия из репозитория не подошла). Такие
+# машинно-зависимые вещи переопределяются в /etc/default/ai-dos — НЕ правкой
+# юнита, иначе они теряются при каждом обновлении.
 Environment=TIKTOKEN_CACHE_DIR=/opt/ai-dos/rag/vendor/tiktoken
+EnvironmentFile=-/etc/default/ai-dos
 # Слушает только localhost: единственный клиент — оркестратор на этой же машине.
 ExecStart=/opt/ai-dos/rag/.venv/bin/uvicorn ragsvc.server:app --host 127.0.0.1 --port 8077
 Restart=always

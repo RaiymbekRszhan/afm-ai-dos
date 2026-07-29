@@ -18,6 +18,11 @@ WorkingDirectory=/opt/ai-dos
 # своё окружение). Дефолт 127.0.0.1: снаружи к оркестратору ходит только video_ui
 # (:8100) с этой же машины (N6). Открыть за TLS-прокси: API_HOST=0.0.0.0.
 Environment=API_HOST=127.0.0.1
+# Машинно-зависимые ключи запуска (порт фронтенда, путь к кэшу tiktoken, при
+# необходимости SSL_CERT_FILE для TLS-прокси) — в /etc/default/ai-dos.
+# ⚠️ ТОПОЛОГИЮ TTS/STT туда класть НЕЛЬЗЯ: переменные окружения приоритетнее
+# .env и молча его перебьют — ровно это чинила находка N2.
+EnvironmentFile=-/etc/default/ai-dos
 # Секреты (ELEVENLABS_API_KEY и пр.) — тоже в /opt/ai-dos/.env (читает pydantic).
 ExecStart=/opt/ai-dos/.venv/bin/uvicorn app.main:app --host ${API_HOST} --port 8000
 Restart=always
