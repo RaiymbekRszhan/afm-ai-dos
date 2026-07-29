@@ -1473,7 +1473,11 @@ async def _eleven(text: str, language: str | None) -> bytes:
     # достучалось, значит даём ему спокойно синтезировать длинный кусок.
     timeout = httpx.Timeout(settings.elevenlabs_timeout,
                             connect=settings.elevenlabs_connect_timeout)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # verify — из настройки: за TLS-прокси АФМ сертификат облака подписан их
+    # корнем, которого нет в certifi (см. elevenlabs_verify_ssl). Правильнее
+    # дать процессу SSL_CERT_FILE с корнем прокси — httpx его уважает.
+    async with httpx.AsyncClient(timeout=timeout,
+                                 verify=settings.elevenlabs_verify_ssl) as client:
         resp = await client.post(
             url,
             headers={"xi-api-key": settings.elevenlabs_api_key},

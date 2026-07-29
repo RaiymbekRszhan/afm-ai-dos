@@ -68,9 +68,13 @@ if [ "$USE_LOCAL_SPARK" = "1" ]; then bash spark_server/run.sh & fi
 # TIKTOKEN_CACHE_DIR: словарь токенизатора завендорен локально (rag/vendor/tiktoken)
 # — иначе tiktoken лезет в интернет, которого в сети АФМ нет (см. rag/README).
 # RAG слушает только localhost: единственный клиент — оркестратор на этой же машине.
+# TIKTOKEN_CACHE_DIR переопределяем снаружи: на сервере АФМ рабочий кэш пришлось
+# пересоздать в другом каталоге (версия из репозитория не подошла), и раньше это
+# держалось правкой ЭТОГО файла — правка терялась при каждом обновлении, а RAG
+# после неё лез за словарём в интернет и падал на TLS-прокси.
 ( cd rag && source .venv/bin/activate \
-  && export TIKTOKEN_CACHE_DIR="$PWD/vendor/tiktoken" \
-  && uvicorn ragsvc.server:app --host 127.0.0.1 --port 8077 ) &
+  && export TIKTOKEN_CACHE_DIR="${TIKTOKEN_CACHE_DIR:-$PWD/vendor/tiktoken}" \
+  && uvicorn ragsvc.server:app --host "${RAG_HOST:-127.0.0.1}" --port 8077 ) &
 
 # Основной оркестратор (8000) — на venv голосового слоя.
 source .venv/bin/activate

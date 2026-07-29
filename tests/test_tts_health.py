@@ -129,3 +129,50 @@ def test_healthy_probes_fallback_provider(monkeypatch):
 
     out = asyncio.run(tts.healthy())
     assert out["spark"]["reachable"] is True
+
+
+# ---------------------------------------------------------------------------
+# Проверка TLS у клиента ElevenLabs. На сервере АФМ прокси вскрывает TLS, и
+# правку `verify=False` держали ПРЯМО В КОДЕ — она терялась при каждом
+# обновлении и уносила с собой казахский голос. Теперь это настройка, и её
+# поведение закреплено тестом.
+# ---------------------------------------------------------------------------
+
+def test_eleven_verify_ssl_passed_to_client(monkeypatch):
+    seen = {}
+
+    class _Client:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **kw):
+            class _R:
+                status_code = 200
+                content = b"\x00\x00" * 100      # PCM: _eleven сам завернёт в WAV
+                headers = {"content-type": "audio/mpeg"}
+
+                @staticmethod
+                def raise_for_status():
+                    return None
+            return _R()
+
+    monkeypatch.setattr(tts.settings, "elevenlabs_api_key", "k")
+    monkeypatch.setattr(tts.settings, "elevenlabs_voice_id", "v")
+    # httpx в tts.py импортируется ВНУТРИ функций (ленивый импорт), поэтому
+    # подменять надо сам модуль, а не атрибут tts.httpx — его нет.
+    monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+    monkeypatch.setattr(tts.settings, "elevenlabs_verify_ssl", True)
+    asyncio.run(tts._eleven("тест", "russian"))
+    assert seen["verify"] is True                    # по умолчанию проверяем
+
+    seen.clear()
+    monkeypatch.setattr(tts.settings, "elevenlabs_verify_ssl", False)
+    asyncio.run(tts._eleven("тест", "russian"))
+    assert seen["verify"] is False                   # за прокси АФМ — отключаемо
