@@ -785,7 +785,7 @@ async function stopAndSend() {
     // {question, answer, suggest, print, provider, format, audio_b64}. Текст и
     // аудио в теле, не в заголовках: длинный табличный ответ доходит целиком.
     const r = await fetch("/voice", { method: "POST", body: fd });
-    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+    if (!r.ok) throw await backendError(r);
     const data = await r.json();
     const q = data.question || "";
     const a = data.answer || "";
@@ -804,8 +804,10 @@ async function stopAndSend() {
   } catch (e) {
     if (e.name === "AbortError") return;   // посетитель сам прервал — не «ошибка»
     out.className = "";
-    out.textContent = "Ошибка: " + e.message;
-    st.textContent = "ошибка";
+    // Плановое отключение точки — не сбой: гражданину незачем видеть слово
+    // «Ошибка», ему нужно объяснение, почему киоск сегодня не отвечает.
+    out.textContent = e.planned ? e.message : "Ошибка: " + e.message;
+    st.textContent = e.planned ? "точка отключена" : "ошибка";
     showIdle();
   } finally {
     btn.disabled = false;
@@ -818,13 +820,23 @@ async function stopAndSend() {
 // подряд. Так гражданин слышит начало, пока досинтезируется остальное.
 let streamAbort = null;
 
+// Ответ бэкенда с ошибкой -> исключение. 503 — это НЕ сбой, а плановое
+// отключение точки оператором (список kiosks-disabled.txt на сервере):
+// помечаем его, чтобы экран показал человеческий текст, а не «Ошибка: …».
+async function backendError(r) {
+  const j = await r.json().catch(() => ({}));
+  const e = new Error(j.detail || r.status);
+  e.planned = r.status === 503;
+  return e;
+}
+
 async function askStreaming(fd, askedLang) {
   streamAbort = new AbortController();
   chunkQueue.reset();
   streamProvider = null;
   const r = await fetch("/voice/stream", { method: "POST", body: fd,
                                            signal: streamAbort.signal });
-  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.status); }
+  if (!r.ok) throw await backendError(r);
   const parser = createNdjsonParser();
   const reader = r.body.getReader();
   const dec = new TextDecoder();

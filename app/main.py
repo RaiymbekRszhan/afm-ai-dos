@@ -13,7 +13,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import logging_setup, service
+from app import kiosks, logging_setup, service
 from app.clients import rag, stt, tts
 from app.config import settings
 from app.schemas import ChatRequest, ChatResponse, SpeakRequest, TranscribeResponse
@@ -376,6 +376,14 @@ async def voice_endpoint(
     token = logging_setup.set_request_id(rid)
     t_start = perf_counter()
     try:
+        # Точка отключена оператором — разворачиваем ДО STT/RAG/TTS: платить за
+        # облако и держать слот семафора ради отказа незачем. Обращение при этом
+        # логируется (error=disabled): полезно видеть, что у погашенной точки
+        # всё-таки стоят люди.
+        blocked = kiosks.disabled_message(rec["kiosk"])
+        if blocked:
+            rec["error"] = "disabled"
+            raise HTTPException(status_code=503, detail=blocked)
         # /voice — самый дорогой путь; ограничиваем число одновременных, чтобы пачка
         # запросов не положила TTS/GPU-ноду. Лишние ждут очереди (не отвергаются).
         async with _tts_sem:
@@ -454,6 +462,14 @@ async def voice_stream_endpoint(
     def _finish() -> None:
         rec["total_ms"] = _ms(t_start)
         logging_setup.record_interaction(**rec)
+
+    # Тот же рубильник, что и в /voice: до потока ошибка отдаётся обычным HTTP.
+    blocked = kiosks.disabled_message(rec["kiosk"])
+    if blocked:
+        rec["error"] = "disabled"
+        _finish()
+        logging_setup.reset_request_id(token)
+        raise HTTPException(status_code=503, detail=blocked)
 
     # Семафор держим на ВЕСЬ путь, включая поток синтеза, поэтому берём его
     # руками: освобождает генератор в finally (Starlette закрывает генератор и
