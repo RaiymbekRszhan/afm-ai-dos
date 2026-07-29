@@ -53,6 +53,11 @@ REM (WIN-8KJ2...), положи рядом с этим .bat файл kiosk-id.tx
 REM вроде astana-01 — он перебьёт имя машины.
 set "KIOSK_ID=%COMPUTERNAME%"
 if exist "%~dp0kiosk-id.txt" set /p KIOSK_ID=<"%~dp0kiosk-id.txt"
+REM Файла нет = точка уедет в логи именем машины, и в отчёте её не опознать.
+REM Ругаемся в консоль, чтобы это заметили при установке, а не через месяц
+REM при разборе статистики. Однострочные if — блоки if(...)else(...) в cmd
+REM ломаются, если файл когда-нибудь доедет с LF.
+if not exist "%~dp0kiosk-id.txt" echo [kiosk] WARNING: kiosk-id.txt not found - logs will show "%COMPUTERNAME%"
 REM Сколько раз (по 3 с) ждать бэкенд перед тем, как открыть браузер всё равно.
 set "WAIT_TRIES=60"
 REM =======================

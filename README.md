@@ -59,8 +59,8 @@ STT на GPU АФМ — отдельные сервисы, каждый в **с�
   Windows), `ai-dos.env.example` → `/etc/default/ai-dos` (машинно-зависимые ключи)
 - `scripts/` — приёмка (`healthcheck.sh`), отчёт по обращениям
   (`interactions_report.py`), нагрузочный замер (`load_test.py`), обновление сервера
-  (`update_server.sh`, запасной путь без git — `deploy_snapshot.sh`), бенч TTS
-  (`tts_bench.py`)
+  (`update_server.sh`, запасной путь без git — `deploy_snapshot.sh`), архивы киосков
+  для рассылки (`make_kiosk_bundles.py`), бенч TTS (`tts_bench.py`)
 - `run_api.sh` — поднимает весь стек одной командой (для отладки; на бою — systemd)
 
 ## Локальный запуск
