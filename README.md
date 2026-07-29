@@ -59,7 +59,8 @@ STT на GPU АФМ — отдельные сервисы, каждый в **с�
   Windows), `ai-dos.env.example` → `/etc/default/ai-dos` (машинно-зависимые ключи)
 - `scripts/` — приёмка (`healthcheck.sh`), отчёт по обращениям
   (`interactions_report.py`), нагрузочный замер (`load_test.py`), обновление сервера
-  без git (`deploy_snapshot.sh`), бенч TTS (`tts_bench.py`)
+  (`update_server.sh`, запасной путь без git — `deploy_snapshot.sh`), бенч TTS
+  (`tts_bench.py`)
 - `run_api.sh` — поднимает весь стек одной командой (для отладки; на бою — systemd)
 
 ## Локальный запуск
@@ -195,7 +196,8 @@ python -m scripts.tts_bench --baseline out/tts_bench/<прошлый>   # сра
 **Текущее состояние пилота (2026-07-29):** сервер `10.10.42.44`, стек под systemd
 (`ai-dos-rag` → `ai-dos-api` → `ai-dos-video-ui`), поднимается сам после
 перезагрузки; киоск-страница на `:80`, API и RAG закрыты на localhost; обновление
-кода — `scripts/deploy_snapshot.sh` (на сервере нет `git`) + `systemctl restart`.
+кода — `bash scripts/update_server.sh` (сервер тянет с GitHub сам, git там стоит
+с 29.07; запасной путь без git — `scripts/deploy_snapshot.sh`).
 
 ## Голоса
 Казахский по умолчанию — **ElevenLabs**: голос выбирается в аккаунте

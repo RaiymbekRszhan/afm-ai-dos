@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# Обновление кода на сервере АФМ БЕЗ git (его там нет): снимок ветки одним
-# архивом -> scp -> распаковка поверх, с бэкапом и без потери данных.
+# ⚠️ ЗАПАСНОЙ способ обновления. С 2026-07-29 на сервере АФМ есть git, и
+# основной путь — `bash scripts/update_server.sh` (сервер сам тянет с GitHub:
+# доезжают удаления и переименования, состояние сервера — именованный коммит).
+# Снимок нужен, только если GitHub из сети АФМ закроют или git снова пропадёт.
+#
+# Обновление кода на сервере БЕЗ git: снимок ветки одним архивом -> scp ->
+# распаковка поверх, с бэкапом и без потери данных.
+#
+# ⚠️ ЧЕГО СНИМОК НЕ УМЕЕТ (обожглись 29.07): tar кладёт файлы поверх, но
+# НЕ УДАЛЯЕТ исчезнувшие и не обновляет .git — индекс на сервере остаётся на
+# старом коммите, новые файлы лежат неотслеживаемыми, и `git diff` потом
+# показывает их как «удалённые целиком». После снимка индекс надо чинить:
+#   ssh <сервер> 'cd <проект> && git fetch origin && git reset --hard origin/main'
 #
 #   bash scripts/deploy_snapshot.sh                      # main на 10.10.42.44
 #   bash scripts/deploy_snapshot.sh --ref HEAD           # то, что в рабочем дереве закоммичено
@@ -14,8 +25,8 @@
 # video_ui/run.sh. Если их правили на сервере (порты!), правки исчезнут:
 # держи такие настройки в переменных окружения/юните systemd, а не в файлах.
 #
-# Скрипт НЕ перезапускает сервисы сам: стек живёт в tmux-сессии, и решение
-# «гасим приём граждан» должно быть осознанным. В конце печатает, что сделать.
+# Скрипт НЕ перезапускает сервисы сам: решение «гасим приём граждан» должно
+# быть осознанным. В конце печатает, что сделать.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -76,28 +87,22 @@ cat <<EOF
 
 Код обновлён. Дальше — руками, чтобы приём граждан прервался осознанно:
 
-  ssh $USER@$HOST
-  cd $DIR
-  # зависимости могли поменяться (проверь, если правился requirements.txt):
-  #   .venv/bin/pip install -r requirements.txt
-  tmux attach -t mainpy
-  #   Ctrl-C  -> дождаться приглашения -> строка запуска ЦЕЛИКОМ:
-  #
-  #   VIDEO_UI_PORT=80 TIKTOKEN_CACHE_DIR=/root/afm-ai-dos/vendor/tiktoken bash run_api.sh
-  #
-  #   Обе переменные обязательны на сервере АФМ и держатся ЗДЕСЬ, а не правкой
-  #   файлов (иначе теряются при каждом обновлении):
-  #     VIDEO_UI_PORT=80         иначе киоск-страница уедет на 8100 и все точки
-  #                              увидят «недоступно»;
-  #     TIKTOKEN_CACHE_DIR=...   рабочий словарь лежит НЕ там, где дефолт; без
-  #                              него RAG полезет за ним в интернет и упадёт на
-  #                              TLS-прокси, то есть не стартует.
-  #   Ctrl-B, затем D                        <- выйти, оставив стек работать
+  # 1) починить индекс git (tar его не обновляет — см. шапку скрипта):
+  ssh $USER@$HOST 'cd $DIR && git fetch origin && git reset --hard origin/main'
 
-Приёмка (с этой машины):
-  HOST=$HOST bash scripts/healthcheck.sh
-  curl -s http://$HOST/health
+  # 2) зависимости, если правился requirements.txt:
+  ssh $USER@$HOST 'cd $DIR && .venv/bin/pip install -r requirements.txt'
+
+  # 3) перезапуск (машинно-зависимые ключи запуска — в /etc/default/ai-dos,
+  #    в командную строку их подставлять НЕ надо):
+  ssh $USER@$HOST 'systemctl restart ai-dos-rag ai-dos-api ai-dos-video-ui'
+  ssh $USER@$HOST 'systemctl status ai-dos-rag ai-dos-api ai-dos-video-ui --no-pager'
+
+Приёмка (API и RAG слушают 127.0.0.1, поэтому с самого сервера):
+  ssh $USER@$HOST 'cd $DIR && UI=http://localhost bash scripts/healthcheck.sh'
+  curl -s -o /dev/null -w '%{http_code}\\n' http://$HOST/
 
 Откат, если что-то сломалось (на сервере):
   tar xzf ~/ai-dos-backup-$STAMP.tar.gz -C $(dirname "$DIR")
+  systemctl restart ai-dos-rag ai-dos-api ai-dos-video-ui
 EOF

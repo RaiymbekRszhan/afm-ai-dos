@@ -442,28 +442,58 @@ journalctl -u ai-dos-api -f
 
 ## Обновление уже развёрнутого сервера
 
-На сервере АФМ `git` не установлен (хотя каталог `.git` там есть), поэтому код
-возится снимком:
+**Основной способ — через git** (на сервере АФМ он установлен 2026-07-29,
+Debian 13 trixie; интернет там есть, `deb.debian.org` и GitHub доступны):
 
 ```bash
-bash scripts/deploy_snapshot.sh                # git archive -> scp -> бэкап -> распаковка
-ssh root@10.10.42.44 'systemctl restart ai-dos-rag ai-dos-api ai-dos-video-ui'
+bash scripts/update_server.sh --dry-run    # что приедет и что перезапустится
+bash scripts/update_server.sh              # fetch + reset --hard + точечный перезапуск
 ```
-Скрипт не трогает `.env`, `rag/rag_storage/`, venv и `logs/`, снимает бэкап
-(`~/ai-dos-backup-<дата>.tar.gz`) и печатает команду отката.
+Сервер тянет код **с GitHub сам**, поэтому скрипт сначала предупреждает о
+незапушенных коммитах и незакоммиченном дереве — иначе легко выкатить «почти то,
+что вижу». Перезапускает только те сервисы, чей код действительно менялся
+(`app/` → api, `rag/ragsvc/` → rag, `video_ui/*.py` → video-ui); правки в
+`video_ui/static/**` подхватываются без перезапуска — статику uvicorn читает с
+диска на каждый запрос. Не трогает `.env`, `.env.*`, `rag/rag_storage/`, venv,
+`logs/`, `vendor/`: `reset --hard` не удаляет неотслеживаемое, а `git clean` не
+зовётся сознательно.
 
-⚠️ **Перед первым обновлением чужого сервера снимите слепок и сравните** — правки,
-сделанные на месте, распаковка сотрёт молча:
+Ручной эквивалент, если скрипт недоступен:
 ```bash
-ssh root@СЕРВЕР "cd ~ && tar czf /tmp/tree.tar.gz --exclude='*/.venv*' \
-  --exclude='*/rag_storage' --exclude='*/logs' --exclude='*/static/video' \
-  --exclude='*/.env' afm-ai-dos"
-scp root@СЕРВЕР:/tmp/tree.tar.gz /tmp/ && tar xzf /tmp/tree.tar.gz -C /tmp/srv
-cd /tmp/srv/afm-ai-dos && git diff --ignore-cr-at-eol --stat
+ssh root@10.10.42.44 'cd /root/afm-ai-dos && git fetch origin && git reset --hard origin/main'
+ssh root@10.10.42.44 'systemctl restart ai-dos-api'
 ```
-`--ignore-cr-at-eol` обязателен: на сервере АФМ весь репозиторий с CRLF (код ехал
-через Windows), и обычный diff показывает «изменены все 147 файлов». Так 29.07
-нашлись три правки, потеря которых сломала бы казахский TTS и RAG.
+`reset --hard`, а не `pull`: он идемпотентен и не встаёт колом, если файл на
+сервере кто-то поправил руками — а это ровно то, что там уже случалось с юнитами.
+
+⚠️ **Живые юниты в `/etc/systemd/system/` — отдельные копии**, подогнанные под
+сервер (`/opt/ai-dos` → `/root/afm-ai-dos`, `User=ai-dos` → `User=root`).
+Обновление кода их НЕ трогает; если менялись `deploy/ai-dos-*.service`, перенести
+руками и `systemctl daemon-reload`.
+
+**Запасной способ — снимок** (`scripts/deploy_snapshot.sh`), если GitHub из сети
+АФМ закроют. У него два известных изъяна: tar не удаляет исчезнувшие файлы и не
+обновляет `.git`, поэтому после снимка индекс надо чинить тем же
+`git fetch && git reset --hard origin/main`.
+
+### Как сверить чужой сервер перед первым обновлением
+
+```bash
+ssh root@СЕРВЕР 'cd /root/afm-ai-dos && git fetch origin && git status --porcelain'
+ssh root@СЕРВЕР 'cd /root/afm-ai-dos && git diff --ignore-cr-at-eol --stat origin/main'
+```
+⚠️ **`git diff` не видит неотслеживаемые файлы.** Если индекс на сервере отстал
+(снимок его не обновляет), файлы, добавленные в новых коммитах, физически лежат
+на диске, но для git их нет — и diff показывает их как «удалённые целиком».
+29.07 это дало ложную тревогу «на сервере нет `vad.js`, киоск не записывает»,
+хотя файл был на месте. Проверяйте такие находки напрямую (`ls`, `curl`), а
+число удалённых строк сверяйте с длиной файла: совпало — это фантом индекса.
+
+`--ignore-cr-at-eol` нужен для серверов, куда код ехал через Windows (весь
+репозиторий с CRLF, обычный diff показывает «изменены все 147 файлов»). На
+`10.10.42.44` это вылечено 29.07: после `reset --hard` дерево легло по
+`.gitattributes` (`.sh/.py/.md/.service` → LF, `.bat/.cmd/.ps1` → CRLF), заодно
+вернулся бит `+x` у скриптов, потерянный при переезде.
 
 Только статика (`video_ui/static/*`) — рестарт не нужен, но на киоске обязательна
 жёсткая перезагрузка страницы (`Ctrl+Shift+R`): иначе браузер крутит старый JS.
