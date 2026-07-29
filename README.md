@@ -55,7 +55,12 @@ STT на GPU АФМ — отдельные сервисы, каждый в **с�
 - `refs/` — образцы голоса для офлайн-фолбэка (`ref_ru_f5_padded.wav`+`ref_ru.txt` — боевой референс F5; `ref_kk.*` — Spark)
 - `video_ui/` — киоск-страница «видео-аватар» (:8100): ролики, таблицы, QR, README внутри
 - `tests/` — pytest оркестратора (офлайн, внешние сервисы замоканы): `python -m pytest`
-- `run_api.sh` — поднимает весь стек одной командой (`USE_ELEVEN=1` — TTS на ElevenLabs)
+- `deploy/` — systemd-юниты (боевой режим), `kiosk-start.bat` (автозапуск киоска на
+  Windows), `ai-dos.env.example` → `/etc/default/ai-dos` (машинно-зависимые ключи)
+- `scripts/` — приёмка (`healthcheck.sh`), отчёт по обращениям
+  (`interactions_report.py`), нагрузочный замер (`load_test.py`), обновление сервера
+  без git (`deploy_snapshot.sh`), бенч TTS (`tts_bench.py`)
+- `run_api.sh` — поднимает весь стек одной командой (для отладки; на бою — systemd)
 
 ## Локальный запуск
 Разовая установка (на Wi-Fi — нужен интернет для пакетов/моделей).
@@ -183,8 +188,14 @@ python -m scripts.tts_bench --baseline out/tts_bench/<прошлый>   # сра
 (`tests/test_audio_post.py`) — если такой тест упал, изменилось звучание.
 
 ## Развёртывание на сервере АФМ
-См. **[DEPLOY.md](DEPLOY.md)** — пошагово (что копировать, venv пересоздать на сервере,
-модели заранее на Wi-Fi, `*_DEVICE=cuda` на GPU, сеть АФМ без интернета).
+См. **[DEPLOY.md](DEPLOY.md)** — пошагово (доставка кода, venv на месте, `.env`,
+приёмка, раздел «Много киосков» про раскатку на 20 точек) и
+**[deploy/README.md](deploy/README.md)** — боевой режим 24/7 через systemd.
+
+**Текущее состояние пилота (2026-07-29):** сервер `10.10.42.44`, стек под systemd
+(`ai-dos-rag` → `ai-dos-api` → `ai-dos-video-ui`), поднимается сам после
+перезагрузки; киоск-страница на `:80`, API и RAG закрыты на localhost; обновление
+кода — `scripts/deploy_snapshot.sh` (на сервере нет `git`) + `systemctl restart`.
 
 ## Голоса
 Казахский по умолчанию — **ElevenLabs**: голос выбирается в аккаунте

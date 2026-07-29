@@ -428,6 +428,46 @@ eleven — split routing на киоск-машине.
 [deploy/README.md](deploy/README.md) (автозапуск при загрузке, рестарт при падении
 и при зависании).
 
+**Сервер АФМ переведён на systemd 2026-07-29** — там это уже так:
+```bash
+systemctl status ai-dos-rag ai-dos-api ai-dos-video-ui
+systemctl restart ai-dos-api
+journalctl -u ai-dos-api -f
+```
+⚠️ `run_api.sh` на сервере больше НЕ запускать — вторая копия подерётся за порты.
+Машинно-зависимые ключи (`VIDEO_UI_PORT=80`, `TIKTOKEN_CACHE_DIR`) лежат в
+`/etc/default/ai-dos`, топология TTS/STT — в `.env` проекта.
+
+---
+
+## Обновление уже развёрнутого сервера
+
+На сервере АФМ `git` не установлен (хотя каталог `.git` там есть), поэтому код
+возится снимком:
+
+```bash
+bash scripts/deploy_snapshot.sh                # git archive -> scp -> бэкап -> распаковка
+ssh root@10.10.42.44 'systemctl restart ai-dos-rag ai-dos-api ai-dos-video-ui'
+```
+Скрипт не трогает `.env`, `rag/rag_storage/`, venv и `logs/`, снимает бэкап
+(`~/ai-dos-backup-<дата>.tar.gz`) и печатает команду отката.
+
+⚠️ **Перед первым обновлением чужого сервера снимите слепок и сравните** — правки,
+сделанные на месте, распаковка сотрёт молча:
+```bash
+ssh root@СЕРВЕР "cd ~ && tar czf /tmp/tree.tar.gz --exclude='*/.venv*' \
+  --exclude='*/rag_storage' --exclude='*/logs' --exclude='*/static/video' \
+  --exclude='*/.env' afm-ai-dos"
+scp root@СЕРВЕР:/tmp/tree.tar.gz /tmp/ && tar xzf /tmp/tree.tar.gz -C /tmp/srv
+cd /tmp/srv/afm-ai-dos && git diff --ignore-cr-at-eol --stat
+```
+`--ignore-cr-at-eol` обязателен: на сервере АФМ весь репозиторий с CRLF (код ехал
+через Windows), и обычный diff показывает «изменены все 147 файлов». Так 29.07
+нашлись три правки, потеря которых сломала бы казахский TTS и RAG.
+
+Только статика (`video_ui/static/*`) — рестарт не нужен, но на киоске обязательна
+жёсткая перезагрузка страницы (`Ctrl+Shift+R`): иначе браузер крутит старый JS.
+
 ---
 
 ## Много киосков (пилот — 20 точек)
