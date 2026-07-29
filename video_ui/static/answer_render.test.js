@@ -128,6 +128,53 @@ test("speechRate: Spark ускоряем, ElevenLabs/F5 в норме (N7)", () 
   assert.equal(speechRate(undefined), 1.0); // нет данных — безопасный дефолт
 });
 
+// ---------------------------------------------------------------------------
+// Одноколоночные перечни (список субъектов финмониторинга и т.п.). Реальный
+// казахский ответ 29.07 показал их на экране сырым текстом с торчащими «|»:
+// парсер требовал минимум ДВЕ колонки и такой перечень таблицей не считал.
+// ---------------------------------------------------------------------------
+
+test("parseAnswer: одноколоночный перечень — таблица, а не текст с палками", () => {
+  const text = [
+    "Тізбемен танысу үшін кесте көрсетілген.",
+    "[ТАБЛИЦА]",
+    "Қаржы мониторингі субъектісі |",
+    "Банктер, банк операцияларының жекелеген түрлерін жүзеге асыратын ұйымдар |",
+    "Биржалар, биржалық брокерлер |",
+    "Нотариустар |",
+    "[/ТАБЛИЦА]",
+  ].join("\n");
+  const segs = parseAnswer(text);
+  const table = segs.find((s) => s.type === "table");
+  assert.ok(table, "перечень должен стать таблицей");
+  assert.equal(table.rows.length, 4);                 // заголовок + 3 строки
+  assert.equal(table.rows[0].length, 1);              // одна колонка
+  assert.equal(table.rows[0][0], "Қаржы мониторингі субъектісі");
+  assert.equal(table.rows[3][0], "Нотариустар");
+  // и ни одна «палка» не утекла в текстовые сегменты
+  assert.ok(!segs.filter((s) => s.type === "text").some((s) => s.text.includes("|")));
+});
+
+test("parseAnswer: одноколоночный перечень БЕЗ маркеров тоже ловится", () => {
+  const segs = parseAnswer("Список:\nБанктер |\nБиржалар |\nНотариустар |");
+  const table = segs.find((s) => s.type === "table");
+  assert.ok(table);
+  assert.equal(table.rows.length, 3);
+  assert.equal(table.rows[0].length, 1);
+});
+
+test("pickNumericColumn: у одноколоночной таблицы графика нет", () => {
+  const segs = parseAnswer("[ТАБЛИЦА]\nСубъект |\nБанктер |\nБиржалар |\n[/ТАБЛИЦА]");
+  assert.equal(pickNumericColumn(segs.find((s) => s.type === "table").rows), null);
+});
+
+test("parseAnswer: одинокая строка с | — проза, и палка не показывается", () => {
+  const segs = parseAnswer("Порог составляет 5 000 000 тенге |");
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].type, "text");
+  assert.ok(!segs[0].text.includes("|"));
+});
+
 test("detectPrintTemplates: контракт с бэкендом (общий fixture, N9)", () => {
   // Тот же набор, что гоняет pytest над service.detect_print_templates
   // (tests/test_print_triggers.py) — обе стороны обязаны совпасть с ним, значит

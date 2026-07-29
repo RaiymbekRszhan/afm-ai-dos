@@ -44,7 +44,11 @@ function parseAnswer(text) {
     }
     function flushTbl() {
       if (tbl.length >= 2) { flushProse(); pushTable(out, tbl.join("\n")); }
-      else prose = prose.concat(tbl); // одинокая строка с «|» — это ещё проза
+      // Одинокая строка с «|» — это ещё проза, но саму палку показывать незачем:
+      // она осталась от разметки таблицы, а не написана для чтения.
+      else prose = prose.concat(tbl.map(function (l) {
+        return l.replace(/\s*\|\s*$/, "").replace(/^\s*\|\s*/, "");
+      }));
       tbl = [];
     }
     seg.text.split("\n").forEach(function (line) {
@@ -70,7 +74,12 @@ function pushTable(out, src) {
     if (cells.length) rows.push(cells);
   });
   var width = rows.reduce(function (w, r) { return Math.max(w, r.length); }, 0);
-  if (rows.length < 2 || width < 2) { // не таблица — вернуть как текст
+  // Одна колонка — это ПЕРЕЧЕНЬ (список субъектов финмониторинга, документов),
+  // и он вполне себе таблица: заголовок + строки. Раньше здесь стояло width < 2,
+  // и такой ответ вываливался на экран сырым текстом с торчащими «|» (замечено
+  // на казахском ответе про субъектов 29.07). Требование «2+ строк» остаётся:
+  // одинокая строка с «|» — всё ещё проза.
+  if (rows.length < 2) {
     var t = src.trim();
     if (t) out.push({ type: "text", text: t });
     return;
