@@ -114,6 +114,17 @@ def is_affirmative(text: str) -> bool:
 _REPEAT_MIN = 3          # сколько повторов подряд считаем петлёй
 _DEGENERATE_RATIO = 0.25  # уникальных слов меньше четверти — это не вопрос
 
+# Петля движка на КАЗАХСКОМ выглядит иначе, чем на русском: язык агглютинативный,
+# и залипание даёт один корень с разными окончаниями — «әдебиеттердің,
+# әдебиеттері, әдебиеттердігі, әдебиеттерді» (реальный случай с киоска 30.07).
+# Формально слова разные, поэтому ни _DEGENERATE_RATIO, ни collapse_repeats их
+# не видят. Признак — цепочка ПОДРЯД идущих длинных слов с общим началом.
+# Порог 3 проверен на 140 реальных вопросах (батареи rag/eval + живые логи):
+# у них максимум 2, у той петли 5 — то есть запас двукратный.
+_STEM_RUN = 3        # сколько слов одного корня подряд считаем залипанием
+_STEM_MIN_WORD = 5   # слова короче не берём: «бұл», «что» дали бы ложные цепочки
+_STEM_LEN = 5        # сколько первых букв считаем «корнем»
+
 
 def collapse_repeats(text: str) -> str:
     """Схлопывает подряд идущие повторы слов и коротких фраз до одного раза.
@@ -223,7 +234,26 @@ def looks_degenerate(text: str) -> bool:
     if len(words) < 3 or is_affirmative(text):
         return False
     collapsed = re.findall(r"[^\W\d_]+", collapse_repeats(text).lower())
-    return len(collapsed) * 3 <= len(words)
+    if len(collapsed) * 3 <= len(words):
+        return True
+    # Агглютинативная петля: один корень подряд с разными окончаниями (см.
+    # _STEM_RUN). Слова формально разные, поэтому проверки выше её пропускают.
+    return _stem_run(words) >= _STEM_RUN
+
+
+def _stem_run(words: list[str]) -> int:
+    """Длина самой длинной цепочки ПОДРЯД идущих длинных слов с общим началом.
+
+    Именно «подряд» отличает залипание движка от законной повторяемости темы:
+    в вопросе про финансовый мониторинг слова «финансовый» и «финансирование»
+    разделены другими словами, а в петле корень идёт вплотную сам за собой.
+    """
+    long_words = [w for w in words if len(w) >= _STEM_MIN_WORD]
+    best = run = 1 if long_words else 0
+    for prev, cur in zip(long_words, long_words[1:]):
+        run = run + 1 if cur[:_STEM_LEN] == prev[:_STEM_LEN] else 1
+        best = max(best, run)
+    return best
 
 
 def not_recognized_phrase(language: str | None = None) -> str:

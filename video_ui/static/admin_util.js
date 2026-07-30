@@ -44,9 +44,36 @@ function fmtTs(iso) {
 function statusOf(row) {
   if (row.error === "disabled") return { label: "точка отключена", cls: "s-off" };
   if (row.error === "gate") return { label: "не пропущен", cls: "s-off" };
-  if (row.error) return { label: "ошибка: " + row.error, cls: "s-err" };
+  // Шум и пустая запись — не сбой и не пробел в базе: базу мы не спрашивали.
+  if (row.error === "noise") return { label: "не расслышал (шум)", cls: "s-off" };
+  if (row.error === "empty") return { label: "не расслышал (тишина)", cls: "s-off" };
+  if (row.error) return { label: "сбой: " + row.error, cls: "s-err" };
   if (row.answer_found === false) return { label: "нет в базе", cls: "s-gap" };
   return { label: "ответ найден", cls: "s-ok" };
+}
+
+const LANG_SHORT = { russian: "рус", kazakh: "каз" };
+function langName(code) { return LANG_SHORT[code] || code || "—"; }
+
+// Светофор плиток: без него семь одинаково серых квадратов, и глазу негде
+// зацепиться — проблему приходится вычислять, а не видеть. Пороги грубые и
+// намеренно простые: их задача — покрасить, а не поставить диагноз.
+const TONES = {
+  // доля вопросов, на которые база не ответила
+  fallback: [0.20, 0.40],
+  // доля записей с шумом/тишиной: много — микрофон или место шумное
+  not_heard: [0.10, 0.25],
+  // ЛЮБОЙ сбой сервиса — уже плохо, поэтому первый порог нулевой
+  failures: [0.0001, 0.05],
+  // ожидание ответа, миллисекунды
+  wait: [10000, 20000],
+};
+
+function tone(kind, value) {
+  const t = TONES[kind];
+  if (!t || value === null || value === undefined) return "";
+  if (value < t[0]) return "good";
+  return value < t[1] ? "warn" : "bad";
 }
 
 // Строка запроса из объекта: пустые и нулевые значения не тащим, иначе в адресе
@@ -64,5 +91,6 @@ function qs(params) {
 /* для node-тестов (в браузере module нет) */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { ago: ago, fmtMs: fmtMs, pct: pct, truncate: truncate,
-                     fmtTs: fmtTs, statusOf: statusOf, qs: qs };
+                     fmtTs: fmtTs, statusOf: statusOf, qs: qs,
+                     langName: langName, tone: tone, TONES: TONES };
 }

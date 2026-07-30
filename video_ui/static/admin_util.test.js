@@ -71,3 +71,41 @@ test("qs: пустые значения не попадают в адрес", ()
   assert.equal(qs({ token: "a b", kiosk: "astana" }), "token=a%20b&kiosk=astana");
   assert.equal(qs({ flag: false, other: 0 }), "other=0");
 });
+
+const { langName, tone } = require("./admin_util.js");
+
+test("statusOf: шум и тишина — не сбой и не пробел в базе", () => {
+  // База не спрашивалась, поэтому «нет в базе» тут врало бы и портило список
+  // «чем пополнять базу» — ровно этот баг нашёлся на живой странице 30.07.
+  assert.equal(statusOf({ error: "noise" }).cls, "s-off");
+  assert.equal(statusOf({ error: "empty" }).cls, "s-off");
+  assert.match(statusOf({ error: "noise" }).label, /не расслышал/);
+  assert.equal(statusOf({ error: "tts" }).cls, "s-err");
+});
+
+test("langName: короткие имена языков", () => {
+  assert.equal(langName("russian"), "рус");
+  assert.equal(langName("kazakh"), "каз");
+  assert.equal(langName(null), "—");
+  assert.equal(langName("english"), "english");
+});
+
+test("tone: светофор по порогам", () => {
+  assert.equal(tone("fallback", 0.1), "good");
+  assert.equal(tone("fallback", 0.3), "warn");
+  assert.equal(tone("fallback", 0.667), "bad");
+  assert.equal(tone("wait", 8700), "good");
+  assert.equal(tone("wait", 15000), "warn");
+  assert.equal(tone("wait", 25000), "bad");
+});
+
+test("tone: любой сбой сервиса уже не «good»", () => {
+  assert.equal(tone("failures", 0), "good");
+  assert.equal(tone("failures", 0.01), "warn");
+  assert.equal(tone("failures", 0.2), "bad");
+});
+
+test("tone: нет данных — без цвета, а не «good»", () => {
+  assert.equal(tone("fallback", null), "");
+  assert.equal(tone("неизвестно", 0.5), "");
+});

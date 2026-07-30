@@ -140,7 +140,8 @@ DEFAULT_EXCLUDE = ("loadtest",)
 #              Считать это ошибкой значит раздувать долю сбоев на ровном месте
 #              и прятать настоящие проблемы (найдено на живой странице 30.07).
 FAILURE_STAGES = ("stt", "rag", "tts")
-NOT_HEARD = ("empty",)
+# empty — распознали пустоту; noise — распознали шум/петлю и в базу не ходили.
+NOT_HEARD = ("empty", "noise")
 REFUSALS = ("disabled", "gate")
 
 

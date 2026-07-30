@@ -532,7 +532,12 @@ async def _answer_pipeline(audio: bytes, filename: str, content_type: str,
     question = service.collapse_repeats(question)
     if degenerate:
         rec["question"] = question
-        rec["answer_found"] = False
+        # НЕ answer_found=False: базу мы не спрашивали вовсе. Иначе шум с киоска
+        # («Продолжение следует.» на тишине) попадал в долю «нет в базе» и в
+        # список «чем пополнять базу» — то есть портил ровно тот отчёт, ради
+        # которого этот список и нужен (найдено на живой странице 30.07: 66,7%
+        # «нет в базе», из них две записи — артефакт и петля).
+        rec["error"] = "noise"
         answer = service.not_recognized_phrase(lang)
         rec["answer"] = answer
         log.info("STT-петля: вопрос не распознан, отвечаем просьбой повторить")

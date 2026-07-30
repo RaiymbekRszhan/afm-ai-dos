@@ -210,3 +210,20 @@ def test_by_kiosk_splits_failures_from_refusals():
     rows = [rec(kiosk="astana", error="tts"), rec(kiosk="astana", error="disabled")]
     k = analytics.by_kiosk(rows)[0]
     assert k["errors"] == 2 and k["failures"] == 1 and k["refused"] == 1
+
+
+def test_noise_counts_as_not_heard_not_as_gap():
+    """Шум/петля с киоска НЕ должны попадать в «нет в базе» и в список пополнения.
+
+    Ровно этот баг нашёлся на живой странице 30.07: «Продолжение следует.»
+    (артефакт STT на тишине) числился пробелом в базе.
+    """
+    rows = [rec(question="настоящий вопрос", answer_found=False),
+            rec(question="Продолжение следует.", error="noise"),
+            rec(question="", error="empty")]
+    s = analytics.summarize(rows)
+    assert s["fallback"] == 1          # только настоящий пробел
+    assert s["not_heard"] == 2         # шум + тишина
+    assert s["failures"] == 0          # и это НЕ сбой
+    # В списке «чем пополнять базу» шума быть не должно.
+    assert analytics.top_unanswered(rows, 5) == [["настоящий вопрос", 1]]

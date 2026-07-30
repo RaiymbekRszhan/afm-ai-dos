@@ -66,6 +66,25 @@
                     font-size: 15px; }
   .tile .rows b { font-size: 18px; font-variant-numeric: tabular-nums; }
   .tile .rows span { color: var(--muted); }
+  /* Светофор: левая полоса цветом состояния. Семь одинаково серых плиток
+     заставляли ВЫЧИСЛЯТЬ проблему, а не видеть её. */
+  .tile.good { border-left: 3px solid var(--ok); }
+  .tile.warn { border-left: 3px solid var(--warn); }
+  .tile.bad  { border-left: 3px solid var(--off); }
+  .tile.good .v { color: #56d364; }
+  .tile.warn .v { color: #e3b341; }
+  .tile.bad  .v { color: #ff7b72; }
+
+  /* Вывод словами: цифры отвечают «сколько», а эта строка — «всё ли хорошо». */
+  .verdict { background: var(--card); border: 1px solid var(--line);
+             border-left: 3px solid var(--accent); border-radius: 10px;
+             padding: 14px 18px; margin: 0 0 14px; font-size: 16px; line-height: 1.6; }
+  .verdict b { color: #fff; }
+  .verdict .bad { color: #ff7b72; }
+  .verdict .warn { color: #e3b341; }
+  .verdict .good { color: #56d364; }
+  .group { color: var(--muted); font-size: 12px; text-transform: uppercase;
+           letter-spacing: .06em; margin: 20px 0 8px; }
 
   /* Легенда графика: квадратики цвета вместо описания словами «синий/жёлтый» —
      так подпись не надо сопоставлять с картинкой в голове. */
@@ -145,7 +164,13 @@
 
   <!-- ================= ОБЗОР ================= -->
   <section id="tab-overview">
-    <div class="tiles" id="tiles"></div>
+    <div class="verdict" id="verdict"></div>
+    <div class="group">Сколько спрашивают</div>
+    <div class="tiles" id="tilesLoad"></div>
+    <div class="group">Качество ответов</div>
+    <div class="tiles" id="tilesQuality"></div>
+    <div class="group">Скорость</div>
+    <div class="tiles" id="tilesSpeed"></div>
     <div class="note hide" id="refused"></div>
     <h2>Обращения по суткам</h2>
     <div id="chart"></div>
@@ -203,6 +228,7 @@
     <table>
       <thead><tr>
         <th class="nowrap">Время</th><th class="hide-s">Точка</th>
+        <th class="nowrap">Язык</th>
         <th>Вопрос</th><th>Результат</th><th class="num nowrap">Ожидание</th>
       </tr></thead>
       <tbody id="logRows"></tbody>
@@ -262,8 +288,8 @@ async function api(path, params, method, body) {
 }
 
 // ---------- ОБЗОР ----------
-function tile(value, key, hint) {
-  const t = el("div", "tile");
+function tile(value, key, hint, toneCls) {
+  const t = el("div", "tile" + (toneCls ? " " + toneCls : ""));
   t.appendChild(el("div", "v", value));
   t.appendChild(el("div", "k", key));
   if (hint) t.appendChild(el("div", "h", hint));
@@ -300,23 +326,69 @@ const STAGES = [
 
 function renderOverview(d) {
   const s = d.summary, lat = s.latency;
-  const tiles = $("tiles");
-  tiles.innerHTML = "";
-  tiles.appendChild(tile(s.total, "обращений за период"));
-  tiles.appendChild(tile(pct(s.fallback, s.ok), "нет ответа в базе",
-                         s.fallback + " шт. — кандидаты в базу"));
-  tiles.appendChild(tile(pct(s.not_heard, s.total), "не расслышал",
-                         s.not_heard ? "шум или тишина у киоска" : "записи чистые"));
-  // Только НАСТОЯЩИЕ сбои: отказы рубильника раздували эту долю и прятали
-  // реальные поломки (было видно на живой странице 30.07).
-  tiles.appendChild(tile(pct(s.failures, s.total), "сбоев",
-                         s.failures ? s.failures_by_stage.map((p) => p[0] + " " + p[1]).join(", ")
-                                    : "сервисы не падали"));
-  tiles.appendChild(tile(fmtMs(lat.total.p50), "ждут ответа, медиана",
-                         "почти худшее (p95) " + fmtMs(lat.total.p95)));
-  tiles.appendChild(tileRows(s.langs.map((p) => [LANG_NAME[p[0]] || p[0], p[1]]),
-                             "язык обращения"));
-  tiles.appendChild(tile(pct(s.printed, s.ok), "предложена печать бланка"));
+  const share = (part) => (s.total ? part / s.total : 0);
+
+  // Вывод словами. Цифры отвечают на «сколько», а руководителю и оператору
+  // нужен ответ на «всё ли хорошо» — иначе таблицу приходится расшифровывать.
+  const v = $("verdict");
+  v.innerHTML = "";
+  if (!s.total) {
+    v.appendChild(document.createTextNode("За выбранный период обращений не было."));
+  } else {
+    const gapPart = s.ok ? s.fallback / s.ok : 0;
+    const parts = [
+      ["За период — ", null], [s.total + " обращени" + plural(s.total, "е", "я", "й"), "b"],
+      [". База ответила на ", null],
+      [pct(s.ok - s.fallback, s.ok), tone("fallback", gapPart) === "good" ? "good" : "warn"],
+      [" вопросов", null],
+    ];
+    parts.forEach(function (p) {
+      v.appendChild(p[1] === "b" ? el("b", null, p[0]) : el("span", p[1] || "", p[0]));
+    });
+    v.appendChild(document.createTextNode(". "));
+    if (s.failures) {
+      v.appendChild(el("span", "bad", "Сбоев: " + s.failures + " — стоит посмотреть журнал. "));
+    } else {
+      v.appendChild(el("span", "good", "Сбоев не было. "));
+    }
+    if (s.not_heard) {
+      v.appendChild(document.createTextNode(
+        "Не расслышал " + s.not_heard + " раз — шум или тишина у киоска, такие записи в базу не идут. "));
+    }
+    v.appendChild(document.createTextNode(
+      "Половина граждан получала ответ за " + fmtMs(lat.total.p50) + "."));
+  }
+
+  // Три группы вместо одной ленты: «сколько спрашивают», «качество», «скорость».
+  const load = $("tilesLoad"), qual = $("tilesQuality"), speed = $("tilesSpeed");
+  [load, qual, speed].forEach((box) => (box.innerHTML = ""));
+
+  load.appendChild(tile(s.total, "обращений за период"));
+  load.appendChild(tileRows(s.langs.map((p) => [LANG_NAME[p[0]] || p[0], p[1]]),
+                            "язык обращения"));
+  load.appendChild(tile(pct(s.printed, s.ok), "предложена печать бланка",
+                        s.printed + " шт."));
+  load.appendChild(tile(pct(s.suggested, s.ok), "уточняли вопрос",
+                        "аватар переспросил " + s.suggested + " раз"));
+
+  qual.appendChild(tile(pct(s.fallback, s.ok), "нет ответа в базе",
+                        s.fallback + " шт. — кандидаты в базу",
+                        tone("fallback", s.ok ? s.fallback / s.ok : null)));
+  qual.appendChild(tile(pct(s.failures, s.total), "сбоев",
+                        s.failures ? s.failures_by_stage.map((p) => p[0] + " " + p[1]).join(", ")
+                                   : "сервисы не падали",
+                        tone("failures", share(s.failures))));
+  qual.appendChild(tile(pct(s.not_heard, s.total), "не расслышал",
+                        s.not_heard ? "шум или тишина у киоска" : "записи чистые",
+                        tone("not_heard", share(s.not_heard))));
+
+  speed.appendChild(tile(fmtMs(lat.total.p50), "ждут ответа, медиана",
+                         "половина граждан — быстрее",
+                         tone("wait", lat.total.p50)));
+  speed.appendChild(tile(fmtMs(lat.total.p95), "почти худшее (p95)",
+                         "дольше ждал 1 из 20", tone("wait", lat.total.p95)));
+  speed.appendChild(tile(fmtMs(lat.tts.p50), "из них озвучка",
+                         "самая долгая стадия"));
 
   // Отказы — не метрика качества, а следствие наших настроек: показываем
   // строкой и только когда они были.
@@ -332,21 +404,30 @@ function renderOverview(d) {
   const tb = $("lat").querySelector("tbody");
   tb.innerHTML = "";
   STAGES.forEach(function (st) {
-    const v = lat[st[0]];
+    const val = lat[st[0]];
     const tr = el("tr");
     const name = el("td");
     name.appendChild(el("div", null, st[1]));
     name.appendChild(el("div", "id", st[2]));
     tr.appendChild(name);
-    tr.appendChild(el("td", "num", fmtMs(v.p50)));
-    tr.appendChild(el("td", "num", fmtMs(v.p95)));
-    tr.appendChild(el("td", "num", fmtMs(v.max)));
-    tr.appendChild(el("td", "num sub", v.n || "—"));
+    tr.appendChild(el("td", "num", fmtMs(val.p50)));
+    tr.appendChild(el("td", "num", fmtMs(val.p95)));
+    tr.appendChild(el("td", "num", fmtMs(val.max)));
+    tr.appendChild(el("td", "num sub", val.n || "—"));
     tb.appendChild(tr);
   });
   $("latHelp").textContent = "Озвучка — самая долгая стадия: ответ длиной в "
     + "минуту синтезируется целиком, прежде чем аватар начнёт говорить. "
     + "Сократить устный ответ — самый большой выигрыш по ожиданию.";
+}
+
+// «3 обращения» / «1 обращение» / «5 обращений» — иначе строка выглядит
+// машинной там, где её читает руководство.
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  return b === 1 ? one : many;
 }
 
 // Инлайн-SVG: в сети АФМ нет CDN, подключить библиотеку графиков неоткуда.
@@ -541,7 +622,7 @@ function renderLog(d) {
   if (!d.rows.length) {
     const tr = el("tr");
     const td = el("td", "note", "за период по этим условиям обращений нет");
-    td.setAttribute("colspan", "5");
+    td.setAttribute("colspan", "6");
     tr.appendChild(td);
     tb.appendChild(tr);
   }
@@ -549,6 +630,7 @@ function renderLog(d) {
     const tr = el("tr");
     tr.appendChild(el("td", "nowrap sub", fmtTs(r.ts)));
     tr.appendChild(el("td", "hide-s id", r.kiosk || "—"));
+    tr.appendChild(el("td", "nowrap id", langName(r.lang)));
 
     const qcell = el("td");
     if (d.texts_enabled) {
@@ -562,7 +644,7 @@ function renderLog(d) {
       };
       qcell.appendChild(q);
     } else {
-      qcell.appendChild(el("span", "sub", r.lang === "kazakh" ? "kk" : "ru"));
+      qcell.appendChild(el("span", "sub", "текст не показывается"));
     }
     tr.appendChild(qcell);
 
