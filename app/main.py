@@ -226,6 +226,9 @@ def _fleet_payload(days: int) -> dict:
         row["period_asks"] = s["total"] if s else 0
         row["period_fallback"] = s["fallback"] if s else 0
         row["period_fallback_pct"] = s["fallback_pct"] if s else "—"
+        # Сбои отдельно от отказов рубильника: отключённый регион не сломан.
+        row["period_failures"] = s["failures"] if s else 0
+        row["period_refused"] = s["refused"] if s else 0
         row["period_errors"] = s["errors"] if s else 0
         row["period_p50"] = s["p50"] if s else None
     return {

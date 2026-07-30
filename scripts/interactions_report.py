@@ -69,8 +69,14 @@ def main() -> None:
               f" показать всё — --exclude-kiosk '')")
     print(f"Всего обращений:      {total}")
     print(f"  успешных:           {s['ok']} ({analytics.pct(s['ok'], total)})")
-    print(f"  с ошибкой:          {s['errors']} ({analytics.pct(s['errors'], total)})"
-          + (f"  по стадиям: {dict(s['err_by_stage'])}" if s["errors"] else ""))
+    # Три исхода по отдельности: бежать что-то починять надо только из-за сбоев.
+    # «Не расслышал» — шум у киоска, «отказано» — наши же настройки сработали.
+    print(f"  сбоев:              {s['failures']} ({analytics.pct(s['failures'], total)})"
+          + (f"  по стадиям: {dict(s['failures_by_stage'])}" if s["failures"] else ""))
+    print(f"  не расслышал:       {s['not_heard']} ({analytics.pct(s['not_heard'], total)})")
+    print(f"  отказано:           {s['refused']} ({analytics.pct(s['refused'], total)})"
+          + (f"  {dict(s['refused_by_kind'])}" if s["refused"] else "")
+          + "  (рубильник/пропуск)")
     print(f"  язык:               " + ", ".join(f"{k}={v}" for k, v in s["langs"]))
     print(f"  TTS-провайдер:      " + ", ".join(f"{k}={v}" for k, v in s["providers"]))
     print()
@@ -96,11 +102,11 @@ def main() -> None:
         # длиннее «astana-01»), иначе таблица разъезжается ровно там, где её
         # читают глазами.
         w = max(10, min(32, max(len(k["kiosk"]) for k in kiosks)))
-        print(f"  {'киоск':<{w}} {'обращений':>9} {'нет в базе':>12} {'ошибок':>7} {'total p50':>10}")
+        print(f"  {'киоск':<{w}} {'обращений':>9} {'нет в базе':>12} {'сбоев':>7} {'total p50':>10}")
         for k in kiosks:
             p50 = f"{k['p50']} мс" if k["p50"] is not None else "—"
             print(f"  {k['kiosk']:<{w}} {k['total']:>9} {k['fallback']:>6}"
-                  f" {k['fallback_pct']:>5} {k['errors']:>7} {p50:>10}")
+                  f" {k['fallback_pct']:>5} {k['failures']:>7} {p50:>10}")
         print()
 
     # Топ вопросов (только если тексты писались — log_questions=full).

@@ -55,9 +55,24 @@
            gap: 12px; }
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
           padding: 14px 16px; }
-  .tile .v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums;
+             white-space: nowrap; }
   .tile .k { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .tile .h { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  /* Несколько значений в плитке (языки): «ru 42 · kk 27» в 26px переносилось
+     и разъезжалось. Мини-список читается лучше и не зависит от числа строк. */
+  .tile .rows { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 4px; }
+  .tile .rows div { display: flex; justify-content: space-between; gap: 12px;
+                    font-size: 15px; }
+  .tile .rows b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .tile .rows span { color: var(--muted); }
+
+  /* Легенда графика: квадратики цвета вместо описания словами «синий/жёлтый» —
+     так подпись не надо сопоставлять с картинкой в голове. */
+  .legend { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 12px;
+            font-size: 15px; }
+  .legend i { display: inline-block; width: 14px; height: 14px; border-radius: 3px;
+              margin-right: 8px; vertical-align: -2px; }
 
   table { width: 100%; border-collapse: collapse; background: var(--card);
           border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -131,10 +146,24 @@
   <!-- ================= ОБЗОР ================= -->
   <section id="tab-overview">
     <div class="tiles" id="tiles"></div>
+    <div class="note hide" id="refused"></div>
     <h2>Обращения по суткам</h2>
     <div id="chart"></div>
-    <h2>Задержки по стадиям</h2>
-    <table id="lat"><tbody></tbody></table>
+    <h2>Сколько гражданин ждёт ответа</h2>
+    <div class="note">Медиана — столько ждала половина граждан. p95 — почти
+      худший случай: дольше ждал лишь один человек из двадцати. «Замеров» —
+      сколько обращений попало в расчёт.</div>
+    <table id="lat">
+      <thead><tr>
+        <th>Стадия</th>
+        <th class="num">Медиана</th>
+        <th class="num">p95</th>
+        <th class="num">Худшее</th>
+        <th class="num">Замеров</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="note" id="latHelp"></div>
   </section>
 
   <!-- ================= КИОСКИ ================= -->
@@ -147,13 +176,15 @@
       <thead><tr>
         <th>Точка</th><th>Связь</th>
         <th class="num hide-s">Вопросов</th><th class="num hide-s">Нет в базе</th>
-        <th class="num hide-s">Ошибок</th><th class="num hide-s">Ожидание</th>
+        <th class="num hide-s">Сбоев</th><th class="num hide-s">Ожидание</th>
         <th>Состояние</th><th></th>
       </tr></thead>
       <tbody id="fleetRows"></tbody>
     </table>
-    <div class="note">«Вопросов» и «Ожидание» — за выбранный период, из логов.
-      «Связь» — прямо сейчас: точка стучится на сервер раз в минуту.</div>
+    <div class="note">«Вопросов», «Нет в базе», «Сбоев» и «Ожидание» — за выбранный
+      период, из логов. «Связь» — прямо сейчас: точка стучится на сервер раз в
+      минуту. В «Сбоях» только настоящие поломки сервисов; отключение рубильником
+      сбоем не считается.</div>
   </section>
 
   <!-- ================= ОБРАЩЕНИЯ ================= -->
@@ -239,37 +270,83 @@ function tile(value, key, hint) {
   return t;
 }
 
+// Плитка со списком значений: «ru 42 · kk 27» одной строкой в 26px переносилось
+// и разъезжалось (замечание 30.07).
+function tileRows(pairs, key) {
+  const t = el("div", "tile");
+  const box = el("div", "rows");
+  pairs.forEach(function (p) {
+    const row = el("div");
+    row.appendChild(el("span", null, p[0]));
+    row.appendChild(el("b", null, p[1]));
+    box.appendChild(row);
+  });
+  if (!pairs.length) box.appendChild(el("div", null, "—"));
+  t.appendChild(box);
+  t.appendChild(el("div", "k", key));
+  return t;
+}
+
+const LANG_NAME = { russian: "русский", kazakh: "казахский" };
+// Что означает каждая стадия — иначе «поиск в базе / озвучка» приходится
+// угадывать, а по цифрам не понять, где именно уходит время.
+const STAGES = [
+  ["total", "весь цикл", "от нажатия кнопки до готового ответа"],
+  ["stt", "распознавание речи", "запись → текст вопроса"],
+  ["rag", "поиск в базе", "поиск ответа по кодексам и законам"],
+  ["tts", "озвучка", "текст ответа → голос аватара"],
+  ["tts_first", "до первого звука", "только в потоковом режиме (?stream=1)"],
+];
+
 function renderOverview(d) {
   const s = d.summary, lat = s.latency;
   const tiles = $("tiles");
   tiles.innerHTML = "";
   tiles.appendChild(tile(s.total, "обращений за период"));
-  tiles.appendChild(tile(pct(s.fallback, s.ok), "нет в базе",
+  tiles.appendChild(tile(pct(s.fallback, s.ok), "нет ответа в базе",
                          s.fallback + " шт. — кандидаты в базу"));
-  tiles.appendChild(tile(pct(s.errors, s.total), "с ошибкой",
-                         s.errors ? Object.keys(Object.fromEntries(s.err_by_stage)).join(", ") : "сбоев нет"));
-  tiles.appendChild(tile(fmtMs(lat.total.p50), "ожидание, медиана",
-                         "p95 " + fmtMs(lat.total.p95)));
-  tiles.appendChild(tile(s.langs.map(([k, v]) => (k === "russian" ? "ru " : "kk ") + v).join(" · ") || "—",
-                         "языки"));
+  tiles.appendChild(tile(pct(s.not_heard, s.total), "не расслышал",
+                         s.not_heard ? "шум или тишина у киоска" : "записи чистые"));
+  // Только НАСТОЯЩИЕ сбои: отказы рубильника раздували эту долю и прятали
+  // реальные поломки (было видно на живой странице 30.07).
+  tiles.appendChild(tile(pct(s.failures, s.total), "сбоев",
+                         s.failures ? s.failures_by_stage.map((p) => p[0] + " " + p[1]).join(", ")
+                                    : "сервисы не падали"));
+  tiles.appendChild(tile(fmtMs(lat.total.p50), "ждут ответа, медиана",
+                         "почти худшее (p95) " + fmtMs(lat.total.p95)));
+  tiles.appendChild(tileRows(s.langs.map((p) => [LANG_NAME[p[0]] || p[0], p[1]]),
+                             "язык обращения"));
   tiles.appendChild(tile(pct(s.printed, s.ok), "предложена печать бланка"));
+
+  // Отказы — не метрика качества, а следствие наших настроек: показываем
+  // строкой и только когда они были.
+  const refused = $("refused");
+  refused.classList.toggle("hide", !s.refused);
+  refused.textContent = s.refused
+    ? "Отказано " + s.refused + " обращениям: сработал рубильник или не совпал "
+      + "пропуск точки (" + s.refused_by_kind.map((p) => p[0] + " " + p[1]).join(", ") + ")."
+    : "";
 
   renderChart(d.by_day);
 
   const tb = $("lat").querySelector("tbody");
   tb.innerHTML = "";
-  const names = { total: "весь цикл", stt: "распознавание", rag: "поиск в базе",
-                  tts: "озвучка", tts_first: "до первого звука" };
-  Object.keys(names).forEach(function (k) {
-    const v = lat[k];
+  STAGES.forEach(function (st) {
+    const v = lat[st[0]];
     const tr = el("tr");
-    tr.appendChild(el("td", null, names[k]));
+    const name = el("td");
+    name.appendChild(el("div", null, st[1]));
+    name.appendChild(el("div", "id", st[2]));
+    tr.appendChild(name);
     tr.appendChild(el("td", "num", fmtMs(v.p50)));
     tr.appendChild(el("td", "num", fmtMs(v.p95)));
     tr.appendChild(el("td", "num", fmtMs(v.max)));
-    tr.appendChild(el("td", "num sub", v.n ? "n=" + v.n : "нет данных"));
+    tr.appendChild(el("td", "num sub", v.n || "—"));
     tb.appendChild(tr);
   });
+  $("latHelp").textContent = "Озвучка — самая долгая стадия: ответ длиной в "
+    + "минуту синтезируется целиком, прежде чем аватар начнёт говорить. "
+    + "Сократить устный ответ — самый большой выигрыш по ожиданию.";
 }
 
 // Инлайн-SVG: в сети АФМ нет CDN, подключить библиотеку графиков неоткуда.
@@ -306,10 +383,10 @@ function renderChart(days) {
     const hTotal = Math.max(1, Math.round(plotH * d.total / max));
     const hGap = Math.round(plotH * d.fallback / max);
     svg.appendChild(mk("rect", { x: x, y: H - padB - hTotal, width: w, height: hTotal,
-                                 fill: "#1f6feb", rx: 2 }));
+                                 fill: "#388bfd", rx: 2 }));
     if (hGap > 0) {
       svg.appendChild(mk("rect", { x: x, y: H - padB - hGap, width: w, height: hGap,
-                                   fill: "#d29922", rx: 2 }));
+                                   fill: "#e3b341", rx: 2 }));
     }
     const t = mk("title", {}, d.date + ": " + d.total + ", нет в базе " + d.fallback);
     svg.appendChild(t);
@@ -321,7 +398,15 @@ function renderChart(days) {
     }
   });
   box.appendChild(svg);
-  const legend = el("div", "note", "синий — обращения, жёлтый — из них без ответа в базе");
+  const legend = el("div", "legend");
+  [["#388bfd", "обращения"], ["#e3b341", "из них без ответа в базе"]].forEach(function (p) {
+    const item = el("span");
+    const sw = el("i");
+    sw.style.background = p[0];
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode(p[1]));
+    legend.appendChild(item);
+  });
   box.appendChild(legend);
 }
 
@@ -369,8 +454,11 @@ function renderFleet(d) {
     const gap = el("td", "num hide-s", k.period_fallback + " / " + k.period_fallback_pct);
     if (k.period_fallback) gap.classList.add("s-gap");
     tr.appendChild(gap);
-    const errs = el("td", "num hide-s", k.period_errors);
-    if (k.period_errors) errs.classList.add("s-err");
+    // Сбои, а НЕ все ошибки: отказ рубильника красил отключённый регион
+    // красным, будто он сломан.
+    const errs = el("td", "num hide-s", k.period_failures);
+    if (k.period_failures) errs.classList.add("s-err");
+    if (k.period_refused) errs.title = "плюс отказано: " + k.period_refused;
     tr.appendChild(errs);
     tr.appendChild(el("td", "num hide-s", fmtMs(k.period_p50)));
 

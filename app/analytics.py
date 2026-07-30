@@ -131,6 +131,18 @@ def latency(rows: list[dict], field: str) -> dict:
 # в топе вопросов они забивают первые строки и портят долю «нет в базе».
 DEFAULT_EXCLUDE = ("loadtest",)
 
+# Поле `error` мешает в одну кучу три разных по смыслу исхода, и оператору важно
+# их различать: бежать что-то починять надо только из-за первой группы.
+#   сбой     — упал сервис (STT/RAG/TTS), это поломка;
+#   не расслышал — на записи шум или тишина, гражданин просто повторит вопрос.
+#                  Нормальный исход работы фильтров, а не отказ системы;
+#   отказано — сработали НАШИ настройки: рубильник по точке или пропуск.
+#              Считать это ошибкой значит раздувать долю сбоев на ровном месте
+#              и прятать настоящие проблемы (найдено на живой странице 30.07).
+FAILURE_STAGES = ("stt", "rag", "tts")
+NOT_HEARD = ("empty",)
+REFUSALS = ("disabled", "gate")
+
 
 def filter_rows(rows: list[dict], *, kiosk: str | None = None,
                 exclude: tuple[str, ...] | set[str] = DEFAULT_EXCLUDE,
@@ -165,15 +177,24 @@ def summarize(rows: list[dict]) -> dict:
     total = len(rows)
     errors = [r for r in rows if r.get("error")]
     ok = [r for r in rows if not r.get("error")]
+    failures = [r for r in errors if r["error"] in FAILURE_STAGES]
+    not_heard = [r for r in errors if r["error"] in NOT_HEARD]
+    refused = [r for r in errors if r["error"] in REFUSALS]
     fallback = [r for r in ok if r.get("answer_found") is False]
     suggested = [r for r in ok if r.get("suggested")]
     printed = [r for r in ok if r.get("print_ids")]
     return {
         "total": total,
         "ok": len(ok),
+        # errors — ВСЁ, где поле error непусто (общий баланс: ok + errors = total).
         "errors": len(errors),
-        # dict(...) даёт тот же repr, что печатал прежний отчёт: {'tts': 1}
         "err_by_stage": Counter(r["error"] for r in errors).most_common(),
+        # Три разных исхода по отдельности — см. комментарий у FAILURE_STAGES.
+        "failures": len(failures),
+        "failures_by_stage": Counter(r["error"] for r in failures).most_common(),
+        "not_heard": len(not_heard),
+        "refused": len(refused),
+        "refused_by_kind": Counter(r["error"] for r in refused).most_common(),
         "langs": Counter(r.get("lang", "?") for r in rows).most_common(),
         "providers": Counter(r.get("provider", "?") for r in ok).most_common(),
         "fallback": len(fallback),
@@ -202,6 +223,10 @@ def by_kiosk(rows: list[dict]) -> list[dict]:
             "fallback": len(k_fb),
             "fallback_pct": pct(len(k_fb), len(k_ok)),
             "errors": len(k_err),
+            # Отдельно от `errors`: в колонке «сбоев» не должны сидеть отказы
+            # рубильника — иначе отключённый регион выглядит сломанным.
+            "failures": len([r for r in k_err if r["error"] in FAILURE_STAGES]),
+            "refused": len([r for r in k_err if r["error"] in REFUSALS]),
             # is not None, а не «истинность»: total_ms=0 (быстрый мок/кэш) —
             # это значение, а не отсутствие замера.
             "p50": percentile([r["total_ms"] for r in k_ok

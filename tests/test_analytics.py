@@ -190,3 +190,23 @@ def test_top_unanswered_is_only_gaps():
             rec(question="нет в базе", answer_found=False),
             rec(question="сбой", error="tts", answer_found=False)]
     assert analytics.top_unanswered(rows, 5) == [["нет в базе", 1]]
+
+
+# ---------- три разных исхода в поле error ----------
+def test_summarize_splits_failures_refusals_and_not_heard():
+    """Отказ рубильника — не сбой: иначе доля ошибок раздувается на ровном месте."""
+    rows = [rec(), rec(error="tts"), rec(error="stt"), rec(error="empty"),
+            rec(error="disabled"), rec(error="gate")]
+    s = analytics.summarize(rows)
+    assert s["errors"] == 5          # общий баланс: ok + errors = total
+    assert s["failures"] == 2        # только stt/rag/tts
+    assert dict(s["failures_by_stage"]) == {"tts": 1, "stt": 1}
+    assert s["not_heard"] == 1       # empty — шум у киоска
+    assert s["refused"] == 2         # наши же настройки сработали
+    assert dict(s["refused_by_kind"]) == {"disabled": 1, "gate": 1}
+
+
+def test_by_kiosk_splits_failures_from_refusals():
+    rows = [rec(kiosk="astana", error="tts"), rec(kiosk="astana", error="disabled")]
+    k = analytics.by_kiosk(rows)[0]
+    assert k["errors"] == 2 and k["failures"] == 1 and k["refused"] == 1
