@@ -954,7 +954,24 @@ def prepare_for_tts(text: str, language: str | None = None,
     provider = provider or _provider_for(language)
     if provider == "eleven":
         # eleven держит длинный текст сам — крупные куски, минимум швов.
-        sent_max = group = settings.elevenlabs_max_chars
+        #
+        # ⚠️ Предложение НЕ РЕЖЕМ на границе лимита. eleven_v3 генерирует
+        # интонацию заново на каждый запрос, поэтому между кусками тембр и темп
+        # плывут. Если стык попал внутрь фразы, скачок слышен как чужой голос
+        # посреди слова (замечено на киоске 30.07); на границе предложения его
+        # маскирует естественная пауза. Раньше здесь стояло
+        # sent_max = ELEVENLABS_MAX_CHARS (на бою 200), и любое юридическое
+        # предложение длиннее 200 символов — то есть обычное — рвалось по
+        # запятой. Теперь дробим только патологию: строку без точек длиннее
+        # ELEVENLABS_SENTENCE_CAP (например, слипшееся перечисление из RAG).
+        #
+        # Плата: одно длинное предложение = один длинный кусок, первый звук
+        # приходит позже. Для облака это линейно по длине (в отличие от Spark с
+        # его квадратичным ростом), поэтому обмен выгодный: ровный голос важнее
+        # секунды ожидания.
+        sent_max = max(settings.elevenlabs_max_chars,
+                       settings.elevenlabs_sentence_cap)
+        group = settings.elevenlabs_max_chars
     elif provider == "spark":
         sent_max = group = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     else:

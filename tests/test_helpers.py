@@ -593,3 +593,45 @@ def test_stem_run_counts_only_adjacent_long_words():
     assert service._stem_run(["финансовый", "мониторинг", "финансовая"]) == 1
     # Короткие слова в цепочку не берём: «что», «бұл» дали бы ложные срабатывания.
     assert service._stem_run(["что", "чтоб", "чток"]) == 0
+
+
+# ---------- eleven: стыки только по границам предложений ----------
+def test_eleven_does_not_cut_inside_a_sentence():
+    """eleven_v3 генерирует интонацию заново на каждый запрос, поэтому стык
+    внутри фразы слышится как смена голоса посреди слова (киоск 30.07).
+
+    Юридическое предложение длиннее лимита куска — норма, и раньше оно рвалось
+    по запятой. Теперь каждый кусок обязан кончаться концом предложения.
+    """
+    from app.clients import tts as t
+    long_sentence = ("Субъектами финансового мониторинга признаются банки, страховые "
+                     "организации, профессиональные участники рынка ценных бумаг, а "
+                     "также нотариусы, адвокаты и юридические консультанты в части "
+                     "сделок с недвижимым имуществом.")
+    text = long_sentence + " Порог составляет пять миллионов тенге."
+    old = settings.elevenlabs_max_chars
+    try:
+        settings.elevenlabs_max_chars = 200          # как на бою
+        assert len(long_sentence) > 200, "тест бессмыслен, если предложение короче лимита"
+        _, parts = t.prepare_for_tts(text, "kazakh", provider="eleven")
+        assert len(parts) == 2
+        for p in parts:
+            assert p.rstrip()[-1] in ".!?", f"кусок кончается внутри фразы: {p[-40:]!r}"
+    finally:
+        settings.elevenlabs_max_chars = old
+
+
+def test_eleven_still_splits_pathological_run():
+    """Строку без точек длиннее cap (слипшееся перечисление из RAG) рубим —
+    иначе один кусок раздуется до минут синтеза."""
+    from app.clients import tts as t
+    old_max, old_cap = settings.elevenlabs_max_chars, settings.elevenlabs_sentence_cap
+    try:
+        settings.elevenlabs_max_chars = 200
+        settings.elevenlabs_sentence_cap = 300
+        run = ", ".join(["банки и страховые организации"] * 20) + "."
+        _, parts = t.prepare_for_tts(run, "kazakh", provider="eleven")
+        assert len(parts) > 1
+        assert all(len(p) <= 400 for p in parts), [len(p) for p in parts]
+    finally:
+        settings.elevenlabs_max_chars, settings.elevenlabs_sentence_cap = old_max, old_cap
