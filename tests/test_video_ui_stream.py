@@ -141,3 +141,31 @@ def test_proxy_omits_kiosk_when_not_sent(monkeypatch):
                data={"language": "russian"})
     assert r.status_code == 200
     assert "kiosk" not in seen["data"]
+
+
+# ---------- заголовки кэширования (регионы ходят через кэширующий прокси) ----------
+def test_live_data_is_not_cacheable(monkeypatch):
+    """Регионы ходят через Squid АФМ (подтверждено 30.07 заголовками X-Cache).
+
+    У /health и /admin/* нет ни ETag, ни Cache-Control, зато есть 200 и
+    Content-Length — Squid вправе их закэшировать. Тогда киоск получит бодрый
+    200 на /health при лежащем сервере, а админка покажет «на связи» у молчащей
+    точки. Поэтому им нужен no-store.
+    """
+    from fastapi.testclient import TestClient
+
+    import video_ui.server as vs
+
+    with TestClient(vs.app) as c:
+        health = c.get("/health")
+        assert health.headers.get("cache-control") == "no-store"
+
+        # Страница админки: путь без .html, раньше не получала заголовка вовсе.
+        admin = c.get("/admin")
+        assert admin.headers.get("cache-control") == "no-store"
+
+        # Код страницы по-прежнему просто перепроверяется (ETag → 304, дёшево).
+        page = c.get("/")
+        assert page.headers.get("cache-control") == "no-cache, must-revalidate"
+        js = c.get("/static/admin_util.js")
+        assert js.headers.get("cache-control") == "no-cache, must-revalidate"
