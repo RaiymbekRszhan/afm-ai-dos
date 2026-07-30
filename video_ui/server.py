@@ -119,25 +119,33 @@ async def kiosk_ping(kiosk: str = Form(default=None), key: str = Form(default=No
                     media_type=r.headers.get("content-type", "application/json"))
 
 
-@app.api_route("/admin/kiosks", methods=["GET", "POST"], include_in_schema=False)
-async def admin_kiosks(request: Request):
+@app.api_route("/admin/{path:path}", methods=["GET", "POST"], include_in_schema=False)
+async def admin_api(path: str, request: Request):
     """API админки — насквозь на бэкенд вместе с токеном.
 
-    Токен НЕ проверяем здесь: единственный источник правды — оркестратор,
-    иначе получится два места, где решается доступ, и они разойдутся.
+    Один маршрут на всё поддерево, а не по одному на эндпоинт: иначе каждый
+    новый отчёт требовал бы правки ещё и здесь, и рассинхрон нашёлся бы уже
+    на сервере. Токен НЕ проверяем здесь — единственный источник правды
+    оркестратор: два места принятия решения о доступе неизбежно разъезжаются.
     """
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
+        async with httpx.AsyncClient(timeout=30) as c:
             if request.method == "GET":
-                r = await c.get(BACKEND + "/admin/kiosks",
+                r = await c.get(f"{BACKEND}/admin/{path}",
                                 params=dict(request.query_params))
             else:
-                r = await c.post(BACKEND + "/admin/kiosks",
+                r = await c.post(f"{BACKEND}/admin/{path}",
                                  data=dict(await request.form()))
     except Exception as e:
         print(f"[video_ui] backend {BACKEND} недоступен: {e!r}")
         raise HTTPException(status_code=502, detail="Рабочий бэкенд недоступен.")
-    return Response(content=r.content, status_code=r.status_code,
+    # Content-Disposition нужен выгрузу CSV: без него браузер покажет файл
+    # текстом вместо «Сохранить как».
+    headers = {}
+    disp = r.headers.get("content-disposition")
+    if disp:
+        headers["Content-Disposition"] = disp
+    return Response(content=r.content, status_code=r.status_code, headers=headers,
                     media_type=r.headers.get("content-type", "application/json"))
 
 

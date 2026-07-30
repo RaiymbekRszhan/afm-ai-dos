@@ -15,6 +15,12 @@ def admin(tmp_path, monkeypatch):
     monkeypatch.setattr(kiosks.settings, "kiosks_disabled_file", str(disabled))
     monkeypatch.setattr(kiosks.settings, "kiosks_file", str(fleet))
     monkeypatch.setattr(kiosks.settings, "admin_token", "s3cret")
+    # Пустой каталог логов: иначе тесты читали бы НАСТОЯЩИЙ logs/ разработчика —
+    # и падали от его содержимого, и трогали бы ПДн граждан.
+    empty = tmp_path / "logs"
+    empty.mkdir()
+    import app.main as main
+    monkeypatch.setattr(main.settings, "log_dir", str(empty))
     kiosks.reset_cache()
     kiosks.reset_seen()
     yield {"disabled": disabled, "fleet": fleet, "token": "s3cret"}
@@ -170,3 +176,143 @@ def test_admin_rejects_garbage_kiosk_id(client, token):
     r = client.post("/admin/kiosks", data={
         "token": token, "kiosk": "...", "enabled": "false"})
     assert r.status_code == 400
+
+
+# ---------- отчётность: сводка, журнал, выгруз ----------
+@pytest.fixture
+def logs(tmp_path, monkeypatch):
+    """Свой каталог логов с известным содержимым."""
+    import json
+
+    from app import analytics
+    import app.main as main
+
+    def rec(**kw):
+        base = {"ts": "2026-07-29T10:00:00Z", "id": "a1", "kiosk": "astana",
+                "lang": "russian", "question": "про налоги", "answer": "ответ про налоги",
+                "answer_found": True, "suggested": False, "corrected": False,
+                "print_ids": [], "provider": "f5", "stt_ms": 500, "rag_ms": 900,
+                "tts_ms": 3000, "tts_first_ms": None, "total_ms": 4400, "error": None}
+        base.update(kw)
+        return base
+
+    rows = [
+        rec(id="r1"),
+        rec(id="r2", question="про штрафы", answer_found=False),
+        rec(id="r3", kiosk="vko", error="tts", ts="2026-07-28T10:00:00Z"),
+        rec(id="r4", kiosk="loadtest", question="прогон"),
+    ]
+    (tmp_path / "interactions.jsonl").write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    monkeypatch.setattr(main.settings, "log_dir", str(tmp_path))
+    monkeypatch.setattr(main.settings, "admin_logs", True)
+    # Записи с фиксированными датами — период не должен их отсекать.
+    monkeypatch.setattr(main.settings, "log_retention_days", 100000)
+    analytics.reset_cache()
+    yield tmp_path
+    analytics.reset_cache()
+
+
+def test_stats_requires_token(client, token, logs):
+    assert client.get("/admin/stats").status_code == 403
+
+
+def test_stats_shape_and_numbers(client, token, logs):
+    d = client.get("/admin/stats", params={"token": token, "days": 99999}).json()
+    s = d["summary"]
+    # loadtest отброшен по умолчанию — иначе прогоны портят статистику граждан.
+    assert s["total"] == 3
+    assert s["errors"] == 1 and s["fallback"] == 1
+    assert d["by_day"][0]["date"] == "2026-07-28"
+    assert ["про штрафы", 1] in d["top_unanswered"]
+    assert d["texts_enabled"] is True
+
+
+def test_stats_can_focus_on_one_kiosk(client, token, logs):
+    d = client.get("/admin/stats",
+                   params={"token": token, "days": 99999, "kiosk": "vko"}).json()
+    assert d["summary"]["total"] == 1 and d["summary"]["errors"] == 1
+
+
+def test_fleet_carries_period_numbers_from_logs(client, token, logs):
+    """Счётчик в памяти обнуляется рестартом — в отчёте цифры должны быть из логов."""
+    rows = _rows(client.get("/admin/kiosks",
+                            params={"token": token, "days": 99999}).json())
+    assert rows["astana"]["period_asks"] == 2
+    assert rows["astana"]["period_fallback"] == 1
+    assert rows["turkestan"]["period_asks"] == 0
+
+
+def test_fleet_shows_kiosks_that_exist_only_in_logs(client, token, logs):
+    """Старый/переименованный киоск не должен пропасть из таблицы вместе с историей."""
+    rows = _rows(client.get("/admin/kiosks",
+                            params={"token": token, "days": 99999}).json())
+    # vko есть в логах, но НЕ в тестовом списке флота (astana + turkestan).
+    assert "vko" in rows
+    assert rows["vko"]["in_fleet"] is False
+    assert rows["vko"]["period_errors"] == 1
+
+
+def test_interactions_newest_first_and_paged(client, token, logs):
+    d = client.get("/admin/interactions",
+                   params={"token": token, "days": 99999, "limit": 2}).json()
+    assert d["total"] == 3 and len(d["rows"]) == 2
+    assert d["rows"][0]["ts"] >= d["rows"][1]["ts"]
+    second = client.get("/admin/interactions",
+                        params={"token": token, "days": 99999, "limit": 2,
+                                "offset": 2}).json()
+    assert len(second["rows"]) == 1
+
+
+def test_interactions_filters(client, token, logs):
+    def ids(**params):
+        d = client.get("/admin/interactions",
+                       params={"token": token, "days": 99999, **params}).json()
+        return {r["id"] for r in d["rows"]}
+
+    assert ids(only="fallback") == {"r2"}
+    assert ids(only="errors") == {"r3"}
+    assert ids(kiosk="vko") == {"r3"}
+    assert ids(q="штрафы") == {"r2"}
+    assert ids(kiosk="loadtest") == {"r4"}   # спросили прямо — показали
+
+
+def test_interactions_hides_texts_when_disabled(client, token, logs, monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main.settings, "admin_logs", False)
+    d = client.get("/admin/interactions", params={"token": token, "days": 99999}).json()
+    assert d["texts_enabled"] is False
+    # Полей НЕТ вовсе, а не пустые строки: страница должна отличать «выключено»
+    # от «вопрос был пустой».
+    assert "question" not in d["rows"][0] and "answer" not in d["rows"][0]
+    # Цифры при этом на месте — статистика не зависит от показа текстов.
+    assert d["rows"][0]["total_ms"] is not None
+
+
+def test_stats_hides_question_tops_when_texts_disabled(client, token, logs, monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main.settings, "admin_logs", False)
+    d = client.get("/admin/stats", params={"token": token, "days": 99999}).json()
+    assert d["top_questions"] == [] and d["top_unanswered"] == []
+    assert d["summary"]["total"] == 3          # сводка считается по-прежнему
+
+
+def test_csv_export(client, token, logs):
+    r = client.get("/admin/export.csv", params={"token": token, "days": 99999})
+    assert r.status_code == 200
+    assert "attachment" in r.headers["content-disposition"]
+    body = r.content
+    # BOM обязателен: без него Excel на Windows покажет кириллицу кракозябрами.
+    assert body.startswith(b"\xef\xbb\xbf")
+    text = body.decode("utf-8-sig")
+    assert text.splitlines()[0].startswith("ts,id,kiosk")
+    assert "про штрафы" in text
+    assert "loadtest" not in text
+
+
+def test_csv_respects_filters_and_token(client, token, logs):
+    assert client.get("/admin/export.csv", params={"days": 99999}).status_code == 403
+    r = client.get("/admin/export.csv",
+                   params={"token": token, "days": 99999, "only": "errors"})
+    text = r.content.decode("utf-8-sig")
+    assert "r3" in text and "r1" not in text

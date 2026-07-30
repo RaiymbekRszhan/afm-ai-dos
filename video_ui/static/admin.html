@@ -4,13 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>Ai-dos — киоски</title>
+<title>Ai-dos — контроль и отчётность</title>
 <!--
-  Админка флота: кто жив и кто отключён.
+  Админка флота: сводка, киоски, журнал обращений, вопросы.
 
   Открывается с токеном в адресе: /admin?token=…  Токен НЕ проверяется здесь —
   единственный источник правды оркестратор (ADMIN_TOKEN), страница только
-  рисует. Отсюда же следствие: ссылка = пароль, пересылать её нельзя.
+  рисует. Отсюда следствие: ссылка = пароль, пересылать её нельзя.
+
+  Все цифры считает сервер (app/analytics.py), тот же модуль использует
+  CLI-отчёт scripts.interactions_report — поэтому браузер и консоль не могут
+  разойтись. Здесь только отображение.
+
+  ⚠️ Тексты вопросов и ответов приходят ОТ ГРАЖДАН, то есть снаружи: в DOM их
+  кладём только через textContent. innerHTML с ними = XSS на странице, где
+  сидит администратор с токеном.
 
   Без внешних библиотек: сеть АФМ без интернета, CDN недоступны.
 -->
@@ -18,100 +26,201 @@
   :root {
     --bg: #0d1117; --card: #161b22; --line: #30363d; --text: #e6edf6;
     --muted: #8b949e; --ok: #3fb950; --off: #f85149; --warn: #d29922;
+    --accent: #58a6ff;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
-  .wrap { max-width: 1000px; margin: 0 auto; padding: 24px 16px 64px; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 22px 16px 64px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
-  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
-         margin-bottom: 16px; }
-  button { font: inherit; color: var(--text); background: #21262d;
-           border: 1px solid var(--line); border-radius: 6px;
-           padding: 7px 14px; cursor: pointer; }
+  h2 { font-size: 16px; margin: 26px 0 10px; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .05em; }
+  .sub { color: var(--muted); font-size: 13px; }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+         margin: 16px 0; }
+  .bar .grow { flex: 1; }
+  button, select, input {
+    font: inherit; color: var(--text); background: #21262d;
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; }
+  button { cursor: pointer; }
   button:hover { border-color: #8b949e; }
   button[disabled] { opacity: .5; cursor: default; }
+  button.tab.on { background: #1f6feb33; border-color: var(--accent); color: #fff; }
   button.off { background: #4c1a17; border-color: #7d2a24; }
-  button.on  { background: #12341c; border-color: #1f6f34; }
-  .maint { background: #3a2d0b; border: 1px solid var(--warn);
-           border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+  button.on2 { background: #12341c; border-color: #1f6f34; }
+  input[type=search] { min-width: 220px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 12px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; }
+  .tile .v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .k { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .tile .h { color: var(--muted); font-size: 11px; margin-top: 6px; }
+
   table { width: 100%; border-collapse: collapse; background: var(--card);
-          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+          border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
   th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
        color: var(--muted); font-weight: 600; }
   tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .nowrap { white-space: nowrap; }
+
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
          margin-right: 7px; vertical-align: middle; }
-  .live { background: var(--ok); }
-  .dead { background: var(--off); }
+  .live { background: var(--ok); } .dead { background: var(--off); }
   .never { background: var(--line); }
   .id { color: var(--muted); font-size: 12px; }
   .msg { color: var(--warn); font-size: 13px; }
-  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .s-ok { color: var(--ok); } .s-gap { color: var(--warn); }
+  .s-err { color: var(--off); } .s-off { color: var(--muted); }
+
+  .qtext { cursor: pointer; }
+  .qtext:hover { color: var(--accent); }
+  .answer { margin-top: 8px; padding: 10px 12px; background: #0d1117;
+            border: 1px solid var(--line); border-radius: 8px; color: #cbd5e1;
+            white-space: pre-wrap; font-size: 14px; }
+
+  .maint { background: #3a2d0b; border: 1px solid var(--warn); border-radius: 8px;
+           padding: 12px 14px; margin-bottom: 14px; }
   .err { background: #4c1a17; border: 1px solid #7d2a24; border-radius: 8px;
-         padding: 12px 14px; margin-bottom: 16px; }
-  @media (max-width: 720px) {
-    .hide-s { display: none; }
-    .wrap { padding: 16px 10px 48px; }
+         padding: 12px 14px; margin-bottom: 14px; }
+  .note { color: var(--muted); font-size: 13px; margin: 8px 0; }
+  .chart { width: 100%; height: auto; }
+  .hide { display: none !important; }
+
+  @media (max-width: 760px) { .hide-s { display: none; } .wrap { padding: 14px 10px 48px; } }
+  /* Печать: только «Обзор», без кнопок и фильтров — это и есть справка наверх. */
+  @media print {
+    :root { --bg: #fff; --card: #fff; --line: #ccc; --text: #000; --muted: #555; }
+    body { background: #fff; color: #000; }
+    .bar, .noprint { display: none !important; }
+    #tab-fleet, #tab-log, #tab-questions { display: none !important; }
+    #tab-overview { display: block !important; }
+    .tile, table { border-color: #ccc; }
   }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Киоски Ai-dos</h1>
+  <h1>Ai-dos — контроль и отчётность</h1>
   <div class="sub" id="sub">загружаю…</div>
 
-  <div id="err" class="err" style="display:none"></div>
-  <div id="maint" class="maint" style="display:none"></div>
+  <div id="err" class="err hide"></div>
+  <div id="maint" class="maint hide"></div>
 
-  <div class="bar">
+  <div class="bar noprint">
+    <button class="tab on" data-tab="overview">Обзор</button>
+    <button class="tab" data-tab="fleet">Киоски</button>
+    <button class="tab" data-tab="log">Обращения</button>
+    <button class="tab" data-tab="questions">Вопросы</button>
+    <span class="grow"></span>
+    <select id="days" title="Период">
+      <option value="1">сутки</option>
+      <option value="7" selected>7 суток</option>
+      <option value="30">30 суток</option>
+    </select>
     <button id="refresh">Обновить</button>
-    <button id="allOff" class="off">Отключить ВСЕ (тех. работы)</button>
-    <button id="allOn" class="on" style="display:none">Снять тех. работы</button>
+    <button id="csv">CSV</button>
+    <button id="print">Печать</button>
   </div>
 
-  <table>
-    <thead><tr>
-      <th>Точка</th>
-      <th>Связь</th>
-      <th class="num hide-s">Вопросов</th>
-      <th class="num hide-s">Последний</th>
-      <th>Состояние</th>
-      <th></th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
+  <!-- ================= ОБЗОР ================= -->
+  <section id="tab-overview">
+    <div class="tiles" id="tiles"></div>
+    <h2>Обращения по суткам</h2>
+    <div id="chart"></div>
+    <h2>Задержки по стадиям</h2>
+    <table id="lat"><tbody></tbody></table>
+  </section>
+
+  <!-- ================= КИОСКИ ================= -->
+  <section id="tab-fleet" class="hide">
+    <div class="bar noprint">
+      <button id="allOff" class="off">Отключить ВСЕ (тех. работы)</button>
+      <button id="allOn" class="on2 hide">Снять тех. работы</button>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Точка</th><th>Связь</th>
+        <th class="num hide-s">Вопросов</th><th class="num hide-s">Нет в базе</th>
+        <th class="num hide-s">Ошибок</th><th class="num hide-s">Ожидание</th>
+        <th>Состояние</th><th></th>
+      </tr></thead>
+      <tbody id="fleetRows"></tbody>
+    </table>
+    <div class="note">«Вопросов» и «Ожидание» — за выбранный период, из логов.
+      «Связь» — прямо сейчас: точка стучится на сервер раз в минуту.</div>
+  </section>
+
+  <!-- ================= ОБРАЩЕНИЯ ================= -->
+  <section id="tab-log" class="hide">
+    <div class="bar noprint">
+      <select id="fKiosk"><option value="">все точки</option></select>
+      <select id="fOnly">
+        <option value="">все обращения</option>
+        <option value="fallback">только «нет в базе»</option>
+        <option value="errors">только с ошибкой</option>
+      </select>
+      <input type="search" id="fQ" placeholder="поиск по тексту">
+      <button id="find">Найти</button>
+    </div>
+    <div class="note" id="logNote"></div>
+    <table>
+      <thead><tr>
+        <th class="nowrap">Время</th><th class="hide-s">Точка</th>
+        <th>Вопрос</th><th>Результат</th><th class="num nowrap">Ожидание</th>
+      </tr></thead>
+      <tbody id="logRows"></tbody>
+    </table>
+    <div class="bar noprint">
+      <button id="prev">← Назад</button>
+      <span id="pageInfo" class="sub"></span>
+      <button id="next">Вперёд →</button>
+    </div>
+  </section>
+
+  <!-- ================= ВОПРОСЫ ================= -->
+  <section id="tab-questions" class="hide">
+    <h2>Нет в базе — что добавить</h2>
+    <div class="note">Вопросы, на которые база не ответила. Это прямой список на
+      её пополнение: гражданам эти темы нужны, а Ai-dos о них не знает.</div>
+    <table><tbody id="gapRows"></tbody></table>
+    <h2>Частые вопросы</h2>
+    <table><tbody id="topRows"></tbody></table>
+  </section>
 </div>
 
+<script src="/static/admin_util.js?v=20260730"></script>
 <script>
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
-const rowsEl = document.getElementById("rows");
-const subEl = document.getElementById("sub");
-const errEl = document.getElementById("err");
-const maintEl = document.getElementById("maint");
-const allOff = document.getElementById("allOff");
-const allOn = document.getElementById("allOn");
+// ago/fmtMs/pct/truncate/fmtTs/statusOf/qs приходят из admin_util.js (глобально).
+const $ = (id) => document.getElementById(id);
 
-// «450 с» читается хуже, чем «7 мин»: оператор смотрит на это мельком.
-function ago(sec) {
-  if (sec === null || sec === undefined) return "—";
-  if (sec < 90) return sec + " с";
-  if (sec < 5400) return Math.round(sec / 60) + " мин";
-  return Math.round(sec / 3600) + " ч";
+let state = { tab: "overview", days: 7, kiosk: "", only: "", q: "", offset: 0, limit: 50 };
+let lastStats = null;
+
+// ---------- вспомогательное ----------
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  // textContent, а не innerHTML: тексты приходят от граждан (см. шапку файла).
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
 }
 
 function showError(text) {
-  errEl.textContent = text;
-  errEl.style.display = text ? "" : "none";
+  $("err").textContent = text || "";
+  $("err").classList.toggle("hide", !text);
 }
 
-async function api(method, body) {
-  const url = "/admin/kiosks" + (method === "GET" ? "?token=" + encodeURIComponent(TOKEN) : "");
-  const opt = { method };
-  if (body) { body.append("token", TOKEN); opt.body = body; }
-  const r = await fetch(url, opt);
+async function api(path, params, method, body) {
+  const query = qs(Object.assign({ token: TOKEN }, params || {}));
+  const r = await fetch("/admin/" + path + (method === "POST" ? "" : "?" + query),
+                        method === "POST" ? { method: "POST", body: body } : {});
   if (r.status === 404) throw new Error("Админка выключена: на сервере не задан ADMIN_TOKEN.");
   if (r.status === 403) throw new Error("Неверный токен. Проверьте ссылку.");
   if (!r.ok) {
@@ -121,60 +230,178 @@ async function api(method, body) {
   return r.json();
 }
 
-function render(data) {
-  const rows = data.kiosks || [];
-  const maint = data.maintenance;
-  const live = rows.filter(r => r.online).length;
-  const off = rows.filter(r => !r.enabled).length;
-  subEl.textContent = `${rows.length} точек · на связи ${live} · отключено ${off}` +
-    ` · молчит дольше ${Math.round((data.offline_after_s || 300) / 60)} мин = не на связи`;
+// ---------- ОБЗОР ----------
+function tile(value, key, hint) {
+  const t = el("div", "tile");
+  t.appendChild(el("div", "v", value));
+  t.appendChild(el("div", "k", key));
+  if (hint) t.appendChild(el("div", "h", hint));
+  return t;
+}
 
-  maintEl.style.display = maint ? "" : "none";
-  maintEl.textContent = maint ? "Тех. работы: приём остановлен на ВСЕХ точках. Текст на экранах: «" + maint + "»" : "";
-  allOff.style.display = maint ? "none" : "";
-  allOn.style.display = maint ? "" : "none";
+function renderOverview(d) {
+  const s = d.summary, lat = s.latency;
+  const tiles = $("tiles");
+  tiles.innerHTML = "";
+  tiles.appendChild(tile(s.total, "обращений за период"));
+  tiles.appendChild(tile(pct(s.fallback, s.ok), "нет в базе",
+                         s.fallback + " шт. — кандидаты в базу"));
+  tiles.appendChild(tile(pct(s.errors, s.total), "с ошибкой",
+                         s.errors ? Object.keys(Object.fromEntries(s.err_by_stage)).join(", ") : "сбоев нет"));
+  tiles.appendChild(tile(fmtMs(lat.total.p50), "ожидание, медиана",
+                         "p95 " + fmtMs(lat.total.p95)));
+  tiles.appendChild(tile(s.langs.map(([k, v]) => (k === "russian" ? "ru " : "kk ") + v).join(" · ") || "—",
+                         "языки"));
+  tiles.appendChild(tile(pct(s.printed, s.ok), "предложена печать бланка"));
 
-  rowsEl.innerHTML = "";
-  for (const k of rows) {
-    const tr = document.createElement("tr");
+  renderChart(d.by_day);
 
-    const name = document.createElement("td");
-    name.innerHTML = `${k.human}<br><span class="id">${k.kiosk}` +
-                     (k.in_fleet ? "" : " · нет в списке флота") + `</span>`;
+  const tb = $("lat").querySelector("tbody");
+  tb.innerHTML = "";
+  const names = { total: "весь цикл", stt: "распознавание", rag: "поиск в базе",
+                  tts: "озвучка", tts_first: "до первого звука" };
+  Object.keys(names).forEach(function (k) {
+    const v = lat[k];
+    const tr = el("tr");
+    tr.appendChild(el("td", null, names[k]));
+    tr.appendChild(el("td", "num", fmtMs(v.p50)));
+    tr.appendChild(el("td", "num", fmtMs(v.p95)));
+    tr.appendChild(el("td", "num", fmtMs(v.max)));
+    tr.appendChild(el("td", "num sub", v.n ? "n=" + v.n : "нет данных"));
+    tb.appendChild(tr);
+  });
+}
 
-    const link = document.createElement("td");
+// Инлайн-SVG: в сети АФМ нет CDN, подключить библиотеку графиков неоткуда.
+function renderChart(days) {
+  const box = $("chart");
+  box.innerHTML = "";
+  if (!days || !days.length) {
+    box.appendChild(el("div", "note", "за период обращений не было"));
+    return;
+  }
+  const W = 900, H = 180, padL = 34, padB = 26, padT = 10;
+  const max = Math.max.apply(null, days.map((d) => d.total)) || 1;
+  const bw = (W - padL) / days.length;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("class", "chart");
+  function mk(tag, attrs, text) {
+    const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.keys(attrs).forEach((k) => e.setAttribute(k, attrs[k]));
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  // Шкала: только 0 и максимум — сетка из пяти линий на таком графике мешает.
+  svg.appendChild(mk("text", { x: 0, y: padT + 10, fill: "#8b949e", "font-size": 11 }, max));
+  svg.appendChild(mk("text", { x: 0, y: H - padB + 4, fill: "#8b949e", "font-size": 11 }, "0"));
+  svg.appendChild(mk("line", { x1: padL, y1: H - padB, x2: W, y2: H - padB,
+                               stroke: "#30363d", "stroke-width": 1 }));
+  const plotH = H - padB - padT;
+  days.forEach(function (d, i) {
+    const x = padL + i * bw + bw * 0.15;
+    const w = bw * 0.7;
+    // Столбец = всего, внутри доля «нет в базе» — видно не только объём, но и
+    // качество: 40 обращений, из которых половина без ответа, это не успех.
+    const hTotal = Math.max(1, Math.round(plotH * d.total / max));
+    const hGap = Math.round(plotH * d.fallback / max);
+    svg.appendChild(mk("rect", { x: x, y: H - padB - hTotal, width: w, height: hTotal,
+                                 fill: "#1f6feb", rx: 2 }));
+    if (hGap > 0) {
+      svg.appendChild(mk("rect", { x: x, y: H - padB - hGap, width: w, height: hGap,
+                                   fill: "#d29922", rx: 2 }));
+    }
+    const t = mk("title", {}, d.date + ": " + d.total + ", нет в базе " + d.fallback);
+    svg.appendChild(t);
+    // Подпись даты — через одну, если дней много: иначе они наезжают друг на друга.
+    if (days.length <= 10 || i % Math.ceil(days.length / 10) === 0) {
+      svg.appendChild(mk("text", { x: x + w / 2, y: H - 8, fill: "#8b949e",
+                                   "font-size": 10, "text-anchor": "middle" },
+                         d.date.slice(8) + "." + d.date.slice(5, 7)));
+    }
+  });
+  box.appendChild(svg);
+  const legend = el("div", "note", "синий — обращения, жёлтый — из них без ответа в базе");
+  box.appendChild(legend);
+}
+
+// ---------- КИОСКИ ----------
+function renderFleet(d) {
+  const rows = d.kiosks || [], maint = d.maintenance;
+  const live = rows.filter((r) => r.online).length;
+  const off = rows.filter((r) => !r.enabled).length;
+  $("sub").textContent = rows.length + " точек · на связи " + live + " · отключено " + off
+    + " · молчит дольше " + Math.round((d.offline_after_s || 300) / 60) + " мин = не на связи";
+
+  $("maint").classList.toggle("hide", !maint);
+  $("maint").textContent = maint
+    ? "Тех. работы: приём остановлен на ВСЕХ точках. Текст на экранах: «" + maint + "»" : "";
+  $("allOff").classList.toggle("hide", !!maint);
+  $("allOn").classList.toggle("hide", !maint);
+
+  const sel = $("fKiosk");
+  if (sel.options.length <= 1) {
+    rows.forEach(function (k) {
+      const o = el("option", null, k.human);
+      o.value = k.kiosk;
+      sel.appendChild(o);
+    });
+  }
+
+  const tb = $("fleetRows");
+  tb.innerHTML = "";
+  rows.forEach(function (k) {
+    const tr = el("tr");
+
+    const name = el("td");
+    name.appendChild(el("div", null, k.human));
+    name.appendChild(el("div", "id", k.kiosk + (k.in_fleet ? "" : " · нет в списке флота")));
+    tr.appendChild(name);
+
+    const link = el("td", "nowrap");
     const cls = k.ping_ago_s === null ? "never" : (k.online ? "live" : "dead");
-    const txt = k.ping_ago_s === null ? "не включалась"
-                                      : (k.online ? "на связи" : "молчит " + ago(k.ping_ago_s));
-    link.innerHTML = `<span class="dot ${cls}"></span>${txt}`;
+    link.appendChild(el("span", "dot " + cls));
+    link.appendChild(el("span", null, k.ping_ago_s === null ? "не включалась"
+      : (k.online ? "на связи" : "молчит " + ago(k.ping_ago_s))));
+    tr.appendChild(link);
 
-    const asks = document.createElement("td");
-    asks.className = "num hide-s";
-    asks.textContent = k.asks || 0;
+    tr.appendChild(el("td", "num hide-s", k.period_asks));
+    const gap = el("td", "num hide-s", k.period_fallback + " / " + k.period_fallback_pct);
+    if (k.period_fallback) gap.classList.add("s-gap");
+    tr.appendChild(gap);
+    const errs = el("td", "num hide-s", k.period_errors);
+    if (k.period_errors) errs.classList.add("s-err");
+    tr.appendChild(errs);
+    tr.appendChild(el("td", "num hide-s", fmtMs(k.period_p50)));
 
-    const last = document.createElement("td");
-    last.className = "num hide-s";
-    last.textContent = ago(k.ask_ago_s);
+    const state = el("td");
+    if (k.enabled) {
+      state.appendChild(el("span", null, "работает"));
+    } else {
+      state.appendChild(el("div", null, "отключена"));
+      state.appendChild(el("div", "msg", k.message || ""));
+    }
+    tr.appendChild(state);
 
-    const state = document.createElement("td");
-    state.innerHTML = k.enabled
-      ? "работает"
-      : `отключена<br><span class="msg">${k.message || ""}</span>`;
-
-    const act = document.createElement("td");
-    const btn = document.createElement("button");
-    btn.className = k.enabled ? "off" : "on";
-    btn.textContent = k.enabled ? "Отключить" : "Включить";
+    const act = el("td", "noprint");
+    const btn = el("button", k.enabled ? "off" : "on2", k.enabled ? "Отключить" : "Включить");
     // Отключена окном тех. работ, а не лично: точечная кнопка тут ничего не
     // решит — сначала надо снять «*», иначе оператор жмёт и не понимает, почему
     // ничего не меняется.
     btn.disabled = !k.enabled && !k.disabled_here;
     btn.onclick = () => toggle(k, btn);
     act.appendChild(btn);
+    const look = el("button", null, "Обращения");
+    look.onclick = function () {
+      state_set({ kiosk: k.kiosk, offset: 0 });
+      $("fKiosk").value = k.kiosk;
+      switchTab("log");
+    };
+    act.appendChild(look);
+    tr.appendChild(act);
 
-    tr.append(name, link, asks, last, state, act);
-    rowsEl.appendChild(tr);
-  }
+    tb.appendChild(tr);
+  });
 }
 
 async function toggle(k, btn) {
@@ -183,20 +410,19 @@ async function toggle(k, btn) {
   if (!enable) {
     message = prompt("Что показать гражданину на экране этой точки?",
                      "Сервис временно недоступен. Приносим извинения.");
-    if (message === null) return;              // передумали
+    if (message === null) return;
   }
   btn.disabled = true;
   try {
     const fd = new FormData();
+    fd.append("token", TOKEN);
     fd.append("kiosk", k.kiosk);
     fd.append("enabled", enable ? "true" : "false");
     fd.append("message", message);
-    render(await api("POST", fd));
+    await api("kiosks", null, "POST", fd);
     showError("");
-  } catch (e) {
-    showError(e.message);
-    btn.disabled = false;
-  }
+    await loadFleet();
+  } catch (e) { showError(e.message); btn.disabled = false; }
 }
 
 async function maintenance(on) {
@@ -208,31 +434,176 @@ async function maintenance(on) {
   }
   try {
     const fd = new FormData();
+    fd.append("token", TOKEN);
     fd.append("kiosk", "*");
     fd.append("enabled", on ? "false" : "true");
     fd.append("message", message);
-    render(await api("POST", fd));
+    await api("kiosks", null, "POST", fd);
     showError("");
+    await loadFleet();
   } catch (e) { showError(e.message); }
 }
 
-async function load() {
+// ---------- ОБРАЩЕНИЯ ----------
+function renderLog(d) {
+  const tb = $("logRows");
+  tb.innerHTML = "";
+  $("logNote").textContent = d.texts_enabled ? ""
+    : "Тексты обращений выключены на сервере (ADMIN_LOGS=false) — видны только цифры.";
+  if (!d.rows.length) {
+    const tr = el("tr");
+    const td = el("td", "note", "за период по этим условиям обращений нет");
+    td.setAttribute("colspan", "5");
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  }
+  d.rows.forEach(function (r) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "nowrap sub", fmtTs(r.ts)));
+    tr.appendChild(el("td", "hide-s id", r.kiosk || "—"));
+
+    const qcell = el("td");
+    if (d.texts_enabled) {
+      const q = el("div", "qtext", truncate(r.question || "(без текста)", 90));
+      // Ответ разворачиваем по клику: он длинный (минута речи), в таблице
+      // целиком не нужен, но именно он показывает, ЧТО ответил аватар.
+      q.onclick = function () {
+        const open = qcell.querySelector(".answer");
+        if (open) { open.remove(); return; }
+        qcell.appendChild(el("div", "answer", r.answer || "(ответ не сохранён)"));
+      };
+      qcell.appendChild(q);
+    } else {
+      qcell.appendChild(el("span", "sub", r.lang === "kazakh" ? "kk" : "ru"));
+    }
+    tr.appendChild(qcell);
+
+    const st = statusOf(r);
+    const res = el("td");
+    res.appendChild(el("span", st.cls, st.label));
+    if (r.suggested) res.appendChild(el("div", "id", "предложено уточнение"));
+    if (r.print_ids && r.print_ids.length) {
+      res.appendChild(el("div", "id", "бланк: " + r.print_ids.join(", ")));
+    }
+    tr.appendChild(res);
+
+    tr.appendChild(el("td", "num nowrap", fmtMs(r.total_ms)));
+    tb.appendChild(tr);
+  });
+
+  const from = d.total ? d.offset + 1 : 0;
+  const to = Math.min(d.offset + d.limit, d.total);
+  $("pageInfo").textContent = d.total ? (from + "–" + to + " из " + d.total) : "ничего не найдено";
+  $("prev").disabled = d.offset <= 0;
+  $("next").disabled = to >= d.total;
+}
+
+// ---------- ВОПРОСЫ ----------
+function renderQuestions(d) {
+  function fill(tbody, pairs, empty) {
+    tbody.innerHTML = "";
+    if (!pairs.length) {
+      const tr = el("tr");
+      const td = el("td", "note", empty);
+      td.setAttribute("colspan", "2");
+      tr.appendChild(td); tbody.appendChild(tr);
+      return;
+    }
+    pairs.forEach(function (p) {
+      const tr = el("tr");
+      tr.appendChild(el("td", "num nowrap", p[1] + "×"));
+      tr.appendChild(el("td", null, p[0]));
+      tbody.appendChild(tr);
+    });
+  }
+  const empty = d.texts_enabled ? "за период таких вопросов не было"
+    : "тексты обращений выключены на сервере (ADMIN_LOGS=false)";
+  fill($("gapRows"), d.top_unanswered || [], empty);
+  fill($("topRows"), d.top_questions || [], empty);
+}
+
+// ---------- загрузка и состояние ----------
+function state_set(patch) { Object.assign(state, patch); }
+
+async function loadFleet() {
+  renderFleet(await api("kiosks", { days: state.days }));
+}
+
+async function loadStats() {
+  lastStats = await api("stats", { days: state.days, kiosk: state.kiosk });
+  renderOverview(lastStats);
+  renderQuestions(lastStats);
+}
+
+async function loadLog() {
+  renderLog(await api("interactions", {
+    days: state.days, kiosk: state.kiosk, only: state.only, q: state.q,
+    limit: state.limit, offset: state.offset }));
+}
+
+async function refresh() {
   try {
-    render(await api("GET"));
+    // Грузим только то, что видно: журнал за 30 суток с поиском — самый тяжёлый
+    // запрос, дёргать его при взгляде на «Обзор» незачем.
+    if (state.tab === "log") await loadLog();
+    else if (state.tab === "fleet") await loadFleet();
+    else { await loadStats(); if (!$("fKiosk").options.length) await loadFleet(); }
+    if (state.tab !== "fleet") await loadFleetQuietly();
     showError("");
   } catch (e) {
     showError(e.message);
-    subEl.textContent = "нет данных";
+    $("sub").textContent = "нет данных";
   }
 }
 
-document.getElementById("refresh").onclick = load;
-allOff.onclick = () => maintenance(true);
-allOn.onclick = () => maintenance(false);
-load();
+// Строка-подзаголовок со сводкой флота нужна на любой вкладке, но падать из-за
+// неё нельзя: это дополнение, а не главные данные раздела.
+async function loadFleetQuietly() {
+  try { renderFleet(await api("kiosks", { days: state.days })); } catch (e) {}
+}
+
+function switchTab(tab) {
+  state_set({ tab: tab });
+  document.querySelectorAll(".tab").forEach(function (b) {
+    b.classList.toggle("on", b.dataset.tab === tab);
+  });
+  ["overview", "fleet", "log", "questions"].forEach(function (t) {
+    $("tab-" + t).classList.toggle("hide", t !== tab);
+  });
+  refresh();
+}
+
+document.querySelectorAll(".tab").forEach(function (b) {
+  b.onclick = () => switchTab(b.dataset.tab);
+});
+$("days").onchange = function () { state_set({ days: +this.value, offset: 0 }); refresh(); };
+$("refresh").onclick = refresh;
+$("print").onclick = function () { switchTab("overview"); setTimeout(() => window.print(), 100); };
+$("csv").onclick = function () {
+  location.href = "/admin/export.csv?" + qs({
+    token: TOKEN, days: state.days, kiosk: state.kiosk, only: state.only, q: state.q });
+};
+$("find").onclick = function () {
+  state_set({ kiosk: $("fKiosk").value, only: $("fOnly").value, q: $("fQ").value, offset: 0 });
+  loadLog().catch((e) => showError(e.message));
+};
+$("fQ").onkeydown = function (e) { if (e.key === "Enter") $("find").click(); };
+$("prev").onclick = function () {
+  state_set({ offset: Math.max(0, state.offset - state.limit) });
+  loadLog().catch((e) => showError(e.message));
+};
+$("next").onclick = function () {
+  state_set({ offset: state.offset + state.limit });
+  loadLog().catch((e) => showError(e.message));
+};
+$("allOff").onclick = () => maintenance(true);
+$("allOn").onclick = () => maintenance(false);
+
+refresh();
 // Статус живой: без автообновления оператор смотрит на устаревшую картинку и
-// думает, что точка молчит, хотя она вернулась минуту назад.
-setInterval(load, 30000);
+// думает, что точка молчит, хотя она вернулась минуту назад. Журнал НЕ трогаем:
+// он бы прыгал под курсором во время чтения.
+setInterval(function () { if (state.tab !== "log") refresh(); }, 30000);
 </script>
 </body>
 </html>

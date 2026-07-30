@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app import kiosks, service
+from app import analytics, kiosks, service
 from app.clients import rag, stt, tts
 from tests.util import wav_bytes
 
@@ -33,9 +33,11 @@ def _clean_fleet_state():
     точек и накопленный темп протекают из теста в тест."""
     kiosks.reset_cache()
     kiosks.reset_seen()
+    analytics.reset_cache()
     yield
     kiosks.reset_cache()
     kiosks.reset_seen()
+    analytics.reset_cache()
 
 
 @pytest.fixture

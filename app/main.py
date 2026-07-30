@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import csv
+import io
 import json
 import logging
 import os
@@ -7,6 +9,7 @@ import re
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from time import perf_counter
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -14,7 +17,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import kiosks, logging_setup, service
+from app import analytics, kiosks, logging_setup, service
 from app.clients import rag, stt, tts
 from app.config import settings
 from app.schemas import ChatRequest, ChatResponse, SpeakRequest, TranscribeResponse
@@ -189,15 +192,159 @@ async def kiosk_ping(kiosk: str = Form(default=None), key: str = Form(default=No
     }
 
 
-@app.get("/admin/kiosks")
-async def admin_kiosks(token: str = None):
-    """Состояние флота для админки: кто жив, кто отключён."""
-    _require_admin(token)
+def _fleet_payload(days: int) -> dict:
+    """Флот + цифры из логов за период.
+
+    Живость (`last_seen`) берём из памяти — она по природе моментальная. А вот
+    «сколько вопросов» — ИЗ ЛОГОВ: счётчик в памяти обнуляется при рестарте api,
+    и в отчёте это была бы ложь.
+    """
+    rows = analytics.filter_rows(analytics.load(settings.log_dir, days))
+    stats = {k["kiosk"]: k for k in analytics.by_kiosk(rows)}
+    fleet = kiosks.status_rows()
+
+    # Точка, которая есть В ЛОГАХ, но не в списке флота и сейчас не пингует
+    # (старый киоск, переименованный регион, записи пилота без имени), иначе
+    # выпала бы из таблицы совсем — и её история стала бы невидимой, хотя
+    # обращения были.
+    known = {row["kiosk"] for row in fleet}
+    for kiosk_id in stats:
+        if kiosk_id in known:
+            continue
+        fleet.append({
+            "kiosk": kiosk_id,
+            "human": "(нет в списке флота)" if kiosk_id != "-" else "(без имени точки)",
+            "enabled": kiosks.disabled_message(kiosk_id) is None,
+            "disabled_here": False,
+            "message": "",
+            "online": False, "ping_ago_s": None, "ask_ago_s": None, "asks": 0,
+            "in_fleet": False,
+        })
+
+    for row in fleet:
+        s = stats.get(row["kiosk"])
+        row["period_asks"] = s["total"] if s else 0
+        row["period_fallback"] = s["fallback"] if s else 0
+        row["period_fallback_pct"] = s["fallback_pct"] if s else "—"
+        row["period_errors"] = s["errors"] if s else 0
+        row["period_p50"] = s["p50"] if s else None
     return {
-        "kiosks": kiosks.status_rows(),
+        "kiosks": fleet,
         "maintenance": kiosks.maintenance_message(),
         "offline_after_s": settings.kiosk_offline_after_s,
+        "days": days,
     }
+
+
+def _days(days: int | None) -> int:
+    """Период запроса, зажатый в разумное: 0/None -> дефолт, максимум = ретеншен."""
+    if not days or days < 1:
+        return settings.admin_default_days
+    return min(days, max(1, settings.log_retention_days))
+
+
+@app.get("/admin/kiosks")
+async def admin_kiosks(token: str = None, days: int = None):
+    """Состояние флота для админки: кто жив, кто отключён, сколько спрашивали."""
+    _require_admin(token)
+    return _fleet_payload(_days(days))
+
+
+@app.get("/admin/stats")
+async def admin_stats(token: str = None, days: int = None, kiosk: str = None,
+                      top: int = 20):
+    """Сводка для раздела «Обзор»: та же арифметика, что у CLI-отчёта."""
+    _require_admin(token)
+    period = _days(days)
+    rows = analytics.filter_rows(analytics.load(settings.log_dir, period),
+                                 kiosk=_clean_kiosk(kiosk))
+    top = max(1, min(top, 100))
+    return {
+        "days": period,
+        "kiosk": _clean_kiosk(kiosk),
+        "summary": analytics.summarize(rows),
+        "by_kiosk": analytics.by_kiosk(rows),
+        "by_day": analytics.by_day(rows),
+        # Тексты — ПДн: при admin_logs=false отдаём пустые списки, а страница
+        # честно скажет, что тексты выключены (а не «вопросов не было»).
+        "top_questions": analytics.top_questions(rows, top) if settings.admin_logs else [],
+        "top_unanswered": analytics.top_unanswered(rows, top) if settings.admin_logs else [],
+        "texts_enabled": settings.admin_logs,
+    }
+
+
+# Поля журнала: тексты выделены отдельно, чтобы их можно было не отдавать.
+_LOG_FIELDS = ("ts", "id", "kiosk", "lang", "answer_found", "suggested",
+               "corrected", "print_ids", "provider", "error",
+               "stt_ms", "rag_ms", "tts_ms", "tts_first_ms", "total_ms")
+
+
+def _log_rows(days: int, kiosk: str | None, only: str | None,
+              q: str | None) -> list[dict]:
+    rows = analytics.filter_rows(analytics.load(settings.log_dir, days),
+                                 kiosk=kiosk, only=only, search=q)
+    return analytics.newest_first(rows)
+
+
+def _trim(rec: dict) -> dict:
+    out = {k: rec.get(k) for k in _LOG_FIELDS}
+    if settings.admin_logs:
+        out["question"] = rec.get("question")
+        out["answer"] = rec.get("answer")
+    return out
+
+
+@app.get("/admin/interactions")
+async def admin_interactions(token: str = None, days: int = None, kiosk: str = None,
+                             only: str = None, q: str = None,
+                             limit: int = None, offset: int = 0):
+    """Журнал обращений: новые сверху, с пагинацией.
+
+    `only` = errors | fallback, `q` — поиск по тексту вопроса/ответа.
+    При `admin_logs=false` полей `question`/`answer` в ответе НЕТ вовсе (а не
+    пустые строки): страница должна отличать «текстов нет» от «текст пустой».
+    """
+    _require_admin(token)
+    period = _days(days)
+    rows = _log_rows(period, _clean_kiosk(kiosk), only, q)
+    size = max(1, min(limit or settings.admin_page_size, 500))
+    offset = max(0, offset)
+    return {
+        "days": period,
+        "total": len(rows),
+        "offset": offset,
+        "limit": size,
+        "texts_enabled": settings.admin_logs,
+        "rows": [_trim(r) for r in rows[offset:offset + size]],
+    }
+
+
+@app.get("/admin/export.csv")
+async def admin_export_csv(token: str = None, days: int = None, kiosk: str = None,
+                           only: str = None, q: str = None):
+    """Тот же отфильтрованный журнал в CSV — для справки руководству.
+
+    utf-8-sig обязателен: без BOM Excel на Windows показывает кириллицу
+    кракозябрами (та же грабля, что решена в README архивов киосков).
+    """
+    _require_admin(token)
+    period = _days(days)
+    rows = _log_rows(period, _clean_kiosk(kiosk), only, q)
+    fields = list(_LOG_FIELDS) + (["question", "answer"] if settings.admin_logs else [])
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for rec in rows:
+        row = _trim(rec)
+        row["print_ids"] = ",".join(row.get("print_ids") or [])
+        writer.writerow(row)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    name = f"ai-dos-{kiosk or 'all'}-{period}d-{stamp}.csv"
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @app.post("/admin/kiosks")
