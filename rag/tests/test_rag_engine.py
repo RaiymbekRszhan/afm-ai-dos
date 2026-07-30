@@ -7,8 +7,10 @@ import asyncio
 
 import pytest
 
+from lightrag import QueryParam
+
 from ragsvc import rag_engine
-from ragsvc.prompts import NOT_FOUND_KK, NOT_FOUND_RU
+from ragsvc.prompts import AFM_SYSTEM_PROMPT, NOT_FOUND_KK, NOT_FOUND_RU, RESPONSE_TYPE
 
 
 class _FakeRag:
@@ -23,6 +25,47 @@ class _FakeRag:
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+# ---------- _query_param: объём ответа задаём МЫ, а не дефолт LightRAG ----------
+# Регрессия по существу: response_type не задавался, LightRAG подставлял
+# "Multiple Paragraphs" ПОСЛЕДНЕЙ строкой промпта и перебивал правило 2
+# («2–4 предложения») — ответы выходили по 700 символов ≈ минута монолога.
+
+@pytest.mark.parametrize("lang", ["ru", "kk", None])
+def test_query_param_sets_explicit_response_type(lang):
+    assert rag_engine._query_param(lang).response_type == RESPONSE_TYPE
+
+
+def test_query_param_honours_response_type_override(monkeypatch):
+    # Рычаг для замера «до/после» на eval и для отката длины на бою через .env.
+    monkeypatch.setattr(rag_engine.config, "RESPONSE_TYPE_OVERRIDE", "Multiple Paragraphs")
+    assert rag_engine._query_param("ru").response_type == "Multiple Paragraphs"
+
+
+def test_query_param_empty_override_falls_back_to_prompt_default(monkeypatch):
+    # Пустая RAG_RESPONSE_TYPE не должна отдавать объём обратно библиотеке.
+    monkeypatch.setattr(rag_engine.config, "RESPONSE_TYPE_OVERRIDE", "")
+    assert rag_engine._query_param("ru").response_type == RESPONSE_TYPE
+
+
+def test_response_type_is_not_lightrag_default():
+    # Если однажды совпадёт — значит мы опять отдали объём ответа библиотеке.
+    assert RESPONSE_TYPE != QueryParam.__dataclass_fields__["response_type"].default
+
+
+def test_response_type_states_a_char_budget():
+    # Бюджет в СИМВОЛАХ обязателен: «предложение» модель растягивает до абзаца.
+    assert "400 символов" in RESPONSE_TYPE
+
+
+def test_system_prompt_formats_with_all_three_placeholders():
+    # Лишняя фигурная скобка в тексте промпта сломала бы .format() внутри
+    # LightRAG уже на бою — ловим офлайн.
+    filled = AFM_SYSTEM_PROMPT.format(
+        response_type=RESPONSE_TYPE, user_prompt="подсказка", content_data="контекст"
+    )
+    assert RESPONSE_TYPE in filled and "контекст" in filled
 
 
 # ---------- _for_tts ----------

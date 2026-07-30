@@ -13,7 +13,7 @@ from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from . import config
 from .providers import llm_model_func, embedding_func, get_rerank, CURRENT_LANG
-from .prompts import AFM_SYSTEM_PROMPT, NOT_FOUND_KK, NOT_FOUND_RU
+from .prompts import AFM_SYSTEM_PROMPT, NOT_FOUND_KK, NOT_FOUND_RU, RESPONSE_TYPE
 
 log = logging.getLogger("ragsvc")
 
@@ -75,6 +75,11 @@ def _query_param(lang: str | None) -> QueryParam:
         top_k=config.TOP_K,
         chunk_top_k=chunk_top_k,
         user_prompt=hint,
+        # Задавать ОБЯЗАТЕЛЬНО: молчание здесь — это не «нет требования к объёму»,
+        # а дефолт LightRAG "Multiple Paragraphs" последней строкой промпта
+        # (см. prompts.RESPONSE_TYPE). Один и тот же для обоих языков: речь про
+        # объём, а язык ответа держит user_prompt выше.
+        response_type=config.RESPONSE_TYPE_OVERRIDE or RESPONSE_TYPE,
     )
 
 

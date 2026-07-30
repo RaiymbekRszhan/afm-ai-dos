@@ -54,6 +54,14 @@ RERANK_API_KEY = os.getenv("RERANK_API_KEY", "dummy")
 # rag_engine._query_param). Выключить: LANG_DEDUP=0.
 LANG_DEDUP = _b("LANG_DEDUP", "1")
 
+# Объём устного ответа. Пусто = берём prompts.RESPONSE_TYPE (2–4 предложения,
+# до 400 символов). Строка отсюда его ЗАМЕЩАЕТ — нужна для двух вещей:
+#   * замерить «до/после» на eval, не трогая код: RAG_RESPONSE_TYPE="Multiple
+#     Paragraphs" возвращает прежнее поведение (дефолт LightRAG);
+#   * откатить длину ответа на бою одной строкой в .env, если короткий ответ
+#     где-то теряет важное условие, — без выкатки кода.
+RESPONSE_TYPE_OVERRIDE = os.getenv("RAG_RESPONSE_TYPE", "").strip()
+
 # RAG — только векторный поиск (naive). Граф знаний не используем.
 WORKING_DIR = os.getenv("WORKING_DIR", "./rag_storage")
 CHUNK_TOKEN_SIZE = _int("CHUNK_TOKEN_SIZE", "1200")
