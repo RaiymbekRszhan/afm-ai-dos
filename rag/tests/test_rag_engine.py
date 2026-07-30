@@ -224,3 +224,27 @@ def test_answer_handles_async_generator_response():
 
     result = _run(rag_engine.answer(_StreamRag(), "вопрос", lang="ru"))
     assert result == "Часть 1. Часть 2."
+
+
+# ---------- «кто ты»: единственный ответ не из базы ----------
+def test_self_introduction_is_in_both_languages():
+    """На киоске 30.07 казахский «Сен кімсің?» получил РУССКИЙ ответ: модель
+    пересказывала русский блок ---Роль--- из промпта. Теперь обе версии заданы
+    явно, и просим отвечать дословно — язык не плывёт."""
+    from ragsvc.prompts import ABOUT_KK, ABOUT_RU, AFM_SYSTEM_PROMPT
+
+    assert ABOUT_RU in AFM_SYSTEM_PROMPT
+    assert ABOUT_KK in AFM_SYSTEM_PROMPT
+    # Казахская версия обязана быть НА КАЗАХСКОМ, а не переводом первого слова.
+    assert "жауап беремін" in ABOUT_KK
+    assert "офицер Агентства" not in ABOUT_KK
+    # Обе укладываются в бюджет устного ответа (400 символов).
+    assert len(ABOUT_RU) <= 400 and len(ABOUT_KK) <= 400
+
+
+def test_self_introduction_rule_precedes_context():
+    """Правило должно стоять в блоке «Как отвечать», до Контекста: иначе модель
+    прочитает его после материала и приоритет потеряется."""
+    from ragsvc.prompts import AFM_SYSTEM_PROMPT
+
+    assert AFM_SYSTEM_PROMPT.index("КТО ТЫ") < AFM_SYSTEM_PROMPT.index("---Контекст---")
