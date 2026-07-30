@@ -193,8 +193,11 @@ def test_running_check_cannot_match_itself():
     """
     import re
     text = mkb.BAT.read_bytes().decode("utf-8")
-    checks = [l for l in text.splitlines() if "powershell -NoProfile" in l]
-    assert checks, "проверки «уже запущен» нет вовсе"
+    # Только проверки «уже запущен»: вызов PowerShell для /health процессы не
+    # перебирает, и $_.Name ему не нужен.
+    checks = [l for l in text.splitlines()
+              if "powershell -NoProfile" in l and "AidosKiosk" in l]
+    assert len(checks) == 2, "проверок «уже запущен» должно быть две"
     for line in checks:
         assert "$_.Name" in line, "фильтра по имени процесса нет — найдёт саму себя"
         allowed = re.findall(r"'(\w+\.exe)'", line)
@@ -216,3 +219,21 @@ def test_running_check_is_not_inside_a_block():
             assert depth == 0, "проверка внутри блока if(...) — cmd упадёт"
         if s.endswith("("):
             depth += 1
+
+
+def test_health_check_goes_through_the_same_path_as_the_browser():
+    """curl НЕ использует системный прокси Windows, а браузер использует.
+
+    В регионе 30.07 Chrome открывал адрес нормально, а `.bat` вечно висел на
+    «waiting for backend»: проверка ходила не тем путём, что киоск. Поэтому
+    /health спрашиваем через PowerShell (Invoke-WebRequest уважает системный
+    прокси), а curl в файле остаться не должен.
+    """
+    text = mkb.BAT.read_bytes().decode("utf-8")
+    code = "\n".join(l for l in text.splitlines()
+                     if l.strip() and not l.strip().upper().startswith("REM"))
+    assert "curl" not in code, "проверка снова через curl — прокси она не увидит"
+    assert "Invoke-WebRequest" in code
+    # Молчащий бэкенд (код 1) — не повод не открывать киоск; неизвестный код
+    # (нет PowerShell) — тоже. Открываем браузер в обоих случаях.
+    assert "if %ERRORLEVEL% EQU 0 goto ready" in code

@@ -82,19 +82,21 @@ if defined KIOSK_KEY set "URL=%URL%&key=%KIOSK_KEY%"
 REM --- Ждём, пока бэкенд поднимется (киоск мог включиться раньше сервера) ------
 REM Проверяем /health, а НЕ /: страница отдаётся статикой и вернёт 200, даже когда
 REM оркестратор лежит, — тогда киоск открылся бы «живым», но без ответов.
-where curl >nul 2>nul || goto launch
-set /a TRY=0
+REM
+REM ⚠️ Проверяем через PowerShell, а НЕ через curl. curl НЕ использует системный
+REM прокси Windows, а браузер использует: в регионе 30.07 Chrome открывал адрес
+REM без проблем, а `.bat` вечно висел на строке waiting for backend. Проверка
+REM обязана ходить тем же путём, что и браузер, иначе она проверяет не то.
+REM Весь цикл ожидания — ВНУТРИ одного вызова PowerShell: запускать процесс
+REM 60 раз дорого (~1 с только на старт каждого).
 echo [kiosk] waiting for backend %ORIGIN%/health ...
-:waitloop
-curl -s -o NUL --max-time 3 "%ORIGIN%/health"
-if not errorlevel 1 goto ready
-set /a TRY+=1
-if %TRY% GEQ %WAIT_TRIES% (
-  echo [kiosk] backend is silent after %WAIT_TRIES% tries - opening browser anyway
-  goto launch
-)
-timeout /t 3 /nobreak >nul
-goto waitloop
+powershell -NoProfile -Command "for ($i=0; $i -lt %WAIT_TRIES%; $i++) { try { $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 '%ORIGIN%/health'; exit 0 } catch { Start-Sleep -Seconds 3 } }; exit 1"
+if %ERRORLEVEL% EQU 0 goto ready
+REM ⚠️ Код 1 = бэкенд молчал всё время ожидания. Любой ДРУГОЙ код (9009 «нет
+REM команды», запрет политикой) = проверить нечем — тогда просто открываем
+REM браузер, а не отказываемся работать: отказ в безопасную сторону.
+if %ERRORLEVEL% EQU 1 echo [kiosk] backend is silent after %WAIT_TRIES% tries - opening browser anyway
+goto launch
 :ready
 echo [kiosk] backend is up, opening browser...
 
