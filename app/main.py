@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from time import perf_counter
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -147,8 +147,27 @@ async def health():
     }
 
 
+def _gate(request: Request, kiosk: str | None, key: str | None) -> None:
+    """Общая проходная для дорогих путей: пропуск точки + темп запросов.
+
+    Порядок важен: сначала дешёвые проверки, потом STT/RAG/TTS. Оба отказа
+    обходятся серверу почти бесплатно, а именно они и защищают от того, что
+    один клиент выест облако и оба слота семафора.
+    """
+    if not kiosks.key_ok(kiosk, key):
+        log.warning("kiosk=%s: неверный пропуск, отказ", kiosk or "-")
+        raise HTTPException(status_code=403, detail="Киоск не опознан.")
+    # Не назвалась — считаем по адресу, иначе анонимный поток обходил бы лимит.
+    who = kiosk or (request.client.host if request.client else "unknown")
+    if not kiosks.rate_ok(who):
+        log.warning("%s: превышен темп запросов (%s/мин), отказ",
+                    who, settings.kiosk_rate_per_min)
+        raise HTTPException(status_code=429,
+                            detail="Слишком много запросов. Подождите минуту.")
+
+
 @app.post("/kiosk/ping")
-async def kiosk_ping(kiosk: str = Form(default=None)):
+async def kiosk_ping(kiosk: str = Form(default=None), key: str = Form(default=None)):
     """Точка отмечается живой и узнаёт, не отключили ли её.
 
     Два дела за один дешёвый запрос. Первое — heartbeat: без него погасшую точку
@@ -157,6 +176,10 @@ async def kiosk_ping(kiosk: str = Form(default=None)):
     он подойдёт, нажмёт, продиктует вопрос и только потом получит отказ.
     """
     kiosk_id = _clean_kiosk(kiosk)
+    # Пинг дешёвый, но подделанный пинг рисовал бы погасшую точку живой —
+    # значит пропуск сверяем и здесь. Темп пинга не ограничиваем: он и так редкий.
+    if not kiosks.key_ok(kiosk_id, key):
+        raise HTTPException(status_code=403, detail="Киоск не опознан.")
     kiosks.touch_ping(kiosk_id)
     blocked = kiosks.disabled_message(kiosk_id)
     return {
@@ -419,11 +442,15 @@ async def _answer_pipeline(audio: bytes, filename: str, content_type: str,
 
 @app.post("/voice")
 async def voice_endpoint(
+    request: Request,
     data: UploadFile = File(...),
     language: str = Form(default=None),
     suggest: str = Form(default=None),
     # Номер точки (20 киосков в пилоте) — только метка для логов, на ответ не влияет.
     kiosk: str = Form(default=None),
+    # Пропуск точки: без него `?id=` — просто подпись, и отключённый регион
+    # обходит рубильник, убрав параметр из ярлыка (см. kiosks.key_ok).
+    key: str = Form(default=None),
 ):
     """Полный пайплайн: аудио → STT → RAG+LLM → (TTS). Ответ — ОДНИМ JSON.
 
@@ -447,6 +474,7 @@ async def voice_endpoint(
     token = logging_setup.set_request_id(rid)
     t_start = perf_counter()
     try:
+        _gate(request, rec["kiosk"], key)
         # Вопрос = точка жива, даже если она старой версии и не умеет пинговать.
         kiosks.touch_ask(rec["kiosk"])
         # Точка отключена оператором — разворачиваем ДО STT/RAG/TTS: платить за
@@ -503,10 +531,14 @@ async def voice_endpoint(
 
 @app.post("/voice/stream")
 async def voice_stream_endpoint(
+    request: Request,
     data: UploadFile = File(...),
     language: str = Form(default=None),
     suggest: str = Form(default=None),
     kiosk: str = Form(default=None),
+    # Пропуск точки: без него `?id=` — просто подпись, и отключённый регион
+    # обходит рубильник, убрав параметр из ярлыка (см. kiosks.key_ok).
+    key: str = Form(default=None),
 ):
     """То же, что `/voice`, но ответ идёт ПОТОКОМ — NDJSON, по строке на событие.
 
@@ -536,6 +568,13 @@ async def voice_stream_endpoint(
         rec["total_ms"] = _ms(t_start)
         logging_setup.record_interaction(**rec)
 
+    try:
+        _gate(request, rec["kiosk"], key)
+    except HTTPException:
+        rec["error"] = "gate"
+        _finish()
+        logging_setup.reset_request_id(token)
+        raise
     kiosks.touch_ask(rec["kiosk"])
     # Тот же рубильник, что и в /voice: до потока ошибка отдаётся обычным HTTP.
     blocked = kiosks.disabled_message(rec["kiosk"])

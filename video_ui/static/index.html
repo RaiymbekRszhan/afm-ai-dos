@@ -260,6 +260,9 @@ if (KIOSK) document.body.classList.add("kiosk");
 // с каждым вопросом. Чистим тут же: в лог сервера попадёт чужая строка, а
 // переводы строк/длинный мусор ломали бы JSONL — оставляем буквы, цифры, ._-
 const KIOSK_ID = (params.get("id") || "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32);
+// Пропуск точки (?key=): без него `id` — просто подпись, и отключённый регион
+// обошёл бы рубильник, убрав параметр из ярлыка. Сверяет его сервер.
+const KIOSK_KEY = (params.get("key") || "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64);
 
 // ---------- потоковая озвучка (?stream=1) ----------
 // Обычный путь: ждём ВЕСЬ WAV (на длинном ответе это 6–20 c тишины у киоска).
@@ -779,6 +782,7 @@ async function stopAndSend() {
   if (pendingSuggest) fd.append("suggest", pendingSuggest);
   // Номер точки — в аналитику (поле `kiosk` в interactions.jsonl и в journald).
   if (KIOSK_ID) fd.append("kiosk", KIOSK_ID);
+  if (KIOSK_KEY) fd.append("key", KIOSK_KEY);
   try {
     if (STREAM_TTS) { await askStreaming(fd, askedLang); return; }
     // /voice тут — прокси на рабочий бэкенд (:8000). Контракт — JSON-тело (N5):
@@ -912,6 +916,7 @@ async function pingServer() {
   try {
     const fd = new FormData();
     fd.append("kiosk", KIOSK_ID);
+    fd.append("key", KIOSK_KEY);
     const r = await fetch("/kiosk/ping", { method: "POST", body: fd });
     if (r.ok) {
       const s = await r.json();

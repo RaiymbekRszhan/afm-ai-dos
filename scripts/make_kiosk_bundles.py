@@ -17,6 +17,9 @@
     install-autostart.bat — ставит автозапуск одним запуском (на киоске сенсорный
                             экран без клавиатуры, Win+R там не нажать)
     kiosk-id.txt          — одна строка: id точки (ASCII, CRLF, без BOM)
+    kiosk-key.txt         — пропуск ЭТОЙ точки: сервер сверяет имя с ключом,
+                            иначе отключённый регион обошёл бы рубильник,
+                            убрав `&id=` из ярлыка
     README.txt            — установка (UTF-8 с BOM: старый notepad без BOM
                             показывает кириллицу кракозябрами)
 
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import secrets
 import sys
 import zipfile
 from pathlib import Path
@@ -35,6 +39,10 @@ BAT = ROOT / "deploy" / "kiosk-start.bat"
 AUTOSTART = ROOT / "deploy" / "install-autostart.bat"
 LIST = ROOT / "deploy" / "kiosks.txt"
 OUT = ROOT / "out" / "kiosk-bundles"
+# Пропуска точек: «<id> <ключ>». СЕКРЕТ и одновременно ИСТОЧНИК ПРАВДЫ —
+# при пересборке архивов ключи берутся отсюда, иначе у регионов, которым уже
+# отправили архив, пропуск перестал бы совпадать с серверным.
+KEYS = ROOT / "kiosks-keys.txt"
 
 # Тот же набор символов, что у санитайзера страницы (index.html:262) и сервера
 # (app/main.py:_clean_kiosk). Если id не проходит здесь — он не пройдёт и там,
@@ -145,6 +153,38 @@ def check_autostart() -> bytes:
     return _read_crlf_bat(AUTOSTART)
 
 
+def load_or_make_keys(fleet: list[tuple[str, str]]) -> dict[str, str]:
+    """Ключи точек: существующие БЕРЁМ КАК ЕСТЬ, новым выдаём случайные.
+
+    Стабильность здесь важнее аккуратности: если пересборка выдаст новый ключ
+    региону, которому архив уже отправлен, его киоск перестанет опознаваться —
+    а на точке никого нет, кто это заметит и переустановит.
+    """
+    keys: dict[str, str] = {}
+    if KEYS.exists():
+        for raw in KEYS.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            kiosk_id, _, key = line.partition(" ")
+            if key.strip():
+                keys[kiosk_id] = key.strip()
+    fresh = [k for k, _ in fleet if k not in keys]
+    for kiosk_id in fresh:
+        keys[kiosk_id] = secrets.token_hex(12)
+    if fresh:
+        body = ["# Пропуска киосков: «<id> <ключ>». СЕКРЕТ — в git не попадает.",
+                "# Этот файл нужен И на сервере (kiosks-keys.txt в корне проекта),",
+                "# и здесь: отсюда ключи берутся при пересборке архивов.", ""]
+        body += [f"{k} {keys[k]}" for k, _ in sorted(fleet)]
+        # Точки, выбывшие из списка флота, не теряем: вернут — ключ совпадёт.
+        body += [f"{k} {v}" for k, v in sorted(keys.items())
+                 if k not in {i for i, _ in fleet}]
+        KEYS.write_text("\n".join(body) + "\n", encoding="utf-8")
+        print(f"выдано новых ключей: {len(fresh)} -> {KEYS}")
+    return keys
+
+
 def server_from_bat(data: bytes) -> str:
     m = re.search(rb'set "SERVER=([^"]+)"', data)
     port = re.search(rb'set "PORT=([^"]+)"', data)
@@ -182,6 +222,7 @@ def main() -> int:
                 stale.unlink()
                 print(f"убран устаревший архив: {stale.name}")
 
+    keys = load_or_make_keys(fleet)
     made = []
     for kiosk_id, human in fleet:
         path = OUT / f"aidos-kiosk-{kiosk_id}.zip"
@@ -189,24 +230,33 @@ def main() -> int:
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("kiosk-start.bat", bat)
             z.writestr("install-autostart.bat", autostart)
-            # CRLF и здесь: файл читает cmd через `set /p`, и лишний байт в
-            # конце строки уехал бы прямо в название точки.
+            # CRLF и здесь: оба файла читает cmd через `set /p`, и лишний байт в
+            # конце строки уехал бы прямо в название точки или в её пропуск.
             z.writestr("kiosk-id.txt", (kiosk_id + "\r\n").encode("ascii"))
+            z.writestr("kiosk-key.txt", (keys[kiosk_id] + "\r\n").encode("ascii"))
             z.writestr("README.txt", readme.encode("utf-8-sig"))
         made.append((kiosk_id, human, path))
 
     # Список рассылки: 20 адресатов руками в мессенджере — идеальное место
-    # перепутать архивы, поэтому печатаем и кладём рядом файлом.
+    # перепутать архивы, поэтому печатаем и кладём рядом файлом. Ссылку даём
+    # целиком: по ней проверяется точка до того, как архив уехал в регион.
     lines = [f"Рассылка киосков Ai-dos (сервер {server})", ""]
-    lines += [f"{human:<45} {p.name}" for _, human, p in made]
-    lines.append("")
-    lines.append("Каждому городу — ТОЛЬКО его архив: имя точки внутри kiosk-id.txt.")
+    for kiosk_id, human, path in made:
+        lines.append(f"{human}")
+        lines.append(f"    архив:  {path.name}")
+        lines.append(f"    ссылка: http://{server}/?kiosk=1&id={kiosk_id}"
+                     f"&key={keys[kiosk_id]}")
+        lines.append("")
+    lines.append("Каждому региону — ТОЛЬКО его архив: внутри его имя и его пропуск.")
+    lines.append("⚠️ Ссылки содержат пропуска — это секреты, наружу не выкладывать.")
     (OUT / "SEND-LIST.txt").write_text("\n".join(lines), encoding="utf-8-sig")
 
     print("\n".join(lines))
-    print(f"\nГотово: {len(made)} архив(ов) в {OUT}")
-    print("Проверить один перед рассылкой:")
-    print(f"  unzip -p {OUT}/aidos-kiosk-{made[0][0]}.zip kiosk-id.txt | od -c | head -2")
+    print(f"Готово: {len(made)} архив(ов) в {OUT}")
+    print(f"\n⚠️ Ключи нужны И НА СЕРВЕРЕ, иначе он никого не опознает:")
+    print(f"  scp {KEYS.name} root@{server}:/root/afm-ai-dos/kiosks-keys.txt")
+    print("Проверить один архив перед рассылкой:")
+    print(f"  unzip -p {OUT}/aidos-kiosk-{made[0][0]}.zip kiosk-key.txt | od -c | head -2")
     return 0
 
 

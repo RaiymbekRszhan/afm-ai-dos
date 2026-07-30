@@ -93,12 +93,15 @@ def test_server_taken_from_bat():
 def test_bundle_contents(tmp_path, monkeypatch, fleet_file):
     fleet_file("astana  Астана (город)\n")
     monkeypatch.setattr(mkb, "OUT", tmp_path / "bundles")
+    # Реальный kiosks-keys.txt трогать нельзя: это секреты рабочего флота.
+    monkeypatch.setattr(mkb, "KEYS", tmp_path / "keys.txt")
     monkeypatch.setattr("sys.argv", ["make_kiosk_bundles"])
     assert mkb.main() == 0
 
     z = zipfile.ZipFile(tmp_path / "bundles" / "aidos-kiosk-astana.zip")
     assert sorted(z.namelist()) == [
-        "README.txt", "install-autostart.bat", "kiosk-id.txt", "kiosk-start.bat"]
+        "README.txt", "install-autostart.bat", "kiosk-id.txt", "kiosk-key.txt",
+        "kiosk-start.bat"]
 
     # cmd читает файл через `set /p` — лишний байт уехал бы прямо в имя точки.
     assert z.read("kiosk-id.txt") == b"astana\r\n"
@@ -110,8 +113,14 @@ def test_bundle_contents(tmp_path, monkeypatch, fleet_file):
     assert readme.startswith(b"\xef\xbb\xbf")
     assert "astana" in readme.decode("utf-8-sig")
 
+    # Пропуск: ASCII + CRLF, cmd читает его тем же `set /p`.
+    key = z.read("kiosk-key.txt")
+    assert key.endswith(b"\r\n") and key[:-2].isalnum()
+
     send_list = (tmp_path / "bundles" / "SEND-LIST.txt").read_text(encoding="utf-8-sig")
     assert "aidos-kiosk-astana.zip" in send_list
+    # Готовая ссылка с пропуском — по ней точка проверяется до рассылки.
+    assert f"id=astana&key={key[:-2].decode()}" in send_list
 
 
 def test_repo_fleet_is_valid():

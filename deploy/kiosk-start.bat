@@ -58,6 +58,14 @@ REM Ругаемся в консоль, чтобы это заметили пр�
 REM при разборе статистики. Однострочные if — блоки if(...)else(...) в cmd
 REM ломаются, если файл когда-нибудь доедет с LF.
 if not exist "%~dp0kiosk-id.txt" echo [kiosk] WARNING: kiosk-id.txt not found - logs will show "%COMPUTERNAME%"
+
+REM --- Пропуск точки: сервер сверяет имя с ключом ---------------------------
+REM Без ключа `id` — просто подпись, и отключённый регион обошёл бы рубильник,
+REM убрав параметр из ярлыка. Ключ у каждого региона СВОЙ, лежит в kiosk-key.txt
+REM рядом с этим файлом (кладём в архив при сборке).
+set "KIOSK_KEY="
+if exist "%~dp0kiosk-key.txt" set /p KIOSK_KEY=<"%~dp0kiosk-key.txt"
+if not exist "%~dp0kiosk-key.txt" echo [kiosk] WARNING: kiosk-key.txt not found - server may refuse this kiosk
 REM Сколько раз (по 3 с) ждать бэкенд перед тем, как открыть браузер всё равно.
 set "WAIT_TRIES=60"
 REM =======================
@@ -67,6 +75,7 @@ REM Если оставить ":80" в --unsafely-treat-insecure-origin-as-secur
 REM сматчится и микрофона не будет.
 if "%PORT%"=="80" (set "ORIGIN=http://%SERVER%") else (set "ORIGIN=http://%SERVER%:%PORT%")
 set "URL=%ORIGIN%/%PAGE%&id=%KIOSK_ID%"
+if defined KIOSK_KEY set "URL=%URL%&key=%KIOSK_KEY%"
 
 REM --- Ждём, пока бэкенд поднимется (киоск мог включиться раньше сервера) ------
 REM Проверяем /health, а НЕ /: страница отдаётся статикой и вернёт 200, даже когда

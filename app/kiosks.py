@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import time
 from pathlib import Path
 
@@ -67,8 +68,14 @@ _cache: tuple[tuple[int, int] | None, dict[str, str]] | None = None
 # Кэш списка флота — тот же приём.
 _fleet_cache: tuple[tuple[int, int] | None, list[tuple[str, str]]] | None = None
 
+# Кэш таблицы ключей — тот же приём.
+_keys_cache: tuple[tuple[int, int] | None, dict[str, str]] | None = None
+
 # Живость точек: kiosk -> {"ping": ts, "ask": ts, "asks": n}. В памяти процесса.
 _seen: dict[str, dict[str, float]] = {}
+
+# Темп запросов: кто -> времена последних обращений (скользящее окно).
+_rate: dict[str, list[float]] = {}
 
 
 def _stamp(path: Path) -> tuple[int, int] | None:
@@ -194,6 +201,81 @@ def fleet() -> list[tuple[str, str]]:
     return rows
 
 
+# ---------- пропуск точки ----------
+def _keys() -> dict[str, str]:
+    """Таблица «id точки -> ключ» из файла (кэш по времени изменения)."""
+    global _keys_cache
+    path = Path(settings.kiosk_keys_file)
+    stamp = _stamp(path)
+    if _keys_cache is not None and _keys_cache[0] == stamp:
+        return _keys_cache[1]
+    table: dict[str, str] = {}
+    if stamp is not None:
+        try:
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                kiosk_id, _, key = line.partition(" ")
+                key = key.strip()
+                if key and valid_id(kiosk_id):
+                    table[kiosk_id] = key
+        except OSError as e:
+            log.warning("список ключей киосков %s не прочитан: %r", path, e)
+    _keys_cache = (stamp, table)
+    return table
+
+
+def key_ok(kiosk: str | None, key: str | None) -> bool:
+    """Пускать ли запрос с этой точки.
+
+    Смысл пропуска: без него `?id=` — просто подпись, и отключённый регион
+    обходит рубильник, убрав параметр из ярлыка. С ключом сервер сверяет имя с
+    ключом, и притвориться соседом уже нельзя.
+
+    Мягкий режим (`KIOSK_KEY_REQUIRED=false`, по умолчанию): НЕВЕРНЫЙ ключ
+    отвергаем всегда, отсутствие ключа — пропускаем. Так проверку можно
+    выкатить, не погасив точки, которые ещё не получили архив.
+
+    ⚠️ Ключ лежит текстом на машине в помещении, куда ходят люди: он закрывает
+    постороннего в сети, но не того, кто стоит у самого киоска.
+    """
+    table = _keys()
+    if not table:            # ключи ещё не заведены — проверять нечем
+        return True
+    expected = table.get(kiosk) if kiosk else None
+    if key:
+        # Ключ прислали: он обязан совпасть с ключом ИМЕННО этой точки. Иначе
+        # чужой ключ + чужое имя = обход рубильника.
+        return expected is not None and secrets.compare_digest(key, expected)
+    return not settings.kiosk_key_required
+
+
+# ---------- ограничение частоты ----------
+def rate_ok(who: str) -> bool:
+    """Не превышен ли темп запросов у этой точки (скользящее окно в минуту).
+
+    Считаем по точке, а если она не назвалась — по адресу. Один клиент не должен
+    занимать оба слота семафора бесконечно: тогда 20 городов ждут за ним.
+    """
+    limit = settings.kiosk_rate_per_min
+    if limit <= 0:
+        return True
+    now = time.time()
+    hits = _rate.setdefault(who, [])
+    cutoff = now - 60
+    hits[:] = [t for t in hits if t > cutoff]
+    # Чтобы словарь не рос без конца от случайных адресов: раз в сколько-то
+    # вызовов выкидываем тех, у кого за минуту не было ни одного запроса.
+    if len(_rate) > 500:
+        for k in [k for k, v in _rate.items() if not v]:
+            del _rate[k]
+    if len(hits) >= limit:
+        return False
+    hits.append(now)
+    return True
+
+
 # ---------- heartbeat ----------
 def touch_ping(kiosk: str | None) -> None:
     """Точка дала о себе знать (периодический пинг со страницы)."""
@@ -247,11 +329,13 @@ def maintenance_message() -> str | None:
 
 def reset_cache() -> None:
     """Забыть прочитанное (нужно тестам и после записи файла)."""
-    global _cache, _fleet_cache
+    global _cache, _fleet_cache, _keys_cache
     _cache = None
     _fleet_cache = None
+    _keys_cache = None
 
 
 def reset_seen() -> None:
-    """Забыть живость точек (тесты)."""
+    """Забыть живость точек и накопленный темп (тесты)."""
     _seen.clear()
+    _rate.clear()

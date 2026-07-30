@@ -107,12 +107,12 @@ async def admin_page():
 
 
 @app.post("/kiosk/ping")
-async def kiosk_ping(kiosk: str = Form(default=None)):
+async def kiosk_ping(kiosk: str = Form(default=None), key: str = Form(default=None)):
     """Heartbeat киоска — насквозь на бэкенд. Сбой сети не должен ломать
     страницу: молчим 503, страница просто попробует в следующий раз."""
     try:
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(BACKEND + "/kiosk/ping", data={"kiosk": kiosk or ""})
+            r = await c.post(BACKEND + "/kiosk/ping", data={"kiosk": kiosk or "", "key": key or ""})
     except Exception:
         raise HTTPException(status_code=503, detail="Бэкенд недоступен.")
     return Response(content=r.content, status_code=r.status_code,
@@ -156,7 +156,8 @@ async def health():
 
 @app.post("/voice")
 async def voice(data: UploadFile = File(...), language: str = Form("russian"),
-                suggest: str = Form(default=None), kiosk: str = Form(default=None)):
+                suggest: str = Form(default=None), kiosk: str = Form(default=None),
+                key: str = Form(default=None)):
     """Вопрос → рабочий бэкенд (:8000) → JSON-ответ (текст + аудио в base64).
 
     Тело прокидываем как есть: контракт /voice бэкенда — JSON
@@ -183,6 +184,9 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
     # Номер точки (?id= на странице) — только в аналитику бэкенда; на ответ не влияет.
     if kiosk:
         form["kiosk"] = kiosk
+    # Пропуск точки (?key= на странице) — его сверяет бэкенд, здесь только несём.
+    if key:
+        form["key"] = key
     try:
         async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as c:
             r = await c.post(BACKEND + "/voice", files=files, data=form)
@@ -206,7 +210,8 @@ async def voice(data: UploadFile = File(...), language: str = Form("russian"),
 
 @app.post("/voice/stream")
 async def voice_stream(data: UploadFile = File(...), language: str = Form("russian"),
-                       suggest: str = Form(default=None), kiosk: str = Form(default=None)):
+                       suggest: str = Form(default=None), kiosk: str = Form(default=None),
+                       key: str = Form(default=None)):
     """То же, что /voice, но ответ бэкенда льётся ПОТОКОМ (NDJSON) — насквозь.
 
     Смысл потока в том, что первая строка (текст) и первый кусок озвучки
@@ -227,6 +232,8 @@ async def voice_stream(data: UploadFile = File(...), language: str = Form("russi
         form["suggest"] = suggest
     if kiosk:
         form["kiosk"] = kiosk
+    if key:
+        form["key"] = key
 
     async def relay():
         # Клиент httpx живёт ВНУТРИ генератора: закроется вместе с потоком (в

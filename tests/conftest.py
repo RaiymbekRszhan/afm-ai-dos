@@ -9,6 +9,10 @@ import os
 os.environ["STT_KK_USE_WHISPER"] = "false"   # не грузим Whisper в lifespan
 os.environ["STT_CORRECTION"] = "false"        # не дёргаем LLM-коррекцию
 os.environ["LOG_ANALYTICS"] = "false"         # обычные тесты не пишут JSONL/logs/ (см. test_logging)
+# Лимит темпа выключен: общий клиент ходит с одного адреса и без id, поэтому
+# все запросы суиты попадали бы в одно окно и после десятого получали 429.
+# Тесты лимита включают его сами (см. test_kiosk_gate).
+os.environ["KIOSK_RATE_PER_MIN"] = "0"
 # f5/spark теперь требуют адрес (N3), иначе tts_enabled=False и /voice отдаёт JSON
 # без звука. Задаём фиктивные URL — сам синтез в тестах замокан (см. fixture client).
 os.environ.setdefault("F5_URL", "http://f5.test:8810/tts")
@@ -18,9 +22,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app import service
+from app import kiosks, service
 from app.clients import rag, stt, tts
 from tests.util import wav_bytes
+
+
+@pytest.fixture(autouse=True)
+def _clean_fleet_state():
+    """Состояние флота живёт в модуле, а не в приложении: без сброса живость
+    точек и накопленный темп протекают из теста в тест."""
+    kiosks.reset_cache()
+    kiosks.reset_seen()
+    yield
+    kiosks.reset_cache()
+    kiosks.reset_seen()
 
 
 @pytest.fixture
