@@ -280,7 +280,7 @@ async def admin_stats(token: str = None, days: int = None, kiosk: str = None,
     return {
         "days": period,
         "kiosk": _clean_kiosk(kiosk),
-        "summary": analytics.summarize(rows),
+        "summary": analytics.summarize(rows, settings.admin_slow_ms),
         "by_kiosk": analytics.by_kiosk(rows),
         "by_day": analytics.by_day(rows),
         # Тексты — ПДн: при admin_logs=false отдаём пустые списки, а страница

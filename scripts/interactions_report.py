@@ -26,11 +26,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app import analytics  # noqa: E402  (после правки sys.path)
 
 
-def _lat_line(name: str, lat: dict) -> str:
+def _lat_line(name: str, lat: dict, slow_ms: int) -> str:
     if not lat["n"]:
         return f"  {name:<8} нет данных"
+    # max при малом числе замеров РАВЕН p95 (перцентиль попадает на последний
+    # элемент), поэтому рядом печатаем счётчик неприемлемо долгих — он осмыслен
+    # при любом объёме.
+    slow = f"  дольше {slow_ms // 1000} с: {lat['slow']}" if lat["slow"] else ""
     return (f"  {name:<8} p50={lat['p50']} мс  p95={lat['p95']} мс  "
-            f"max={lat['max']} мс  (n={lat['n']})")
+            f"max={lat['max']} мс  (n={lat['n']}){slow}")
 
 
 def main() -> None:
@@ -89,7 +93,7 @@ def main() -> None:
     print()
     print("Задержки:")
     for name in ("total", "stt", "rag", "tts"):
-        print(_lat_line(name, s["latency"][name]))
+        print(_lat_line(name, s["latency"][name], s["slow_ms"]))
     print()
 
     # Разбивка по точкам: при двух десятках киосков средние числа врут — одна

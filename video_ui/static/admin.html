@@ -175,15 +175,13 @@
     <h2>Обращения по суткам</h2>
     <div id="chart"></div>
     <h2>Сколько гражданин ждёт ответа</h2>
-    <div class="note">Медиана — столько ждала половина граждан. p95 — почти
-      худший случай: дольше ждал лишь один человек из двадцати. «Замеров» —
-      сколько обращений попало в расчёт.</div>
+    <div class="note" id="latIntro"></div>
     <table id="lat">
       <thead><tr>
         <th>Стадия</th>
         <th class="num">Медиана</th>
         <th class="num">p95</th>
-        <th class="num">Худшее</th>
+        <th class="num" id="slowHead">Долго</th>
         <th class="num">Замеров</th>
       </tr></thead>
       <tbody></tbody>
@@ -414,10 +412,21 @@ function renderOverview(d) {
     tr.appendChild(name);
     tr.appendChild(el("td", "num", fmtMs(val.p50)));
     tr.appendChild(el("td", "num", fmtMs(val.p95)));
-    tr.appendChild(el("td", "num", fmtMs(val.max)));
+    // Вместо максимума — счётчик неприемлемо долгих. Максимум при малом числе
+    // замеров РАВЕН p95 (перцентиль попадает на последний элемент), а при
+    // большом показывает один случайный выброс: обе крайности бесполезны.
+    const slow = el("td", "num", val.n ? val.slow : "—");
+    if (val.slow) slow.classList.add("s-gap");
+    tr.appendChild(slow);
     tr.appendChild(el("td", "num sub", val.n || "—"));
     tb.appendChild(tr);
   });
+  const sec = Math.round((s.slow_ms || 20000) / 1000);
+  $("slowHead").textContent = "Дольше " + sec + " с";
+  $("latIntro").textContent = "Медиана — столько ждала половина граждан. "
+    + "p95 — почти худший случай: дольше ждал один человек из двадцати. "
+    + "«Дольше " + sec + " с» — сколько граждан ждали неприемлемо долго. "
+    + "«Замеров» — сколько обращений попало в расчёт.";
   $("latHelp").textContent = "Озвучка — самая долгая стадия: ответ длиной в "
     + "минуту синтезируется целиком, прежде чем аватар начнёт говорить. "
     + "Сократить устный ответ — самый большой выигрыш по ожиданию.";

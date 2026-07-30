@@ -95,7 +95,31 @@ def test_percentile_ignores_non_numbers():
 
 def test_latency_reports_nothing_on_empty():
     assert analytics.latency([], "total_ms") == {"p50": None, "p95": None,
-                                                "max": None, "n": 0}
+                                                "max": None, "n": 0, "slow": 0}
+
+
+def test_latency_counts_slow_answers():
+    """«Дольше N с» полезнее максимума: тот при малом числе замеров РАВЕН p95."""
+    rows = [rec(total_ms=5000), rec(total_ms=25000), rec(total_ms=30000)]
+    lat = analytics.latency(rows, "total_ms", slow_ms=20000)
+    assert lat["slow"] == 2
+    # Порог соблюдается строго: ровно 20 000 «долгим» не считается.
+    assert analytics.latency([rec(total_ms=20000)], "total_ms", 20000)["slow"] == 0
+
+
+def test_p95_equals_max_on_small_samples():
+    """Не баг, а арифметика: до 11 замеров перцентиль попадает на последний.
+
+    Именно поэтому колонка «худшее» в админке заменена на «дольше N с» —
+    на малых объёмах она дублировала p95.
+    """
+    for n in range(1, 12):
+        vals = [rec(total_ms=i * 1000) for i in range(1, n + 1)]
+        lat = analytics.latency(vals, "total_ms")
+        assert lat["p95"] == lat["max"], n
+    twelve = [rec(total_ms=i * 1000) for i in range(1, 13)]
+    lat = analytics.latency(twelve, "total_ms")
+    assert lat["p95"] < lat["max"]
 
 
 def test_latency_counts_zero_as_value():

@@ -116,14 +116,26 @@ def percentile(values: list, p: float) -> int | None:
     return s[k]
 
 
-def latency(rows: list[dict], field: str) -> dict:
-    """p50/p95/max/n по одной стадии. Пустая выборка — все None."""
+# Сколько ждать ответа уже неприемлемо. Число для отчёта наверх: «столько-то
+# граждан ждали дольше 20 секунд» понятно без объяснения перцентилей.
+SLOW_MS = 20000
+
+
+def latency(rows: list[dict], field: str, slow_ms: int = SLOW_MS) -> dict:
+    """p50/p95/max/n по одной стадии + сколько замеров дольше slow_ms.
+
+    `slow` полезнее максимума: максимум при малом числе замеров РАВЕН p95
+    (перцентиль попадает на последний элемент — до 11 замеров это буквально одно
+    и то же число), а при большом отражает единичный выброс. Счётчик «дольше N»
+    осмыслен и на трёх записях, и на трёх тысячах.
+    """
     vals = [r.get(field) for r in rows]
     vals = [v for v in vals if isinstance(v, int)]
     if not vals:
-        return {"p50": None, "p95": None, "max": None, "n": 0}
+        return {"p50": None, "p95": None, "max": None, "n": 0, "slow": 0}
     return {"p50": percentile(vals, 50), "p95": percentile(vals, 95),
-            "max": max(vals), "n": len(vals)}
+            "max": max(vals), "n": len(vals),
+            "slow": sum(1 for v in vals if v > slow_ms)}
 
 
 # ---------- фильтры ----------
@@ -173,7 +185,7 @@ def filter_rows(rows: list[dict], *, kiosk: str | None = None,
 
 
 # ---------- сводки ----------
-def summarize(rows: list[dict]) -> dict:
+def summarize(rows: list[dict], slow_ms: int = SLOW_MS) -> dict:
     """Общая сводка. Списки пар — уже отсортированы по убыванию (most_common)."""
     total = len(rows)
     errors = [r for r in rows if r.get("error")]
@@ -201,8 +213,9 @@ def summarize(rows: list[dict]) -> dict:
         "fallback": len(fallback),
         "suggested": len(suggested),
         "printed": len(printed),
-        "latency": {name: latency(ok, f"{name}_ms")
+        "latency": {name: latency(ok, f"{name}_ms", slow_ms)
                     for name in ("total", "stt", "rag", "tts", "tts_first")},
+        "slow_ms": slow_ms,
     }
 
 

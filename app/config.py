@@ -219,6 +219,9 @@ class Settings(BaseSettings):
     admin_logs: bool = True
     # Период по умолчанию в админке (суток) и размер страницы журнала.
     admin_default_days: int = 7
+    # С какого ожидания считаем, что гражданин ждал неприемлемо долго. Колонка
+    # «дольше N с» в админке и строка в CLI-отчёте.
+    admin_slow_ms: int = 20000
     admin_page_size: int = 50
     # --- Логирование ---
     # Ops-логи (ошибки/тайминги/request-id) идут в stderr → journald (systemd).
