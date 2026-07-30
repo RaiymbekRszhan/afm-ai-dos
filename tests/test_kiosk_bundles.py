@@ -129,3 +129,55 @@ def test_repo_fleet_is_valid():
     assert len(fleet) == 20
     assert len({k for k, _ in fleet}) == 20
     assert all(mkb.ID_RE.match(k) for k, _ in fleet)
+
+
+# ---------- структура .bat (cmd падает молча, тестов у него нет) ----------
+def _bat_code_lines(path):
+    """Только исполняемые строки: REM и пустые выкидываем."""
+    text = path.read_bytes().decode("utf-8")
+    return [l for l in text.splitlines()
+            if l.strip() and not l.strip().upper().startswith("REM")]
+
+
+@pytest.mark.parametrize("which", ["BAT", "AUTOSTART"])
+def test_bat_labels_and_blocks_are_consistent(which):
+    """У cmd нет ни линтера, ни тестов: опечатка в метке или непарная скобка
+    ломает файл уже НА ТОЧКЕ, где отладчика нет."""
+    import re
+    path = getattr(mkb, which)
+    code = "\n".join(_bat_code_lines(path))
+    labels = set(re.findall(r"^:([A-Za-z_]\w*)", code, re.M))
+    gotos = set(re.findall(r"\bgoto\s+([A-Za-z_]\w*)", code))
+    assert not (gotos - labels - {"eof"}), f"переход без метки: {gotos - labels}"
+    # Считаем ГЛУБИНУ, а не пары: строка «) else (» и закрывает, и открывает.
+    depth = 0
+    for n, line in enumerate(code.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith(")"):
+            depth -= 1
+            assert depth >= 0, f"строка {n}: лишняя закрывающая скобка"
+        if stripped.endswith("("):
+            depth += 1
+    assert depth == 0, f"незакрытых блоков: {depth}"
+
+
+def test_bat_line_continuations_are_not_broken():
+    """Пустая строка после ^ = cmd теряет продолжение и запускает браузер без флагов."""
+    lines = mkb.BAT.read_bytes().decode("utf-8").splitlines()
+    for i, l in enumerate(lines[:-1]):
+        if l.rstrip().endswith("^"):
+            assert lines[i + 1].strip(), f"строка {i + 1}: после ^ пустая строка"
+
+
+def test_bat_guards_against_second_instance():
+    """Главный баг 30.07: браузер с тем же профилем уже запущен -> новый процесс
+    передаёт ему команду и выходит -> /wait возвращается -> цикл открывает окно
+    каждые 3 секунды."""
+    text = mkb.BAT.read_bytes().decode("utf-8")
+    assert "AidosKiosk" in text and ":already" in text
+    # ⚠️ Именно EQU 1: `if errorlevel 1` истинно и для 9009 «нет команды», и на
+    # машине без PowerShell киоск НЕ ЗАПУСТИЛСЯ БЫ вовсе.
+    assert "if %ERRORLEVEL% EQU 1 goto already" in text
+    assert "if errorlevel 1 goto already" not in text
+    # Проверка стоит и перед первым запуском, и в цикле перезапуска.
+    assert text.count("if %ERRORLEVEL% EQU 1 goto already") == 2

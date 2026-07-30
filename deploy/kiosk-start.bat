@@ -116,6 +116,19 @@ REM по умолчанию ВЫКЛЮЧЕНО — раскомментируй,
 REM powercfg /change monitor-timeout-ac 0
 REM powercfg /change standby-timeout-ac 0
 
+REM --- Второй экземпляр киоска не запускаем -----------------------------------
+REM Если браузер с профилем AidosKiosk УЖЕ работает, новый chrome.exe просто
+REM передаёт ему команду и завершается САМ — мгновенно. Ниже стоит /wait, он
+REM тут же возвращается, скрипт думает «браузер закрыли» и запускает снова:
+REM новое окно каждые 3 секунды (жалоба 30.07 — киоск был поднят автозапуском,
+REM а .bat кликнули руками). Поэтому сначала спрашиваем, не запущен ли он.
+powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*AidosKiosk*' }; if ($p) { exit 1 } else { exit 0 }"
+REM ⚠️ Именно EQU 1, а не `if errorlevel 1`: последнее истинно для ЛЮБОГО кода
+REM >= 1, включая 9009 «команда не найдена». На машине с заблокированным
+REM PowerShell киоск решил бы «уже запущен» и не стартовал бы ВООБЩЕ. При любой
+REM непонятной ошибке проверки идём запускать браузер — это безопасная сторона.
+if %ERRORLEVEL% EQU 1 goto already
+
 echo [kiosk] opening "%URL%"
 
 REM Флаги Chromium (Edge и Chrome одинаковые):
@@ -131,6 +144,7 @@ REM   --kiosk-printing                            бланк уходит на �
 REM                                               диалога печати (иначе он повиснет на экране)
 REM   --no-first-run --no-default-browser-check   без мастера приветствия поверх киоска
 REM   --disable-pinch / --overscroll...           тач-экран: без зума/свайпа-назад
+set /a FAILS=0
 :relaunch
 start "" /wait "%BROWSER%" ^
   --kiosk ^
@@ -145,7 +159,36 @@ start "" /wait "%BROWSER%" ^
   --disable-pinch --overscroll-history-navigation=0 ^
   --check-for-update-interval=31536000
 
-REM Браузер закрыли (Alt+F4, сбой, обновление) — киоск не должен оставаться пустым.
+REM Браузер вышел. Два разных случая, и путать их нельзя:
+REM   * процесс киоска ЖИВ  -> мы не закрылись, а передали команду уже
+REM     работающему браузеру. Перезапускать нельзя — получим окно каждые 3 с;
+REM   * процесса нет         -> браузер действительно закрыли (Alt+F4, сбой,
+REM     обновление), и киоск не должен оставаться пустым.
+powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*AidosKiosk*' }; if ($p) { exit 1 } else { exit 0 }"
+REM ⚠️ Именно EQU 1, а не `if errorlevel 1`: последнее истинно для ЛЮБОГО кода
+REM >= 1, включая 9009 «команда не найдена». На машине с заблокированным
+REM PowerShell киоск решил бы «уже запущен» и не стартовал бы ВООБЩЕ. При любой
+REM непонятной ошибке проверки идём запускать браузер — это безопасная сторона.
+if %ERRORLEVEL% EQU 1 goto already
+
+REM Подряд идущие мгновенные выходы = браузер не стартует вовсе (сломанный
+REM флаг, нет профиля, антивирус). Бесконечно мигать экраном бессмысленно —
+REM останавливаемся и показываем, что смотреть.
+set /a FAILS+=1
+if %FAILS% GEQ 10 (
+  echo [kiosk] browser exited 10 times in a row - giving up.
+  echo [kiosk] Check the URL/flags printed above, then run this file again.
+  pause
+  exit /b 1
+)
 echo [kiosk] browser exited, restarting in 3s (close this window to stop)
 timeout /t 3 /nobreak >nul
 goto relaunch
+
+:already
+echo.
+echo [kiosk] Ai-dos kiosk is ALREADY running in another window.
+echo [kiosk] Nothing to do here - you can close this window.
+echo [kiosk] To restart the kiosk: close the OTHER black window first.
+timeout /t 15 /nobreak >nul
+exit /b 0
