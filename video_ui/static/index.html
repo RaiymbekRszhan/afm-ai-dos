@@ -412,7 +412,11 @@ function enqueueChunk(blob, chars, provider) {
   streamProvider = provider || streamProvider;
   chunkQueue.push({ blob: blob, chars: chars });
   if (!chunkQueue.playing) {
-    if (!streaming) { streaming = true; showTalking(); }
+    if (!streaming) {
+      streaming = true;
+      revealAnswer();                  // текст и голос появляются вместе
+      showTalking();
+    }
     playNextChunk();
   }
 }
@@ -860,6 +864,7 @@ async function backendError(r) {
 async function askStreaming(fd, askedLang) {
   streamAbort = new AbortController();
   chunkQueue.reset();
+  pendingAnswer = null;                // прошлый ответ уже не покажем
   streamProvider = null;
   const r = await fetch("/voice/stream", { method: "POST", body: fd,
                                            signal: streamAbort.signal });
@@ -880,25 +885,47 @@ async function askStreaming(fd, askedLang) {
     btn.disabled = false;              // спрашивать снова можно, не дослушав
   }
   chunkQueue.finished = true;
-  if (chunkQueue.done()) showIdle();   // звука не было вовсе (TTS выключен)
+  if (chunkQueue.done()) {
+    revealAnswer();                    // звука не было вовсе (TTS выключен)
+    showIdle();
+  }
+}
+
+// Строка meta приходит СРАЗУ после поиска в базе, то есть примерно за полторы
+// секунды до первого звука. Показывать по ней весь ответ — плохо по двум
+// причинам: текст рассинхронизирован с голосом, и весь ответ на минуту речи
+// читается мгновенно — гражданин дочитывает и стоит, слушая пересказ уже
+// прочитанного, а караоке-подсветка еле ползёт в начале.
+// Поэтому по meta показываем ТОЛЬКО вопрос («я тебя услышал»), а ответ — в
+// момент старта озвучки, см. revealAnswer().
+let pendingAnswer = null;
+
+function revealAnswer() {
+  if (!pendingAnswer) return;
+  const p = pendingAnswer;
+  pendingAnswer = null;                // идемпотентно: зовём из нескольких мест
+  showQA(p.q, p.a, p.lang, p.printIds);
+  initKaraoke();                       // слова появились только сейчас
 }
 
 function handleStreamEvent(ev, askedLang) {
   if (ev.type === "meta") {
     pendingSuggest = ev.suggest || null;
     const printIds = (ev.print && ev.print.length) ? ev.print : null;
-    showQA(ev.question || "", ev.answer || "", askedLang, printIds);
+    pendingAnswer = { q: ev.question || "", a: ev.answer || "",
+                      lang: askedLang, printIds: printIds };
+    showQA(ev.question || "", "", askedLang, null);   // пока только вопрос
     autoScroll = true;                 // новый ответ — прокрутка снова наша
-    initKaraoke();
     chunkQueue.totalChars = ev.speech_chars || 0;
     streamProvider = ev.provider;
     streamFormat = ev.format || "wav";
-    st.textContent = "ответ готов";
+    st.textContent = "ответ найден, озвучиваю...";
   } else if (ev.type === "audio") {
     enqueueChunk(b64ToBlob(ev.audio_b64, "audio/" + streamFormat), ev.chars, ev.provider);
   } else if (ev.type === "error") {
-    // Статус 200 уже отдан, поэтому сбой синтеза приходит строкой. Текст ответа
-    // на экране остаётся — молчит только голос.
+    // Статус 200 уже отдан, поэтому сбой синтеза приходит строкой. Голос молчит,
+    // но текст ответа гражданин получить ОБЯЗАН — иначе он остался ни с чем.
+    revealAnswer();
     st.textContent = "ошибка озвучки: " + (ev.detail || "поток прерван");
     chunkQueue.finished = true;
     if (!chunkQueue.playing) finishAnswer();
