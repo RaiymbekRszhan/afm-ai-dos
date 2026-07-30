@@ -122,7 +122,10 @@ REM передаёт ему команду и завершается САМ — 
 REM тут же возвращается, скрипт думает «браузер закрыли» и запускает снова:
 REM новое окно каждые 3 секунды (жалоба 30.07 — киоск был поднят автозапуском,
 REM а .bat кликнули руками). Поэтому сначала спрашиваем, не запущен ли он.
-powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*AidosKiosk*' }; if ($p) { exit 1 } else { exit 0 }"
+REM ⚠️ Фильтр по ИМЕНИ процесса обязателен. Без него проверка находила саму
+REM себя: строка *AidosKiosk* лежит в командной строке ТОГО ЖЕ powershell.exe,
+REM который её ищет, — и киоск не запускался НИКОГДА (30.07, поймано на точке).
+powershell -NoProfile -Command "$b = @('chrome.exe','msedge.exe'); $p = Get-CimInstance Win32_Process | Where-Object { $b -contains $_.Name -and $_.CommandLine -like '*AidosKiosk*' }; if ($p) { exit 1 } else { exit 0 }"
 REM ⚠️ Именно EQU 1, а не `if errorlevel 1`: последнее истинно для ЛЮБОГО кода
 REM >= 1, включая 9009 «команда не найдена». На машине с заблокированным
 REM PowerShell киоск решил бы «уже запущен» и не стартовал бы ВООБЩЕ. При любой
@@ -164,7 +167,10 @@ REM   * процесс киоска ЖИВ  -> мы не закрылись, а 
 REM     работающему браузеру. Перезапускать нельзя — получим окно каждые 3 с;
 REM   * процесса нет         -> браузер действительно закрыли (Alt+F4, сбой,
 REM     обновление), и киоск не должен оставаться пустым.
-powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*AidosKiosk*' }; if ($p) { exit 1 } else { exit 0 }"
+REM ⚠️ Фильтр по ИМЕНИ процесса обязателен. Без него проверка находила саму
+REM себя: строка *AidosKiosk* лежит в командной строке ТОГО ЖЕ powershell.exe,
+REM который её ищет, — и киоск не запускался НИКОГДА (30.07, поймано на точке).
+powershell -NoProfile -Command "$b = @('chrome.exe','msedge.exe'); $p = Get-CimInstance Win32_Process | Where-Object { $b -contains $_.Name -and $_.CommandLine -like '*AidosKiosk*' }; if ($p) { exit 1 } else { exit 0 }"
 REM ⚠️ Именно EQU 1, а не `if errorlevel 1`: последнее истинно для ЛЮБОГО кода
 REM >= 1, включая 9009 «команда не найдена». На машине с заблокированным
 REM PowerShell киоск решил бы «уже запущен» и не стартовал бы ВООБЩЕ. При любой

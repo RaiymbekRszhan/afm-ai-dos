@@ -181,3 +181,38 @@ def test_bat_guards_against_second_instance():
     assert "if errorlevel 1 goto already" not in text
     # Проверка стоит и перед первым запуском, и в цикле перезапуска.
     assert text.count("if %ERRORLEVEL% EQU 1 goto already") == 2
+
+
+def test_running_check_cannot_match_itself():
+    """⚠️ Проверка ОБЯЗАНА фильтровать по ИМЕНИ процесса.
+
+    Без этого она находила саму себя: строка *AidosKiosk* лежит в командной
+    строке того же powershell.exe, который её ищет, — и киоск не запускался
+    НИКОГДА (поймано на живой точке 30.07, экран «ALREADY running» сразу после
+    «backend is up»). Тест сторожит именно это условие.
+    """
+    import re
+    text = mkb.BAT.read_bytes().decode("utf-8")
+    checks = [l for l in text.splitlines() if "powershell -NoProfile" in l]
+    assert checks, "проверки «уже запущен» нет вовсе"
+    for line in checks:
+        assert "$_.Name" in line, "фильтра по имени процесса нет — найдёт саму себя"
+        allowed = re.findall(r"'(\w+\.exe)'", line)
+        assert allowed, "не видно списка процессов киоска"
+        assert "powershell.exe" not in allowed and "cmd.exe" not in allowed
+
+
+def test_running_check_is_not_inside_a_block():
+    """Строка проверки содержит ( и ) — внутри многострочного if(...) cmd
+    сломал бы разбор блока."""
+    depth = 0
+    for line in mkb.BAT.read_bytes().decode("utf-8").splitlines():
+        s = line.strip()
+        if not s or s.upper().startswith("REM"):
+            continue
+        if s.startswith(")"):
+            depth -= 1
+        if "powershell -NoProfile" in s:
+            assert depth == 0, "проверка внутри блока if(...) — cmd упадёт"
+        if s.endswith("("):
+            depth += 1
