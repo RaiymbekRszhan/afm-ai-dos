@@ -150,6 +150,7 @@
     <button class="tab on" data-tab="overview">Обзор</button>
     <button class="tab" data-tab="fleet">Киоски</button>
     <button class="tab" data-tab="log">Обращения</button>
+    <button class="tab" data-tab="langs">Языки</button>
     <button class="tab" data-tab="questions">Вопросы</button>
     <span class="grow"></span>
     <select id="days" title="Период">
@@ -238,6 +239,17 @@
       <span id="pageInfo" class="sub"></span>
       <button id="next">Вперёд →</button>
     </div>
+  </section>
+
+  <!-- ================= ЯЗЫКИ ================= -->
+  <section id="tab-langs" class="hide">
+    <h2>Русский и казахский рядом</h2>
+    <div class="note">Языки идут через РАЗНЫЕ движки озвучки: русский — F5 на
+      своей GPU, казахский — облако ElevenLabs. В общей сводке их задержки
+      складываются в среднее, которого не существует, поэтому сравнивать надо
+      здесь.</div>
+    <table><tbody id="langRows"></tbody></table>
+    <div class="note" id="langHint"></div>
   </section>
 
   <!-- ================= ВОПРОСЫ ================= -->
@@ -700,6 +712,76 @@ function renderLog(d) {
   $("next").disabled = to >= d.total;
 }
 
+// ---------- ЯЗЫКИ ----------
+// Строки — метрики, колонки — языки. Так разница видна взглядом по горизонтали;
+// две отдельные таблицы пришлось бы сравнивать по памяти.
+const LANG_METRICS = [
+  ["обращений", (s) => s.total, null],
+  ["нет ответа в базе", (s) => s.fallback + " · " + pct(s.fallback, s.ok),
+   (s) => tone("fallback", s.ok ? s.fallback / s.ok : null)],
+  ["не расслышал", (s) => s.not_heard + " · " + pct(s.not_heard, s.total),
+   (s) => tone("not_heard", s.total ? s.not_heard / s.total : null)],
+  ["сбоев", (s) => s.failures + " · " + pct(s.failures, s.total),
+   (s) => tone("failures", s.total ? s.failures / s.total : null)],
+  ["ждут ответа, медиана", (s) => fmtMs(s.latency.total.p50),
+   (s) => tone("wait", s.latency.total.p50)],
+  ["ждут ответа, p95", (s) => fmtMs(s.latency.total.p95),
+   (s) => tone("wait", s.latency.total.p95)],
+  ["ждали слишком долго", (s) => s.latency.total.slow, null],
+  ["озвучка, медиана", (s) => fmtMs(s.latency.tts.p50), null],
+  ["озвучка, p95", (s) => fmtMs(s.latency.tts.p95), null],
+  ["до первого звука", (s) => fmtMs(s.latency.tts_first.p50), null],
+  ["движок озвучки", (s) => s.providers.map((p) => p[0] + " " + p[1]).join(", ") || "—", null],
+];
+
+function renderLangs(d) {
+  const tb = $("langRows");
+  tb.innerHTML = "";
+  const langs = d.by_lang || [];
+  if (!langs.length) {
+    const tr = el("tr");
+    const td = el("td", "note", "за период обращений не было");
+    tr.appendChild(td); tb.appendChild(tr);
+    $("langHint").textContent = "";
+    return;
+  }
+  const head = el("tr");
+  head.appendChild(el("th", null, "показатель"));
+  langs.forEach((l) => head.appendChild(el("th", "num", LANG_NAME[l.lang] || l.lang)));
+  tb.appendChild(head);
+
+  LANG_METRICS.forEach(function (m) {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, m[0]));
+    langs.forEach(function (l) {
+      const cell = el("td", "num", m[1](l.summary));
+      const t = m[2] ? m[2](l.summary) : "";
+      if (t === "bad") cell.classList.add("s-err");
+      else if (t === "warn") cell.classList.add("s-gap");
+      else if (t === "good") cell.classList.add("s-ok");
+      tr.appendChild(cell);
+    });
+    tb.appendChild(tr);
+  });
+
+  // Вывод словами: во сколько раз один язык медленнее другого — это и есть
+  // ответ на вопрос «что делать с озвучкой».
+  if (langs.length >= 2) {
+    const a = langs[0], b = langs[1];
+    const pa = a.summary.latency.total.p50, pb = b.summary.latency.total.p50;
+    if (pa && pb) {
+      const slower = pa > pb ? a : b, faster = pa > pb ? b : a;
+      const times = (Math.max(pa, pb) / Math.min(pa, pb)).toFixed(1).replace(".", ",");
+      $("langHint").textContent = (LANG_NAME[slower.lang] || slower.lang)
+        + " медленнее в " + times + " раза: медиана "
+        + fmtMs(slower.summary.latency.total.p50) + " против "
+        + fmtMs(faster.summary.latency.total.p50) + ". Основная разница — в озвучке.";
+    }
+  } else {
+    $("langHint").textContent = "Для сравнения нужен второй язык — пока обращения только на одном.";
+  }
+}
+
 // ---------- ВОПРОСЫ ----------
 function renderQuestions(d) {
   function fill(tbody, pairs, empty) {
@@ -735,6 +817,7 @@ async function loadStats() {
   lastStats = await api("stats", { days: state.days, kiosk: state.kiosk });
   renderOverview(lastStats);
   renderQuestions(lastStats);
+  renderLangs(lastStats);
 }
 
 async function loadLog() {
@@ -769,7 +852,7 @@ function switchTab(tab) {
   document.querySelectorAll(".tab").forEach(function (b) {
     b.classList.toggle("on", b.dataset.tab === tab);
   });
-  ["overview", "fleet", "log", "questions"].forEach(function (t) {
+  ["overview", "fleet", "log", "langs", "questions"].forEach(function (t) {
     $("tab-" + t).classList.toggle("hide", t !== tab);
   });
   refresh();

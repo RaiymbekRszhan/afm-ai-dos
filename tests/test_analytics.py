@@ -251,3 +251,22 @@ def test_noise_counts_as_not_heard_not_as_gap():
     assert s["failures"] == 0          # и это НЕ сбой
     # В списке «чем пополнять базу» шума быть не должно.
     assert analytics.top_unanswered(rows, 5) == [["настоящий вопрос", 1]]
+
+
+def test_by_lang_separates_languages():
+    """Русский и казахский идут через РАЗНЫЕ движки: общее среднее не существует."""
+    rows = [rec(lang="russian", total_ms=4000, provider="f5"),
+            rec(lang="russian", total_ms=5000, provider="f5"),
+            rec(lang="kazakh", total_ms=25000, provider="eleven", answer_found=False)]
+    by = {l["lang"]: l["summary"] for l in analytics.by_lang(rows, slow_ms=20000)}
+    assert by["russian"]["total"] == 2 and by["kazakh"]["total"] == 1
+    assert by["russian"]["latency"]["total"]["slow"] == 0
+    assert by["kazakh"]["latency"]["total"]["slow"] == 1
+    assert by["kazakh"]["fallback"] == 1 and by["russian"]["fallback"] == 0
+    assert dict(by["kazakh"]["providers"]) == {"eleven": 1}
+
+
+def test_by_lang_is_ordered_by_volume():
+    """Частый язык первым: в таблице сравнения он идёт левее."""
+    rows = [rec(lang="kazakh")] * 3 + [rec(lang="russian")]
+    assert [l["lang"] for l in analytics.by_lang(rows)] == ["kazakh", "russian"]

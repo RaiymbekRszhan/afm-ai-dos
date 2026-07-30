@@ -249,6 +249,21 @@ def by_kiosk(rows: list[dict]) -> list[dict]:
     return out
 
 
+def by_lang(rows: list[dict], slow_ms: int = SLOW_MS) -> list[dict]:
+    """Сводка ОТДЕЛЬНО по каждому языку, чтобы их можно было сравнить.
+
+    Смысл в том, что русский и казахский идут через РАЗНЫЕ движки озвучки (F5 на
+    своей GPU против облака), и в общей куче их задержки складываются в среднее,
+    которого не существует: половина граждан ждёт 5 секунд, половина — 30.
+    Языки — самая крупная линия раздела в этой системе, поэтому она вынесена
+    отдельным разделом, а не фильтром.
+    """
+    langs = [lang for lang, _ in Counter(r.get("lang", "?") for r in rows).most_common()]
+    return [{"lang": lang,
+             "summary": summarize([r for r in rows if r.get("lang", "?") == lang], slow_ms)}
+            for lang in langs]
+
+
 def by_day(rows: list[dict]) -> list[dict]:
     """Обращения по суткам (UTC, как в ts) — для графика. Старые слева."""
     days: dict[str, dict] = {}
