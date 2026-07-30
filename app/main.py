@@ -150,19 +150,29 @@ async def health():
     }
 
 
-def _gate(request: Request, kiosk: str | None, key: str | None) -> None:
+def _gate(request: Request, rec: dict, key: str | None) -> None:
     """Общая проходная для дорогих путей: пропуск точки + темп запросов.
 
     Порядок важен: сначала дешёвые проверки, потом STT/RAG/TTS. Оба отказа
     обходятся серверу почти бесплатно, а именно они и защищают от того, что
     один клиент выест облако и оба слота семафора.
+
+    ⚠️ Поле `error` ставим ЗДЕСЬ, а не у вызывающего. Раньше /voice этого не
+    делал, и отказ уходил в аналитику как УСПЕШНОЕ обращение — с пустым вопросом
+    и нулевой задержкой, то есть завышал и объём, и качество (поймано тестом
+    30.07 перед включением строгого режима пропуска). Если строку ставит
+    вызывающий, достаточно забыть её в новом месте, чтобы это повторилось.
     """
+    kiosk = rec["kiosk"]
+    kiosks.note_key(kiosk, bool(key))
     if not kiosks.key_ok(kiosk, key):
+        rec["error"] = "gate"
         log.warning("kiosk=%s: неверный пропуск, отказ", kiosk or "-")
         raise HTTPException(status_code=403, detail="Киоск не опознан.")
     # Не назвалась — считаем по адресу, иначе анонимный поток обходил бы лимит.
     who = kiosk or (request.client.host if request.client else "unknown")
     if not kiosks.rate_ok(who):
+        rec["error"] = "gate"
         log.warning("%s: превышен темп запросов (%s/мин), отказ",
                     who, settings.kiosk_rate_per_min)
         raise HTTPException(status_code=429,
@@ -181,6 +191,7 @@ async def kiosk_ping(kiosk: str = Form(default=None), key: str = Form(default=No
     kiosk_id = _clean_kiosk(kiosk)
     # Пинг дешёвый, но подделанный пинг рисовал бы погасшую точку живой —
     # значит пропуск сверяем и здесь. Темп пинга не ограничиваем: он и так редкий.
+    kiosks.note_key(kiosk_id, bool(key))
     if not kiosks.key_ok(kiosk_id, key):
         raise HTTPException(status_code=403, detail="Киоск не опознан.")
     kiosks.touch_ping(kiosk_id)
@@ -236,6 +247,10 @@ def _fleet_payload(days: int) -> dict:
         "maintenance": kiosks.maintenance_message(),
         "offline_after_s": settings.kiosk_offline_after_s,
         "days": days,
+        "key_required": settings.kiosk_key_required,
+        # Сколько точек обращалось БЕЗ пропуска: пока это не ноль, включать
+        # строгий режим нельзя — они получат отказ.
+        "without_key": sum(1 for r in fleet if r.get("has_key") is False),
     }
 
 
@@ -541,7 +556,12 @@ async def _answer_pipeline(audio: bytes, filename: str, content_type: str,
         answer = service.not_recognized_phrase(lang)
         rec["answer"] = answer
         log.info("STT-петля: вопрос не распознан, отвечаем просьбой повторить")
-        return question, answer, None, []
+        # Гражданину вопрос НЕ показываем (страница при пустом q строку не
+        # рисует): «Продолжение следует.» над просьбой повторить выглядит так,
+        # будто киоск это услышал, и человек начинает думать, что сказал не то.
+        # В аналитике текст остаётся (rec["question"] выше) — по нему и видно,
+        # что движок выдумывает на тишине, и какие артефакты добавлять в фильтр.
+        return "", answer, None, []
 
     # «Да» в ответ на наше «возможно, вы хотели спросить …?» — отвечаем на
     # исправленный вопрос. Любая другая реплика — обычный новый вопрос.
@@ -629,7 +649,7 @@ async def voice_endpoint(
     token = logging_setup.set_request_id(rid)
     t_start = perf_counter()
     try:
-        _gate(request, rec["kiosk"], key)
+        _gate(request, rec, key)
         # Вопрос = точка жива, даже если она старой версии и не умеет пинговать.
         kiosks.touch_ask(rec["kiosk"])
         # Точка отключена оператором — разворачиваем ДО STT/RAG/TTS: платить за
@@ -724,7 +744,7 @@ async def voice_stream_endpoint(
         logging_setup.record_interaction(**rec)
 
     try:
-        _gate(request, rec["kiosk"], key)
+        _gate(request, rec, key)
     except HTTPException:
         rec["error"] = "gate"
         _finish()

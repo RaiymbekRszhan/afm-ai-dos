@@ -711,12 +711,20 @@ syncBadge();
 
 // Авто-стоп: тишина дольше SILENCE_MS после речи — завершаем запись сами.
 const SILENCE_MS = 2000;
+// Предел длительности. Авто-стоп выше ждёт РЕЧЬ, поэтому без этого предела
+// запись «нажал кнопку и отошёл» не заканчивалась никогда: она копила фоновый
+// шум фойе, набирала ложное звучание и уходила в STT, который выдумывал вопрос
+// («Продолжение следует.» на киоске 30.07). 25 с — заведомо больше любого
+// реального вопроса; если речь была, отправим что записалось, если нет —
+// сработает проверка в stopAndSend и экран попросит повторить.
+const MAX_RECORD_MS = 25000;
 // Была ли речь — решает детектор из vad.js (адаптивный порог от фонового шума
 // + накопленное время звучания). Прежний одиночный порог амплитуды в фойе
 // срабатывал на вдохе и стуке, и тишина уходила в STT, а тот выдумывал вопрос
 // («Продолжение следует.», «Редактор субтитров…» — реальные случаи с киоска).
 let vad = null;
 let stopping = false;
+let maxRecordTimer = null;
 
 async function startRecording() {
   stopAnswer();   // аватар ещё договаривает прошлый ответ? обрываем — посетитель хочет спросить заново
@@ -741,10 +749,13 @@ async function startRecording() {
   src.connect(proc); proc.connect(ctx.destination);
   recording = true; btn.classList.add("rec"); btn.textContent = "⏹ Готово, отправить";
   st.textContent = "говорите...";
+  clearTimeout(maxRecordTimer);
+  maxRecordTimer = setTimeout(function () { if (recording) stopAndSend(); }, MAX_RECORD_MS);
 }
 
 async function stopAndSend() {
   if (!recording || stopping) return;
+  clearTimeout(maxRecordTimer);
   stopping = true; recording = false;
   btn.classList.remove("rec"); btn.textContent = "🎙 Задать вопрос";
   proc.disconnect(); src.disconnect(); stream.getTracks().forEach(t => t.stop());

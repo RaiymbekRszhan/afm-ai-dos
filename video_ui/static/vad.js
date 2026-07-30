@@ -37,6 +37,25 @@
     // Сколько НАКОПЛЕННОГО звучания считаем речью. Короткое «да» — примерно
     // 300 мс, поэтому ниже опускать нельзя, иначе согласие перестанет работать.
     minVoicedMs: 300,
+    // ...но абсолютного порога МАЛО. Он накапливается за всю запись, а запись
+    // без речи не останавливается сама (авто-стоп ждёт речь), поэтому на
+    // минутном молчании набрать 300 мс звука громче порога в фойе с людьми —
+    // вопрос десятков секунд. Именно так на киоск 30.07 попали «Продолжение
+    // следует.» и казахская петля. Поэтому требуем ещё и ДОЛЮ от длины записи:
+    // короткое «да» (0.5 с записи) проходит по абсолютному порогу, а на 25 с
+    // молчания нужно уже 0.75 с речи.
+    minVoicedShare: 0.03,
+    // По скольким самым тихим кадрам оцениваем фон. Одного минимума мало:
+    // единственный аномально тихий кадр обрушивал порог до absFloor, который
+    // может оказаться НИЖЕ реального фона холла — тогда «речью» становится
+    // вообще всё. Пятый по тишине кадр так не сдвинуть.
+    noiseSamples: 5,
+    // ...но только там, где кадров ХВАТАЕТ. На полусекундном «да» пятый по
+    // тишине оказывается почти самым громким, порог задирается и речь не
+    // находится вовсе. Короткие записи этой проблемой и не страдали (набрать
+    // ложные 300 мс за полсекунды невозможно), поэтому до этого порога берём
+    // обычный минимум.
+    robustAfterMs: 2000,
   };
 
   function createVad(options) {
@@ -45,15 +64,40 @@
     var margin = o.margin != null ? o.margin : DEFAULTS.margin;
     var maxThreshold = o.maxThreshold != null ? o.maxThreshold : DEFAULTS.maxThreshold;
     var minVoicedMs = o.minVoicedMs != null ? o.minVoicedMs : DEFAULTS.minVoicedMs;
+    var minVoicedShare = o.minVoicedShare != null ? o.minVoicedShare : DEFAULTS.minVoicedShare;
+    var noiseSamples = o.noiseSamples != null ? o.noiseSamples : DEFAULTS.noiseSamples;
+    var robustAfterMs = o.robustAfterMs != null ? o.robustAfterMs : DEFAULTS.robustAfterMs;
 
-    var noiseFloor = Infinity;   // самый тихий момент записи = фон
+    var quietest = [];           // до noiseSamples самых тихих кадров, по возрастанию
     var voicedMs = 0;            // сколько всего звучало громче порога
     var silentMs = 0;            // сколько тишины подряд ПОСЛЕ речи
     var totalMs = 0;
 
+    // Фон = k-й по тишине кадр: одиночный провал громкости так не утягивает
+    // оценку вниз. На коротких записях кадров для этого мало (см. robustAfterMs),
+    // там берём минимум.
+    function noiseFloor() {
+      if (!quietest.length) return Infinity;
+      var i = totalMs >= robustAfterMs ? quietest.length - 1 : 0;
+      return quietest[i];
+    }
+
+    function noteQuiet(rms) {
+      var i = 0;
+      while (i < quietest.length && quietest[i] < rms) i++;
+      quietest.splice(i, 0, rms);
+      if (quietest.length > noiseSamples) quietest.length = noiseSamples;
+    }
+
     function threshold() {
-      if (noiseFloor === Infinity) return absFloor;
-      return Math.max(absFloor, Math.min(noiseFloor * margin, maxThreshold));
+      var floor = noiseFloor();
+      if (floor === Infinity) return absFloor;
+      return Math.max(absFloor, Math.min(floor * margin, maxThreshold));
+    }
+
+    /** Сколько звучания нужно ИМЕННО ДЛЯ ЭТОЙ записи. */
+    function required() {
+      return Math.max(minVoicedMs, totalMs * minVoicedShare);
     }
 
     return {
@@ -61,8 +105,8 @@
       push: function (rms, ms) {
         totalMs += ms;
         // Фон обновляем ВСЕГДА: в паузах между словами rms падает до фонового,
-        // и минимум по записи — честная его оценка. Речь минимум не занижает.
-        if (rms < noiseFloor) noiseFloor = rms;
+        // и самые тихие кадры записи — честная его оценка. Речь их не занижает.
+        noteQuiet(rms);
         if (rms > threshold()) {
           voicedMs += ms;
           silentMs = 0;
@@ -70,14 +114,16 @@
           silentMs += ms;
         }
       },
-      /** Была ли речь: накоплено достаточно звучания. */
-      hasSpeech: function () { return voicedMs >= minVoicedMs; },
+      /** Была ли речь: накоплено достаточно звучания для длины этой записи. */
+      hasSpeech: function () { return voicedMs >= required(); },
       /** Тишина подряд после речи — для авто-остановки записи. */
       silenceMs: function () { return silentMs; },
       /** Диагностика (показываем в статусе при отладке). */
       stats: function () {
+        var floor = noiseFloor();
         return { voicedMs: voicedMs, silentMs: silentMs, totalMs: totalMs,
-                 noiseFloor: noiseFloor === Infinity ? null : noiseFloor,
+                 requiredMs: required(),
+                 noiseFloor: floor === Infinity ? null : floor,
                  threshold: threshold() };
       },
     };

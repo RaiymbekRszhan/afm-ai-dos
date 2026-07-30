@@ -283,6 +283,18 @@ def touch_ping(kiosk: str | None) -> None:
         _seen.setdefault(kiosk, {})["ping"] = time.time()
 
 
+def note_key(kiosk: str | None, has_key: bool) -> None:
+    """Запоминаем, предъявила ли точка пропуск в последнем обращении.
+
+    Нужно перед включением строгого режима (`KIOSK_KEY_REQUIRED=true`): в мягком
+    режиме запрос БЕЗ ключа проходит молча, и узнать, все ли 20 регионов уже
+    переустановили архив, было нечем — флаг щёлкали наугад, а о погашенных
+    точках узнавали от них по телефону.
+    """
+    if kiosk:
+        _seen.setdefault(kiosk, {})["key"] = 1.0 if has_key else 0.0
+
+
 def touch_ask(kiosk: str | None) -> None:
     """С точки задали вопрос — она жива даже без пинга (старая версия страницы)."""
     if not kiosk:
@@ -317,6 +329,8 @@ def status_rows(now: float | None = None) -> list[dict]:
             "ping_ago_s": int(now - ping) if ping else None,
             "ask_ago_s": int(now - seen["ask"]) if seen.get("ask") else None,
             "asks": int(seen.get("asks", 0)),
+            # None — точка ещё не обращалась, про пропуск сказать нечего.
+            "has_key": None if "key" not in seen else bool(seen["key"]),
             "in_fleet": kiosk_id not in extra,
         })
     return rows

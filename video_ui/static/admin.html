@@ -202,10 +202,12 @@
         <th>Точка</th><th>Связь</th>
         <th class="num hide-s">Вопросов</th><th class="num hide-s">Нет в базе</th>
         <th class="num hide-s">Сбоев</th><th class="num hide-s">Ожидание</th>
+        <th class="nowrap">Пропуск</th>
         <th>Состояние</th><th></th>
       </tr></thead>
       <tbody id="fleetRows"></tbody>
     </table>
+    <div class="note" id="keyNote"></div>
     <div class="note">«Вопросов», «Нет в базе», «Сбоев» и «Ожидание» — за выбранный
       период, из логов. «Связь» — прямо сейчас: точка стучится на сервер раз в
       минуту. В «Сбоях» только настоящие поломки сервисов; отключение рубильником
@@ -505,6 +507,19 @@ function renderFleet(d) {
   $("allOff").classList.toggle("hide", !!maint);
   $("allOn").classList.toggle("hide", !maint);
 
+  const note = $("keyNote");
+  if (d.key_required) {
+    note.textContent = "Строгий режим пропуска ВКЛЮЧЁН: точка без своего ключа "
+      + "получает отказ.";
+  } else if (d.without_key) {
+    note.textContent = "Строгий режим пропуска выключен. " + d.without_key
+      + " точк(и) обращались БЕЗ пропуска — им нужен новый архив, иначе после "
+      + "включения строгого режима они перестанут работать.";
+  } else {
+    note.textContent = "Строгий режим пропуска выключен, но все обращавшиеся "
+      + "точки предъявляли ключ — можно включать (KIOSK_KEY_REQUIRED=true).";
+  }
+
   const sel = $("fKiosk");
   if (sel.options.length <= 1) {
     rows.forEach(function (k) {
@@ -542,6 +557,14 @@ function renderFleet(d) {
     if (k.period_refused) errs.title = "плюс отказано: " + k.period_refused;
     tr.appendChild(errs);
     tr.appendChild(el("td", "num hide-s", fmtMs(k.period_p50)));
+
+    // Предъявляла ли точка пропуск. До включения строгого режима это
+    // единственный способ узнать, кто ещё не переустановил архив.
+    const keycell = el("td", "nowrap");
+    if (k.has_key === null) keycell.appendChild(el("span", "id", "не обращалась"));
+    else if (k.has_key) keycell.appendChild(el("span", "s-ok", "есть"));
+    else keycell.appendChild(el("span", "s-gap", "НЕТ"));
+    tr.appendChild(keycell);
 
     const state = el("td");
     if (k.enabled) {

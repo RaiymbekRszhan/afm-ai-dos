@@ -129,3 +129,28 @@ def test_gate_logged_as_error_in_analytics(client, gate, monkeypatch):
     monkeypatch.setattr(kiosks.settings, "kiosk_rate_per_min", 1)
     _ask(client, kiosk="astana", key="goodkey")
     assert _ask(client, kiosk="astana", key="goodkey").status_code == 429
+
+
+# ---------- готовность к строгому режиму ----------
+def test_fleet_shows_which_kiosks_presented_a_key(client, gate, monkeypatch):
+    """В мягком режиме запрос без ключа проходит МОЛЧА — без этого сигнала
+    строгий режим включался бы наугад."""
+    import app.main as main
+    monkeypatch.setattr(main.settings, "admin_token", "adm")
+
+    def fleet():
+        d = client.get("/admin/kiosks", params={"token": "adm"}).json()
+        return d, {k["kiosk"]: k for k in d["kiosks"]}
+
+    # Пока никто не обращался — сказать про пропуск нечего.
+    d, rows = fleet()
+    assert rows["astana"]["has_key"] is None
+    assert d["without_key"] == 0
+
+    client.post("/kiosk/ping", data={"kiosk": "astana", "key": "goodkey"})
+    _ask(client, kiosk="turkestan")            # без пропуска (старый архив)
+    d, rows = fleet()
+    assert rows["astana"]["has_key"] is True
+    assert rows["turkestan"]["has_key"] is False
+    assert d["without_key"] == 1, "не видно точку без пропуска — включать строгий режим рано"
+    assert d["key_required"] is False

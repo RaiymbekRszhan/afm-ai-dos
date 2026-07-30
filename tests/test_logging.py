@@ -171,3 +171,24 @@ def test_kiosk_id_only_junk_is_none(client):
                     data={"language": "russian", "kiosk": "«»\n\t "})
     assert r.status_code == 200
     assert _read_jsonl(client._log_dir)[0]["kiosk"] is None
+
+
+# ---------- отказы проходной должны попадать в аналитику, а не в «успешные» ----------
+def test_gate_rejection_is_logged_as_error(client, monkeypatch):
+    """Иначе строгий режим пропуска тихо портит статистику.
+
+    Отказ 429/403 отдаёт HTTPException ДО пайплайна; если поле error осталось
+    пустым, обращение легло бы в «успешные» — с пустым вопросом и нулевой
+    задержкой, то есть завысило бы и объём, и качество.
+    """
+    from app import kiosks
+    monkeypatch.setattr(main.settings, "kiosk_rate_per_min", 1)
+    kiosks.reset_seen()
+
+    assert _post_voice(client).status_code == 200          # первый съедает лимит
+    assert _post_voice(client).status_code == 429           # второй — отказ
+
+    rows = _read_jsonl(client._log_dir)
+    assert len(rows) == 2
+    assert rows[0]["error"] is None
+    assert rows[1]["error"] == "gate", "отказ проходной записан как успешное обращение"
