@@ -200,3 +200,71 @@ def test_russian_has_no_fallback_by_default():
 
 async def _no_sleep(_seconds):
     return None
+
+
+# --- Язык озвучки берётся из ТЕКСТА, а не из переключателя киоска ----------
+# Замечено на киоске 31.07: бейдж «ҚАЗ», гражданин спросил по-русски, RAG
+# ответил по-русски (правило 1 промпта — язык ВОПРОСА), а движок выбирался по
+# переключателю → русский текст читал казахский голос, и числа разворачивал
+# казахский конвертер.
+
+RU_ANSWER = ("Я — Ai-dos, цифровой офицер Агентства Республики Казахстан "
+             "по финансовому мониторингу.")
+KK_ANSWER = ("Экономикалық тергеп-тексеру департаментінің телефон нөмірлері "
+             "облысқа байланысты әртүрлі.")
+
+
+def test_russian_answer_on_kazakh_kiosk_goes_to_russian_engine(monkeypatch):
+    """Главный случай: киоск в казахском режиме, ответ русский."""
+    monkeypatch.setattr(tts.settings, "tts_provider", "f5")
+    monkeypatch.setattr(tts.settings, "tts_kk_provider", "eleven")
+
+    assert tts.detect_lang(RU_ANSWER, "kazakh") == "ru"
+    assert tts.provider_for_text(RU_ANSWER, "kazakh") == "f5"
+
+
+def test_kazakh_answer_on_russian_kiosk_goes_to_kazakh_engine(monkeypatch):
+    """Зеркальный случай — казахский ответ в русском режиме."""
+    monkeypatch.setattr(tts.settings, "tts_provider", "f5")
+    monkeypatch.setattr(tts.settings, "tts_kk_provider", "eleven")
+
+    assert tts.detect_lang(KK_ANSWER, "russian") == "kk"
+    assert tts.provider_for_text(KK_ANSWER, "russian") == "eleven"
+
+
+def test_stray_kazakh_letter_does_not_flip_russian_answer():
+    """Одна казахская буква в длинном русском ответе — не повод менять голос.
+
+    Иначе название или цитата («Нұрлы жол») уводила бы весь ответ в чужой движок.
+    """
+    text = RU_ANSWER + " Программа «Нұрлы жол» здесь ни при чём, " + RU_ANSWER
+    assert tts.detect_lang(text, "russian") == "ru"
+
+
+def test_russian_table_header_does_not_outweigh_kazakh_answer():
+    """Экранную таблицу при определении языка не учитываем.
+
+    Живой случай (Туркестан 31.07): казахский ответ с таблицей, у которой шапка
+    и названия регионов русские. Считать её — значит отправить казахский ответ
+    в русский движок.
+    """
+    text = (KK_ANSWER + "\n[ТАБЛИЦА]\nОбласть/город | Телефон\n"
+            "Астана | 8 7172 70 84 79\nАлматы | 8 7272 79 29 56\n"
+            "Шымкент | 8 7252 77 14 48\n[/ТАБЛИЦА]")
+    assert tts.detect_lang(text, "kazakh") == "kk"
+
+
+def test_short_reply_falls_back_to_requested_language():
+    """«Да»/«Иә» языка не выдают — там переключатель всё ещё лучшая догадка."""
+    assert tts.detect_lang("Да.", "kazakh") == "kk"
+    assert tts.detect_lang("12 000", "russian") == "ru"
+
+
+def test_detected_language_reaches_normalization():
+    """Определение доходит до НОРМАЛИЗАЦИИ, а не только до выбора движка.
+
+    Числа разворачиваются по языку: русский текст обязан получить русские
+    числительные даже когда киоск переключён на казахский.
+    """
+    speech, _ = tts.prepare_for_tts("Штраф составляет 40 МРП.", "kazakh")
+    assert "сорок" in speech

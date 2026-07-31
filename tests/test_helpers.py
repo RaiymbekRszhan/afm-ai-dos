@@ -84,18 +84,22 @@ def test_prepare_for_tts_speaks_screen_notice_for_table_only_answer():
 def test_prepare_for_tts_chunk_limit_follows_provider(monkeypatch):
     """Лимит куска берётся у провайдера языка: f5 — группа, spark/eleven — свои."""
     text = " ".join(f"Предложение номер {i} для проверки нарезки." for i in range(1, 30))
+    # ⚠️ Казахские случаи проверяем КАЗАХСКИМ текстом: движок выбирается по языку
+    # САМОГО текста (tts.detect_lang), и на русских фразах «kazakh» в аргументе
+    # больше ничего не решает — тест молча мерил бы русскую нарезку.
+    kk_text = " ".join(f"Тексеру үшін {i} нөмірлі сөйлем келтірілген." for i in range(1, 30))
 
     monkeypatch.setattr(settings, "tts_provider", "f5")
     _, f5_chunks = tts.prepare_for_tts(text, "russian")
     assert all(len(c) <= settings.tts_group_chars for c in f5_chunks)
 
     monkeypatch.setattr(settings, "tts_kk_provider", "spark")
-    _, spark_chunks = tts.prepare_for_tts(text, "kazakh")
+    _, spark_chunks = tts.prepare_for_tts(kk_text, "kazakh")
     spark_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     assert all(len(c) <= spark_max for c in spark_chunks)
 
     monkeypatch.setattr(settings, "tts_kk_provider", "eleven")
-    _, eleven_chunks = tts.prepare_for_tts(text, "kazakh")
+    _, eleven_chunks = tts.prepare_for_tts(kk_text, "kazakh")
     assert all(len(c) <= settings.elevenlabs_max_chars for c in eleven_chunks)
     # eleven держит длинный текст сам -> кусков заведомо меньше, чем у f5/spark
     assert len(eleven_chunks) < len(f5_chunks)

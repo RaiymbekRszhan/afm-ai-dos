@@ -747,6 +747,52 @@ def strip_display_blocks(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+# Буквы, которых нет в русском алфавите, — по ним узнаём казахский текст.
+# Их доля в живом казахском ~10-15% (одна только «і» встречается в каждом
+# втором слове), в русском — ровно ноль.
+_KK_ONLY_LETTERS = set("әғқңөұүһі")
+# Короткая реплика языка не показывает («Да.», «Иә.») — там доверяем запрошенному.
+_LANG_MIN_LETTERS = 6
+# Порог доли: одна казахская буква, случайно попавшая в длинный русский ответ
+# (название, цитата), не должна переключать движок.
+_KK_MIN_SHARE = 0.01
+
+
+def detect_lang(text: str, fallback: str | None = None) -> str:
+    """Язык ТЕКСТА, который будем озвучивать, — 'ru' или 'kk'.
+
+    Нужна потому, что язык ОТВЕТА и язык КИОСКА — разные вещи. Переключатель на
+    экране задаёт язык распознавания, а RAG отвечает на языке ВОПРОСА (правило 1
+    промпта). Гражданин подошёл к киоску в казахском режиме и спросил
+    по-русски — ответ придёт русский, и раньше он уходил в казахский движок:
+    русский текст читался казахским голосом, а числа разворачивались казахским
+    конвертером. Замечено на киоске 31.07 (бейдж «ҚАЗ», ответ по-русски).
+
+    Судим по тому, что реально ПРОЗВУЧИТ: экранные таблицы отрезаем, иначе
+    русская шапка таблицы перетягивала бы казахский ответ на себя.
+
+    Текст без опознавательных знаков (цифры, короткое «да») языка не выдаёт —
+    там возвращаем запрошенный: он всё ещё лучшая догадка, чем монетка.
+    """
+    letters = [c for c in strip_display_blocks(text).lower() if c.isalpha()]
+    if len(letters) < _LANG_MIN_LETTERS:
+        return _resolve_lang(fallback)
+    kk_hits = sum(1 for c in letters if c in _KK_ONLY_LETTERS)
+    if kk_hits / len(letters) >= _KK_MIN_SHARE:
+        return "kk"
+    # Кириллица без единой казахской буквы = русский, и это НЕ то же самое, что
+    # «не смогли определить»: именно здесь ловится русский ответ на казахском
+    # киоске, ради которого всё и затевалось.
+    if sum(1 for c in letters if "а" <= c <= "я" or c == "ё") >= len(letters) / 2:
+        return "ru"
+    return _resolve_lang(fallback)
+
+
+def provider_for_text(text: str, language: str | None = None) -> str:
+    """Каким движком озвучим ЭТОТ текст (с поправкой на его язык)."""
+    return _provider_for(detect_lang(text, language))
+
+
 # Граница предложения: после .!?… и переноса строки.
 _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 
@@ -938,6 +984,8 @@ def prepare_for_tts(text: str, language: str | None = None,
     (`python -m scripts.tts_bench`) показывал РОВНО ту нарезку и нормализацию,
     что идут в бой, а не их копию, которая со временем разъедется.
     """
+    # Язык берём ИЗ ТЕКСТА, а не из переключателя киоска (см. detect_lang).
+    language = detect_lang(text, language)
     # Экранные таблицы не озвучиваем (их рендерит фронтенд). Если ответ состоял
     # из одной таблицы — киоск не должен получить 5xx: озвучиваем отсылку к экрану.
     speech = strip_display_blocks(text)
@@ -1022,6 +1070,7 @@ async def synthesize_with_provider(text: str, language: str | None = None
     """
     if not text.strip():
         raise RuntimeError("Пустой текст для синтеза")
+    language = detect_lang(text, language)
     primary = _provider_for(language)
     fallback = _fallback_for(language)
     # Провайдер, отказавший только что, пропускаем без попытки: иначе каждый
@@ -1089,6 +1138,7 @@ async def synthesize_stream(text: str, language: str | None = None):
     """
     if not text.strip():
         raise RuntimeError("Пустой текст для синтеза")
+    language = detect_lang(text, language)
     primary = _provider_for(language)
     fallback = _fallback_for(language)
     provider = fallback if (fallback and _in_cooldown(primary)) else primary

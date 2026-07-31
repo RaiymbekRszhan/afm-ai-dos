@@ -782,6 +782,11 @@ async def voice_stream_endpoint(
         # обращением. Сбрасывать не нужно: контекст задачи умрёт вместе с ней.
         logging_setup.set_request_id(rid)
         try:
+            # Движок зависит от языка ОТВЕТА, а не от переключателя киоска
+            # (гражданин мог спросить по-русски в казахском режиме). Киоск берёт
+            # из `provider` темп проигрывания, поэтому предсказание в meta должно
+            # совпадать с тем, чем реально озвучим.
+            rec["provider"] = tts.provider_for_text(answer, lang)
             meta = {
                 "type": "meta", "question": question, "answer": answer,
                 "suggest": suggestion, "print": print_ids,
