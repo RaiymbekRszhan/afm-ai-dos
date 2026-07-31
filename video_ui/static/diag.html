@@ -1,0 +1,128 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ai-dos — проверка потока</title>
+<!--
+  Служебная страница. Открывается на КИОСКЕ (http://СЕРВЕР/diag) и отвечает на
+  один вопрос: доходит ли потоковый ответ по кускам — или прокси АФМ копит его
+  целиком и отдаёт в конце. Во втором случае потоковая озвучка не даёт ничего:
+  гражданин ждёт молча столько же, сколько без потока.
+
+  ⚠️ Мерить надо ИМЕННО ЗДЕСЬ, на киоске. «Время до первого звука» в админке
+  считается на сервере, до прокси, и остаётся бодрым даже когда на точке тишина.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; opacity: .7; }
+  button { font: inherit; padding: 14px 28px; border-radius: 10px; border: 0;
+           background: #1f6feb; color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  #verdict { margin: 20px 0; padding: 16px; border-radius: 10px; font-weight: 600;
+             display: none; }
+  #verdict.ok { background: #16632c; color: #fff; }
+  #verdict.bad { background: #8b1a1a; color: #fff; }
+  #verdict.wait { background: #6b5200; color: #fff; }
+  table { border-collapse: collapse; margin-top: 16px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 5px 14px 5px 0; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { border-bottom: 1px solid currentColor; opacity: .6; font-weight: 400; }
+  .bar { display: inline-block; height: 10px; background: #1f6feb; border-radius: 2px; }
+  small { opacity: .65; }
+</style>
+
+<h1>Проверка потоковой озвучки</h1>
+<p class="sub">Сервер шлёт 8 кусков по одному раз в 0,7 с. Если они приходят
+  такой же лесенкой — поток живой. Если все разом в конце — прокси буферизует.</p>
+
+<button id="go">Запустить проверку</button>
+<div id="verdict"></div>
+<div id="out"></div>
+
+<script>
+const N = 8, GAP = 700;
+const go = document.getElementById('go');
+const verdict = document.getElementById('verdict');
+const out = document.getElementById('out');
+
+function show(cls, text, note) {
+  verdict.className = cls;
+  verdict.style.display = 'block';
+  verdict.innerHTML = text + (note ? '<br><small>' + note + '</small>' : '');
+}
+
+go.onclick = async () => {
+  go.disabled = true;
+  out.innerHTML = '';
+  show('wait', 'Идёт проверка…');
+  const rows = [];
+  const t0 = performance.now();
+  try {
+    // POST — как настоящий /voice/stream. Прокси обращается с GET и POST
+    // по-разному, и проверка по GET могла бы соврать в обе стороны.
+    const r = await fetch(`/diag/stream?n=${N}&gap_ms=${GAP}`, {
+      method: 'POST', cache: 'no-store',
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        rows.push({ i: msg.i, server: msg.server_ms,
+                    client: Math.round(performance.now() - t0) });
+        render(rows);
+      }
+    }
+  } catch (e) {
+    show('bad', 'Проверка не прошла: ' + e.message,
+         'Сервер недоступен или обновите код на сервере (эндпоинт /diag/stream новый).');
+    go.disabled = false;
+    return;
+  }
+  judge(rows);
+  go.disabled = false;
+};
+
+function render(rows) {
+  const last = rows[rows.length - 1].client || 1;
+  out.innerHTML =
+    '<table><tr><th>кусок</th><th>сервер, мс</th><th>киоск, мс</th><th></th></tr>' +
+    rows.map(r => `<tr><td>${r.i + 1}</td><td>${r.server}</td><td>${r.client}</td>` +
+      `<td><span class="bar" style="width:${Math.max(2, r.client / last * 160)}px"></span></td></tr>`
+    ).join('') + '</table>';
+}
+
+function judge(rows) {
+  if (rows.length < 2) { show('bad', 'Пришёл только один кусок — мерить нечего.'); return; }
+  const first = rows[0].client;
+  const total = rows[rows.length - 1].client;
+  const expected = (rows.length - 1) * GAP;   // сколько поток обязан растянуться
+  const spread = total - first;               // сколько растянулся на самом деле
+  // Первый кусок уходит сразу, поэтому у ЖИВОГО потока разброс ≈ expected.
+  // Буферизация схлопывает его к нулю: всё тело приходит одним махом в конце.
+  if (spread >= expected * 0.6) {
+    show('ok', 'Поток идёт свободно — буферизации нет.',
+         `первый кусок через ${first} мс, разброс ${spread} мс при ожидаемых ${expected} мс. ` +
+         'Потоковая озвучка на этой точке работает как задумано.');
+  } else if (spread <= expected * 0.25) {
+    show('bad', 'Поток буферизуется: куски пришли разом.',
+         `первый кусок через ${first} мс (сервер отдал его сразу), весь ответ уложился ` +
+         `в ${spread} мс вместо ${expected} мс. Лечится флагом --no-proxy-server ` +
+         'в deploy/kiosk-start.bat — киоск пойдёт на сервер напрямую, мимо Squid.');
+  } else {
+    show('wait', 'Поток идёт, но рвано.',
+         `разброс ${spread} мс при ожидаемых ${expected} мс — прокси придерживает куски, ` +
+         'но не копит всё. Повторите проверку 2-3 раза; если стабильно — тот же ' +
+         '--no-proxy-server.');
+  }
+}
+</script>

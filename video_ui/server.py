@@ -15,8 +15,10 @@
 Запуск: bash run_api.sh (весь стек) или bash video_ui/run.sh (только страница).
 """
 
+import asyncio
 import json
 import os
+import time
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -282,6 +284,61 @@ async def voice_stream(data: UploadFile = File(...), language: str = Form("russi
     return StreamingResponse(relay(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-store",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.api_route("/diag/stream", methods=["GET", "POST"], include_in_schema=False)
+async def diag_stream(n: int = 8, gap_ms: int = 700, size: int = 16384):
+    """Зонд: течёт ли NDJSON до киоска по кускам — или прокси копит его целиком.
+
+    Регионы ходят на сервер через кэширующий Squid АФМ, и если он копит тело
+    ответа, потоковая озвучка вырождается в обычную: гражданин ждёт молча ровно
+    столько же, сколько без потока. Померить это по логам НЕЛЬЗЯ — «время до
+    первого звука» в админке считается НА СЕРВЕРЕ, то есть до прокси, и покажет
+    3 с даже когда на точке тишина 30 с. Мерить надо на стороне киоска.
+
+    Эндпоинт шлёт `n` строк с паузой `gap_ms` между ними; в каждой — смещение по
+    часам СЕРВЕРА. Клиент (static/diag.html) засекает приход каждой строки: сами
+    смещения раскладываются лесенкой — значит поток живой; все строки пришли
+    разом в конце — буферизует прокси.
+
+    ⚠️ POST, а не GET. Настоящий `/voice/stream` — POST, а прокси обращается с
+    методами по-разному (GET он вправе кэшировать, POST — нет). Зонд по GET
+    оставлен для curl с консоли, но верить надо POST: он повторяет боевой путь.
+
+    Строки набиты добивкой до `size` байт: буферизация у прокси обычно
+    пороговая по объёму (у Squid `read_ahead_gap`, по умолчанию 16 КБ), и
+    короткие строки прошли бы насквозь там, где куски озвучки на сотни
+    килобайт застревают."""
+    n = max(1, min(n, 40))
+    gap_ms = max(0, min(gap_ms, 5000))
+    size = max(0, min(size, 262144))
+
+    async def gen():
+        t0 = time.monotonic()
+        for i in range(n):
+            if i:
+                await asyncio.sleep(gap_ms / 1000)
+            row = {"i": i, "n": n,
+                   "server_ms": round((time.monotonic() - t0) * 1000)}
+            # Добивка — в самой строке, чтобы объём считался прокси как полезный.
+            # Длину пустой обёртки МЕРЯЕМ, а не считаем по буквам: json.dumps
+            # ставит пробелы после `:` и `,`, и подсчёт «на глаз» промахивался.
+            row["pad"] = ""
+            overhead = len(json.dumps(row, ensure_ascii=False).encode())
+            row["pad"] = "x" * max(0, size - overhead)
+            line = json.dumps(row, ensure_ascii=False)
+            yield line + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.get("/diag", include_in_schema=False)
+async def diag_page():
+    """Страница-зонд: открыть на киоске, нажать кнопку, прочитать вердикт."""
+    return FileResponse(os.path.join(_STATIC_DIR, "diag.html"),
+                        headers={"Cache-Control": "no-store"})
 
 
 def _error_detail(body: bytes, resp) -> str:

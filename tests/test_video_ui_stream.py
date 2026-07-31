@@ -169,3 +169,45 @@ def test_live_data_is_not_cacheable(monkeypatch):
         assert page.headers.get("cache-control") == "no-cache, must-revalidate"
         js = c.get("/static/admin_util.js")
         assert js.headers.get("cache-control") == "no-cache, must-revalidate"
+
+
+def test_diag_stream_lines_are_spread_and_padded():
+    """Зонд /diag/stream: строки идут ЛЕСЕНКОЙ и достаточно объёмные.
+
+    Он существует, чтобы померить буферизацию прокси НА КИОСКЕ (в админке это
+    видно не будет — она считает время на сервере, до прокси). Значит от него
+    требуется ровно две вещи: паузы между строками (иначе лесенки нет и мерить
+    нечего) и объём строки, сравнимый с куском озвучки — буферизация обычно
+    пороговая по объёму (Squid `read_ahead_gap`, 16 КБ по умолчанию), и на
+    коротких строках прокси прошёл бы тест, а на реальном звуке застрял.
+    """
+    import video_ui.server as vs
+
+    with TestClient(vs.app) as c:
+        # POST — как боевой /voice/stream: прокси обращается с методами по-разному.
+        r = c.post("/diag/stream?n=3&gap_ms=50&size=4096")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+        assert r.headers.get("x-accel-buffering") == "no"
+
+        rows = [json.loads(x) for x in r.text.splitlines() if x.strip()]
+        assert [x["i"] for x in rows] == [0, 1, 2]
+        # Часы сервера показывают именно паузы, а не мгновенную выдачу.
+        assert rows[-1]["server_ms"] >= 80
+        # Добивка доводит строку до запрошенного объёма (±перевод строки).
+        assert all(len(json.dumps(x, ensure_ascii=False)) == 4096 for x in rows)
+
+
+def test_diag_stream_clamps_absurd_params():
+    """Параметры зажаты: страница служебная, но открыта всем в сети киоска.
+
+    Без потолка `?n=100000&size=1000000` превратил бы диагностику в способ
+    занять сервер на час и выесть канал региона.
+    """
+    import video_ui.server as vs
+
+    with TestClient(vs.app) as c:
+        r = c.post("/diag/stream?n=99999&gap_ms=0&size=99999999")
+        rows = [json.loads(x) for x in r.text.splitlines() if x.strip()]
+        assert len(rows) == 40
+        assert len(json.dumps(rows[0], ensure_ascii=False)) == 262144
