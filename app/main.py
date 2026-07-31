@@ -637,7 +637,12 @@ async def _answer_pipeline(audio: bytes, filename: str, content_type: str,
     if not suggestion and rec["answer_found"]:
         print_ids = service.detect_print_templates(answer)
         if print_ids:
-            answer = service.with_print_offer(answer, lang)
+            # Язык приглашения — по тексту ОТВЕТА, а не по переключателю киоска.
+            # RAG отвечает на языке ВОПРОСА (правило 1 промпта), поэтому на
+            # казахском киоске русский ответ получал казахскую приписку в конце —
+            # и её же потом читал русский голос (detect_lang судит по всему
+            # тексту, а он преимущественно русский). A1 в AUDIT_2026-07-31.md.
+            answer = service.with_print_offer(answer, tts.detect_lang(answer, lang))
     rec["print_ids"] = print_ids
     rec["answer"] = answer
     return question, answer, suggestion, print_ids
