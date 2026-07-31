@@ -356,6 +356,18 @@ _UI_VERSION_TTL = 5.0
 _ui_cache: tuple[float, str] | None = None
 
 
+# Файлы, которые браузер КИОСКА не загружает: тесты (`*.test.js`), админка и
+# служебный зонд. Их правка перезагружала бы 20 публичных экранов ни за чем.
+# Список — ИСКЛЮЧАЮЩИЙ, а не разрешающий, и это осознанно: новый модуль страницы
+# попадёт в отпечаток сам. Забудь мы дописать его в разрешающий список — точки
+# остались бы со старым кодом, то есть ровно с той бедой, от которой всё это.
+_UI_SKIP = ("admin.html", "admin_util.js", "diag.html")
+
+
+def _kiosk_irrelevant(p: Path) -> bool:
+    return p.name.endswith(".test.js") or p.name in _UI_SKIP
+
+
 def _ui_fingerprint() -> str:
     parts = []
     stamp = _stamp(Path(settings.kiosks_reload_file))
@@ -365,14 +377,17 @@ def _ui_fingerprint() -> str:
         # Только код страницы. Ролики (.mp4) намеренно мимо: они тяжёлые, их
         # замена не меняет поведение, а перекачка на 20 точках — дорогая.
         files = sorted(p for p in root.rglob("*")
-                       if p.suffix in (".html", ".js", ".css"))
+                       if p.suffix in (".html", ".js", ".css")
+                       and not _kiosk_irrelevant(p))
     except OSError as e:
         log.warning("не прочитал код страницы %s: %r", root, e)
         files = []
     for p in files:
         s = _stamp(p)
         if s:
-            parts.append(f"{p.name}:{s[0]}:{s[1]}")
+            # Ключ — путь ОТНОСИТЕЛЬНО каталога статики, а не голое имя: два
+            # одноимённых файла в разных подпапках иначе слились бы в одну запись.
+            parts.append(f"{p.relative_to(root)}:{s[0]}:{s[1]}")
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
 
 

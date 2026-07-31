@@ -395,3 +395,37 @@ def test_reload_requires_admin_token(client, admin, ui):
     # 403 (а не 401) — тот же код, что у остальных админских ручек.
     assert client.post("/admin/reload-ui", data={"token": "wrong"}).status_code == 403
     assert client.post("/admin/reload-ui").status_code == 403
+
+
+def test_test_and_admin_files_do_not_reload_fleet(client, admin, ui):
+    """Правка теста или админки НЕ перезагружает 20 публичных экранов.
+
+    Браузер киоска не загружает ни `*.test.js`, ни `admin.html` — а раньше любой
+    их файл входил в отпечаток, и коммит с одними тестами гасил бы экраны во всех
+    регионах ни за чем. A3 в AUDIT_2026-07-31.md.
+    """
+    before = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+
+    for name in ("vad.test.js", "admin.html", "admin_util.js", "diag.html"):
+        kiosks.reset_ui_version()
+        (ui["static"] / name).write_text("// правка", encoding="utf-8")
+        after = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+        assert after == before, f"{name} не должен перезагружать флот"
+
+
+def test_same_name_in_subdir_does_not_collide(client, admin, ui):
+    """Отпечаток ключуется ПУТЁМ: одноимённые файлы в разных папках не сливаются.
+
+    `templates/form.html` и `index.html` — разные файлы; при ключе по голому
+    имени правка одного могла бы затереть запись другого.
+    """
+    sub = ui["static"] / "templates"
+    sub.mkdir()
+    (sub / "index.html").write_text("<html>бланк</html>", encoding="utf-8")
+    kiosks.reset_ui_version()
+    before = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+
+    kiosks.reset_ui_version()
+    (sub / "index.html").write_text("<html>бланк правленый</html>", encoding="utf-8")
+    after = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+    assert after != before
