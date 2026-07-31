@@ -247,6 +247,7 @@
 <script src="/static/answer_render.js?v=20260720b"></script>
 <script src="/static/stream_client.js?v=20260728"></script>
 <script src="/static/vad.js?v=20260729"></script>
+<script src="/static/reload_guard.js?v=20260731"></script>
 <script>
 // ---------- режим киоска (?kiosk=1) ----------
 const params = new URLSearchParams(location.search);
@@ -961,6 +962,39 @@ function applyBlocked(message) {
   }
 }
 
+// --- Перезагрузка страницы по команде сервера ------------------------------
+// Браузер киоска открыт сутками и код страницы сам не перечитывает: правка в
+// static/** доезжала до региона только с перезапуском .bat, то есть обзвоном 20
+// городов. Сервер отдаёт в пинге версию кода; разошлась со своей — перечитываем.
+let uiVersion = null;      // версия, с которой загрузилась ИМЕННО эта страница
+let reloadArmed = false;
+
+function kioskIdle() {
+  // Занят = пишем вопрос, ждём ответ или говорим. Кнопка включается ещё до
+  // конца речи («спрашивать можно, не дослушав»), поэтому её мало — смотрим и
+  // на плеер, и на незакрытый поток.
+  return !recording && !btn.disabled && answerAudio.paused && !streamAbort;
+}
+
+function armReload() {
+  if (reloadArmed) return;
+  reloadArmed = true;
+  (function attempt() {
+    let last = 0;
+    try { last = Number(sessionStorage.getItem("aidosReloadAt") || 0); }
+    catch (e) { /* приватный режим — переживём без защиты от цикла */ }
+    if (!AidosReloadGuard.shouldReload({ idle: kioskIdle(), lastReloadAt: last,
+                                         now: Date.now() })) {
+      // Не время: либо точка занята (догонит, когда договорит), либо только что
+      // перезагружались. И то и другое лечится ожиданием, поэтому просто ждём.
+      setTimeout(attempt, 3000);
+      return;
+    }
+    try { sessionStorage.setItem("aidosReloadAt", String(Date.now())); } catch (e) {}
+    location.reload();
+  })();
+}
+
 async function pingServer() {
   let next = 60;
   try {
@@ -972,6 +1006,8 @@ async function pingServer() {
       const s = await r.json();
       applyBlocked(s.enabled ? null : (s.message || ""));
       next = s.ping_seconds || next;
+      if (AidosReloadGuard.versionChanged(uiVersion, s.ui_version)) armReload();
+      if (uiVersion === null && s.ui_version) uiVersion = s.ui_version;
     }
     // Сеть моргнула или бэкенд лежит — молчим: киоск не должен пугать
     // гражданина сообщением из-за одного неудачного пинга. Экран поменяется,

@@ -195,6 +195,10 @@
     <div class="bar noprint">
       <button id="allOff" class="off">Отключить ВСЕ (тех. работы)</button>
       <button id="allOn" class="on2 hide">Снять тех. работы</button>
+      <!-- Код страницы киоска браузер сам не перечитывает: без этой кнопки
+           правку в static/** приходилось развозить перезапуском .bat по 20
+           городам. Приём вопросов НЕ останавливает — это не «тех. работы». -->
+      <button id="reloadUi">Перезагрузить страницы киосков</button>
     </div>
     <table>
       <thead><tr>
@@ -883,6 +887,23 @@ $("next").onclick = function () {
 };
 $("allOff").onclick = () => maintenance(true);
 $("allOn").onclick = () => maintenance(false);
+$("reloadUi").onclick = reloadKiosks;
+
+async function reloadKiosks() {
+  if (!confirm("Перезагрузить страницу на всех киосках?\n\n" +
+               "Точки подхватят команду в течение минуты. Та, что сейчас " +
+               "отвечает гражданину, перезагрузится после ответа. " +
+               "Приём вопросов не останавливается.")) return;
+  try {
+    const fd = new FormData();
+    fd.append("token", TOKEN);
+    const r = await api("reload-ui", null, "POST", fd);
+    showError("");
+    alert("Команда отправлена. Точки перезагрузятся в течение " +
+          (r.ping_seconds || 60) + " с (занятые — как договорят).\n" +
+          "Офлайн-точка перезагрузится, когда вернётся на связь.");
+  } catch (e) { showError(e.message); }
+}
 
 refresh();
 // Статус живой: без автообновления оператор смотрит на устаревшую картинку и

@@ -316,3 +316,82 @@ def test_csv_respects_filters_and_token(client, token, logs):
                    params={"token": token, "days": 99999, "only": "errors"})
     text = r.content.decode("utf-8-sig")
     assert "r3" in text and "r1" not in text
+
+
+# ---------- перезагрузка страниц флота ----------
+@pytest.fixture
+def ui(tmp_path, monkeypatch):
+    """Свои метка перезагрузки и каталог статики: настоящие трогать нельзя."""
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("<html>1</html>", encoding="utf-8")
+    monkeypatch.setattr(kiosks.settings, "kiosks_reload_file",
+                        str(tmp_path / "kiosks-reload.txt"))
+    monkeypatch.setattr(kiosks.settings, "ui_static_dir", str(static))
+    kiosks.reset_ui_version()
+    yield {"static": static}
+    kiosks.reset_ui_version()
+
+
+def test_ping_carries_ui_version(client, admin, ui):
+    """Точка узнаёт версию кода страницы из обычного пинга.
+
+    Отдельного канала нет намеренно: пинг уже ходит раз в минуту с каждой из 20
+    точек, и вешать на него ещё одно поле дешевле, чем заводить второй опрос.
+    """
+    r = client.post("/kiosk/ping", data={"kiosk": "astana"})
+    assert r.status_code == 200
+    assert r.json()["ui_version"]
+
+
+def test_reload_button_changes_version(client, admin, ui):
+    """Кнопка в админке меняет версию — этим и перезагружаются точки."""
+    before = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+
+    r = client.post("/admin/reload-ui", data={"token": admin["token"]})
+    assert r.status_code == 200
+
+    after = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+    assert after != before
+
+
+def test_new_static_changes_version_without_button(client, admin, ui):
+    """Выкатка нового кода страницы перезагружает флот САМА.
+
+    Ради этого отпечаток и считается по файлам: иначе после каждого обновления
+    пришлось бы помнить про кнопку, а забытая правка молча жила бы на точках
+    неделями (браузер киоска открыт сутками и код не перечитывает).
+    """
+    before = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+
+    kiosks.reset_ui_version()          # кэш версии живёт секунды, тесту ждать нечего
+    (ui["static"] / "index.html").write_text("<html>2 — правка</html>", encoding="utf-8")
+
+    after = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+    assert after != before
+
+
+def test_videos_do_not_change_version(client, admin, ui):
+    """Замена ролика флот НЕ перезагружает: .mp4 тяжёлые, поведение не меняют."""
+    before = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+
+    kiosks.reset_ui_version()
+    (ui["static"] / "idle.mp4").write_bytes(b"\x00" * 64)
+
+    after = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+    assert after == before
+
+
+def test_version_is_stable_between_pings(client, admin, ui):
+    """Ничего не менялось — версия та же. Иначе флот перезагружался бы вечно."""
+    first = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+    kiosks.reset_ui_version()
+    second = client.post("/kiosk/ping", data={"kiosk": "astana"}).json()["ui_version"]
+    assert first == second
+
+
+def test_reload_requires_admin_token(client, admin, ui):
+    """Перезагрузка флота — админское действие, не публичное."""
+    # 403 (а не 401) — тот же код, что у остальных админских ручек.
+    assert client.post("/admin/reload-ui", data={"token": "wrong"}).status_code == 403
+    assert client.post("/admin/reload-ui").status_code == 403

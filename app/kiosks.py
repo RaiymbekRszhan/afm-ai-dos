@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -341,12 +342,82 @@ def maintenance_message() -> str | None:
     return _table().get(ALL)
 
 
+# --- Версия страницы: чем киоск узнаёт, что пора перечитать себя -----------
+# Браузер на точке открыт круглосуточно и код страницы сам не перечитывает: до
+# этого правка в static/** доезжала до региона только с перезапуском .bat, то
+# есть обзвоном 20 городов. Теперь версия едет в ответе на пинг, и точка
+# перезагружается сама.
+#
+# Версию складываем из двух источников, и оба нужны:
+#   * отпечаток файлов страницы — выкатка новой статики перезагружает флот САМА;
+#   * метка-файл (кнопка в админке) — перезагрузить можно и без правки кода
+#     (браузер завис, надо снять зависшее состояние, откатили конфиг).
+_UI_VERSION_TTL = 5.0
+_ui_cache: tuple[float, str] | None = None
+
+
+def _ui_fingerprint() -> str:
+    parts = []
+    stamp = _stamp(Path(settings.kiosks_reload_file))
+    parts.append(f"mark:{stamp[0]}:{stamp[1]}" if stamp else "mark:-")
+    root = Path(settings.ui_static_dir)
+    try:
+        # Только код страницы. Ролики (.mp4) намеренно мимо: они тяжёлые, их
+        # замена не меняет поведение, а перекачка на 20 точках — дорогая.
+        files = sorted(p for p in root.rglob("*")
+                       if p.suffix in (".html", ".js", ".css"))
+    except OSError as e:
+        log.warning("не прочитал код страницы %s: %r", root, e)
+        files = []
+    for p in files:
+        s = _stamp(p)
+        if s:
+            parts.append(f"{p.name}:{s[0]}:{s[1]}")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
+
+
+def ui_version() -> str:
+    """Отпечаток текущей версии страницы киоска.
+
+    Считается по времени изменения файлов, а не по их содержимому: пинги идут с
+    20 точек каждую минуту, и читать всю статику ради этого незачем. Плюс
+    кэш на несколько секунд — чтобы залп пингов стоил один обход каталога.
+    """
+    global _ui_cache
+    now = time.monotonic()
+    if _ui_cache is not None and now - _ui_cache[0] < _UI_VERSION_TTL:
+        return _ui_cache[1]
+    version = _ui_fingerprint()
+    _ui_cache = (now, version)
+    return version
+
+
+def request_reload() -> None:
+    """Сказать всем точкам перечитать страницу (кнопка в админке).
+
+    Трогаем метку-файл: его время изменения входит в версию, значит ближайший
+    пинг каждой точки вернёт новое значение. Ничего не рассылаем и никуда не
+    стучимся — киоски забирают сами, поэтому команда доходит и до точки, которая
+    сейчас недоступна: она увидит новую версию, когда вернётся на связь.
+    """
+    path = Path(settings.kiosks_reload_file)
+    path.write_text(f"{time.time():.3f}\n", encoding="utf-8")
+    reset_ui_version()
+
+
+def reset_ui_version() -> None:
+    """Забыть посчитанную версию (после записи метки и в тестах)."""
+    global _ui_cache
+    _ui_cache = None
+
+
 def reset_cache() -> None:
     """Забыть прочитанное (нужно тестам и после записи файла)."""
     global _cache, _fleet_cache, _keys_cache
     _cache = None
     _fleet_cache = None
     _keys_cache = None
+    reset_ui_version()
 
 
 def reset_seen() -> None:

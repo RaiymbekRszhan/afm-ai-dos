@@ -200,6 +200,11 @@ async def kiosk_ping(kiosk: str = Form(default=None), key: str = Form(default=No
         "enabled": blocked is None,
         "message": blocked or "",
         "ping_seconds": settings.kiosk_ping_seconds,
+        # Версия кода страницы. Страница сравнивает её со своей и, если разошлись,
+        # перезагружается в простое — так правка в static/** доезжает до 20 точек
+        # без обзвона регионов (браузер киоска открыт сутками и сам код не
+        # перечитывает). Подробности — kiosks.ui_version.
+        "ui_version": kiosks.ui_version(),
     }
 
 
@@ -391,6 +396,28 @@ async def admin_set_kiosk(
         raise HTTPException(status_code=500, detail="Не удалось сохранить список.")
     log.info("admin: киоск %s -> %s", kiosk_id, "включён" if enabled else "отключён")
     return {"kiosks": kiosks.status_rows(), "maintenance": kiosks.maintenance_message()}
+
+
+@app.post("/admin/reload-ui")
+async def admin_reload_ui(token: str = Form(default=None)):
+    """Перезагрузить страницу на ВСЕХ точках флота.
+
+    Ничего никуда не рассылаем: помечаем версию, а точки забирают её ближайшим
+    пингом (до `KIOSK_PING_SECONDS`). Поэтому команда доходит и до киоска,
+    который сейчас офлайн, — он перезагрузится, когда вернётся на связь.
+
+    Страница перезагружается ТОЛЬКО в простое: посреди вопроса гражданина она
+    ждёт (см. index.html). Так что «до минуты» — это до начала перезагрузки на
+    свободной точке, а занятая догонит, когда договорит.
+    """
+    _require_admin(token)
+    try:
+        kiosks.request_reload()
+    except OSError as e:
+        log.warning("не записал метку перезагрузки киосков: %r", e)
+        raise HTTPException(status_code=500, detail="Не удалось пометить перезагрузку.")
+    log.info("admin: помечена перезагрузка страниц флота, версия %s", kiosks.ui_version())
+    return {"ui_version": kiosks.ui_version(), "ping_seconds": settings.kiosk_ping_seconds}
 
 
 @app.post("/transcribe", response_model=TranscribeResponse)
