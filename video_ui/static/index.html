@@ -970,10 +970,15 @@ let uiVersion = null;      // версия, с которой загрузила
 let reloadArmed = false;
 
 function kioskIdle() {
-  // Занят = пишем вопрос, ждём ответ или говорим. Кнопка включается ещё до
-  // конца речи («спрашивать можно, не дослушав»), поэтому её мало — смотрим и
-  // на плеер, и на незакрытый поток.
-  return !recording && !btn.disabled && answerAudio.paused && !streamAbort;
+  // Само правило — в reload_guard.js (чистая функция, покрыта тестами): здесь
+  // только снимаем состояние страницы.
+  return AidosReloadGuard.isIdle({
+    blocked: !!blockedMessage,
+    recording: recording,
+    buttonDisabled: btn.disabled,
+    audioPaused: answerAudio.paused,
+    streaming: !!streamAbort,
+  });
 }
 
 function armReload() {

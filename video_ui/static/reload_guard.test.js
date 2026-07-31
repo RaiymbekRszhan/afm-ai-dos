@@ -56,3 +56,37 @@ test("часы съехали назад — защита не блокируе�
   const now = 1e6;
   assert.equal(guard.shouldReload({ idle: true, lastReloadAt: now + 5e6, now }), true);
 });
+
+// --- Простой киоска (A2) ---------------------------------------------------
+
+const IDLE = { blocked: false, recording: false, buttonDisabled: false,
+               audioPaused: true, streaming: false };
+
+test("свободная точка простаивает", () => {
+  assert.equal(guard.isIdle(IDLE), true);
+});
+
+test("отключённая рубильником точка СЧИТАЕТСЯ простаивающей", () => {
+  // Рубильник гасит кнопку, поэтому без явной ветки простой не наступал никогда
+  // и точку под «тех. работами» нельзя было перезагрузить с сервера — ровно
+  // тогда, когда это нужнее всего.
+  assert.equal(guard.isIdle({ ...IDLE, blocked: true, buttonDisabled: true }), true);
+});
+
+test("пишем вопрос — не простаиваем", () => {
+  assert.equal(guard.isIdle({ ...IDLE, recording: true }), false);
+});
+
+test("ждём ответ (кнопка погашена) — не простаиваем", () => {
+  assert.equal(guard.isIdle({ ...IDLE, buttonDisabled: true }), false);
+});
+
+test("аватар говорит — не простаиваем", () => {
+  // Кнопка к этому моменту уже включена («спрашивать можно, не дослушав»),
+  // поэтому её одной мало.
+  assert.equal(guard.isIdle({ ...IDLE, audioPaused: false }), false);
+});
+
+test("поток ещё открыт — не простаиваем", () => {
+  assert.equal(guard.isIdle({ ...IDLE, streaming: true }), false);
+});
