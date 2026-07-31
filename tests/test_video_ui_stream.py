@@ -201,13 +201,15 @@ def test_diag_stream_lines_are_spread_and_padded():
 def test_diag_stream_clamps_absurd_params():
     """Параметры зажаты: страница служебная, но открыта всем в сети киоска.
 
-    Без потолка `?n=100000&size=1000000` превратил бы диагностику в способ
-    занять сервер на час и выесть канал региона.
+    Зонд живёт на :80, то есть МИМО проходной и лимита темпа (они на :8000), и
+    доступен всей сети киоска. Без потолка `?n=100000&size=1000000` превратил бы
+    диагностику в способ занять сервер на час и выесть канал региона; потолки
+    держим скромными — для замера буферизации хватает 8 кусков по 16 КБ.
     """
     import video_ui.server as vs
 
     with TestClient(vs.app) as c:
         r = c.post("/diag/stream?n=99999&gap_ms=0&size=99999999")
         rows = [json.loads(x) for x in r.text.splitlines() if x.strip()]
-        assert len(rows) == 40
-        assert len(json.dumps(rows[0], ensure_ascii=False)) == 262144
+        assert len(rows) == 20
+        assert len(json.dumps(rows[0], ensure_ascii=False)) == 65536
