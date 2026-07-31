@@ -192,3 +192,44 @@ def test_gate_rejection_is_logged_as_error(client, monkeypatch):
     assert len(rows) == 2
     assert rows[0]["error"] is None
     assert rows[1]["error"] == "gate", "отказ проходной записан как успешное обращение"
+
+
+# ---------------------------------------------------------------------------
+# Провайдер в аналитике: только ФАКТИЧЕСКИЙ движок, никаких догадок (A5).
+# Раньше строка заводилась с движком «по языку переключателя», а фактический
+# подставлялся лишь после УСПЕШНОГО синтеза. Догадка врала дважды: язык ответа
+# задаёт RAG (гражданин мог спросить на другом языке), и при сбое TTS она так и
+# оставалась в журнале — отчёт показывал нагрузку на движок, который не работал.
+# ---------------------------------------------------------------------------
+
+def test_provider_recorded_on_success(client):
+    r = _post_voice(client)
+    assert r.status_code == 200
+    assert _read_jsonl(client._log_dir)[0]["provider"]      # движок записан
+
+
+def test_provider_empty_when_tts_failed(client, monkeypatch):
+    """Синтез упал — движка в журнале НЕТ, а не догадка по переключателю."""
+    async def boom_synth(text, language=None):
+        raise RuntimeError("TTS упал")
+
+    monkeypatch.setattr(tts, "synthesize_with_provider", boom_synth)
+    r = _post_voice(client)
+    assert r.status_code == 502
+    rec = _read_jsonl(client._log_dir)[0]
+    assert rec["error"] == "tts"
+    assert rec["provider"] is None
+
+
+def test_provider_empty_when_tts_disabled(client, monkeypatch):
+    """TTS выключен — синтеза не было, значит и движка в журнале быть не должно.
+
+    `tts_enabled` — вычисляемое свойство (N3): гасим его через URL провайдера,
+    как это и происходит на машине без настроенного TTS.
+    """
+    monkeypatch.setattr(main.settings, "tts_provider", "f5")
+    monkeypatch.setattr(main.settings, "f5_url", "")
+    r = _post_voice(client)
+    assert r.status_code == 200
+    rec = _read_jsonl(client._log_dir)[0]
+    assert rec["provider"] is None

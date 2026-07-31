@@ -529,7 +529,13 @@ def _new_record(rid: str, lang: str, kiosk: str | None = None) -> dict:
     (в т.ч. на пути ошибки — видно, какая стадия упала и сколько заняла)."""
     return {
         "request_id": rid, "lang": lang, "kiosk": _clean_kiosk(kiosk),
-        "provider": tts._provider_for(lang),
+        # Пусто до синтеза, а НЕ догадка по языку переключателя. Догадка врала
+        # дважды: язык ответа задаёт RAG (гражданин мог спросить на другом), а
+        # при ошибке TTS или TTS_ENABLED=false она так и оставалась в журнале —
+        # и отчёт по провайдерам показывал нагрузку на движок, который не
+        # работал. Заполняется ФАКТИЧЕСКИМ движком после успешного синтеза
+        # (см. rec["provider"] ниже). A5 в AUDIT_2026-07-31.md.
+        "provider": None,
         "corrected": False, "suggested": False, "print_ids": [], "answer_found": None,
         "question": None, "answer": None,
         "stt_ms": None, "rag_ms": None, "tts_ms": None, "tts_first_ms": None,
