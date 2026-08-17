@@ -777,13 +777,15 @@ def test_domain_dot_removed():
     assert "е-гов мобайл" in tts._normalize_for_tts("через e-Gov mobile", "russian")
 
 
-def test_omni_keeps_long_sentence_whole(monkeypatch):
-    """Юридическое предложение (330+ симв. — норма для кодексов) у omni НЕ рвётся.
+def test_omni_caps_chunk_length_even_inside_sentence(monkeypatch):
+    """Длинное предложение у omni РЕЖЕТСЯ, и это осознанный выбор.
 
-    Шов внутри фразы слышен как запинка диктора: интонация начинается заново, да
-    ещё и с паузой склейки 400/250 мс. У eleven это лечили тем же способом
-    (ELEVENLABS_SENTENCE_CAP). Плата мала: у omni время почти не зависит от длины
-    (230 симв. -> 1,1 с, 460 -> 1,4 с, замер на ноде 17.08).
+    OmniVoice случайно выбрасывает куски текста, и вероятность растёт с длиной
+    запроса (замер 17.08, один текст, 8 прогонов, пропуск ловился распознаванием:
+    165 симв. -> 0/8, 233 -> 0/8, 298 -> 1/8, 354 -> 4/8). Поэтому шов на запятой
+    (пауза половинная, 150 мс — слышно как вдох) предпочтён риску потерять пункт
+    из ответа про ответственность. Тест закрепляет именно этот размен, чтобы кап
+    не подняли «для гладкости» без нового замера.
     """
     long_kk = ("Қаржы мониторингі субъектілері клиенттің күдікті операциясы туралы уәкілетті "
                "органға хабарлама беруге міндетті, себебі бұл талап Қазақстан Республикасының "
@@ -794,7 +796,10 @@ def test_omni_keeps_long_sentence_whole(monkeypatch):
 
     monkeypatch.setattr(settings, "tts_kk_provider", "omni")
     _, omni_parts = tts.prepare_for_tts(long_kk, "kazakh")
-    assert len(omni_parts) == 1, omni_parts        # ни одного шва внутри фразы
+    # Куски не длиннее замеренной безопасной длины...
+    assert all(len(p) <= settings.tts_kk_sentence_cap for p in omni_parts), omni_parts
+    # ...и текст не потерян: склейка кусков даёт исходное предложение.
+    assert " ".join(omni_parts).replace("  ", " ") in tts._normalize_for_tts(long_kk, "kazakh")
 
     # Spark не трогали: у него время растёт квадратично, ему мелкие куски нужны.
     monkeypatch.setattr(settings, "tts_kk_provider", "spark")
