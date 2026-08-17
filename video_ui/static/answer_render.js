@@ -412,7 +412,12 @@ function renderAnswer(container, text, qrContainer) {
 // медленно — ускоряем плеером; ElevenLabs (дефолтный kk) и F5 (ru) — в норме.
 // Разгон через playbackRate ничего не стоит (звук уже готов) и не роняет синтез,
 // в отличие от ручки SPARK_SPEED. Провайдер приходит в теле /voice (data.provider).
-var SPEECH_RATE_BY_PROVIDER = { spark: 1.3 };
+// Темп проигрывания по ДВИЖКУ. Spark говорил медленно — его разгоняли; OmniVoice
+// наоборот тараторит (замерено 19,3 симв/с казахского текста), с киоска 17.08:
+// «казахский немного быстро говорит». Замедляем плеером, а не моделью: звук уже
+// готов, ускорение/замедление ничего не стоит и не может уронить синтез, а
+// preservesPitch (index.html) держит высоту голоса — тембр офицера не меняется.
+var SPEECH_RATE_BY_PROVIDER = { spark: 1.3, omni: 0.9 };
 function speechRate(provider) {
   return SPEECH_RATE_BY_PROVIDER[provider] || 1.0;
 }

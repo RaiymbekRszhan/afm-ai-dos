@@ -91,19 +91,24 @@ def test_prepare_for_tts_chunk_limit_follows_provider(monkeypatch):
 
     monkeypatch.setattr(settings, "tts_provider", "f5")
     _, f5_chunks = tts.prepare_for_tts(text, "russian")
-    assert all(len(c) <= settings.tts_group_chars for c in f5_chunks)
+    # Группировка предложений ВЫКЛЮЧЕНА (TTS_GROUP_CHARS=1): кусок = предложение,
+    # иначе пауза между предложениями исчезает — движок её сам не держит.
+    # Ограничение сверху остаётся у ПРЕДЛОЖЕНИЯ (tts_max_chars).
+    assert all(len(c) <= settings.tts_max_chars for c in f5_chunks)
+    assert len(f5_chunks) == text.count(".")   # ровно по предложениям
 
     monkeypatch.setattr(settings, "tts_kk_provider", "spark")
     _, spark_chunks = tts.prepare_for_tts(kk_text, "kazakh")
     spark_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     assert all(len(c) <= spark_max for c in spark_chunks)
 
-    # У omni свои два лимита: группа крупнее (время почти не зависит от длины),
-    # а предложение внутри не рвётся вовсе — поэтому кусков МЕНЬШЕ, чем у Spark.
+    # У omni свои два лимита: предложение внутри НЕ рвётся (sentence_cap), но и
+    # разные предложения в один кусок НЕ склеиваются (group=1) — иначе пропадает
+    # пауза между ними, движок её сам не держит.
     monkeypatch.setattr(settings, "tts_kk_provider", "omni")
     _, omni_chunks = tts.prepare_for_tts(kk_text, "kazakh")
-    assert all(len(c) <= settings.tts_kk_group_chars for c in omni_chunks)
-    assert len(omni_chunks) < len(spark_chunks)
+    assert all(len(c) <= settings.tts_kk_sentence_cap for c in omni_chunks)
+    assert len(omni_chunks) == kk_text.count(".")   # ровно по предложениям
 
     monkeypatch.setattr(settings, "tts_kk_provider", "eleven")
     _, eleven_chunks = tts.prepare_for_tts(kk_text, "kazakh")
