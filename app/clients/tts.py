@@ -1682,6 +1682,17 @@ async def healthy() -> dict:
             out["spark"] = await _probe_responds(client, settings.spark_url)
         if "omni" in providers and settings.omni_url:
             out["omni"] = await _probe_responds(client, settings.omni_url)
-        if "eleven" in providers:
-            out["eleven"] = await _eleven_reachable(client)
+    if "eleven" in providers:
+        # ⚠️ ОТДЕЛЬНЫЙ клиент, и обязательно с verify как у синтеза (_eleven).
+        # Общий клиент выше создаётся без verify, то есть ВСЕГДА проверяет
+        # сертификат: за TLS-прокси АФМ (он подписывает своим корнем, которого
+        # нет в certifi) проба падала на CERTIFICATE_VERIFY_FAILED, хотя синтез
+        # с ELEVENLABS_VERIFY_SSL=false работал. /health рапортовал «облако
+        # недоступно» — а с 17.08 облако это ФОЛБЭК казахского, и врать про
+        # наличие страховки нельзя: узнать о её отсутствии надо ДО того, как
+        # упадёт GPU-нода. f5/omni ходят по http, им verify безразличен, поэтому
+        # смысла тащить его в общий клиент нет.
+        async with httpx.AsyncClient(timeout=3.0,
+                                     verify=settings.elevenlabs_verify_ssl) as eleven_client:
+            out["eleven"] = await _eleven_reachable(eleven_client)
     return out

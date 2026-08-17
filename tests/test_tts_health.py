@@ -248,3 +248,45 @@ def test_omni_without_url_raises(monkeypatch):
     monkeypatch.setattr(tts.settings, "omni_url", "")
     with pytest.raises(RuntimeError, match="OMNI_URL"):
         asyncio.run(tts._omni("тест", "kazakh"))
+
+
+def test_healthy_eleven_probe_respects_verify_ssl(monkeypatch):
+    """Проба облака ходит с тем же verify, что и синтез.
+
+    Регрессия 17.08: общий клиент в healthy() создавался без verify, поэтому за
+    TLS-прокси АФМ проба падала с CERTIFICATE_VERIFY_FAILED, хотя озвучка при
+    ELEVENLABS_VERIFY_SSL=false работала. С переездом казахского на OmniVoice
+    облако стало ФОЛБЭКОМ, и /health, врущий про наличие страховки, опаснее
+    всего: узнать о её отсутствии надо до падения GPU-ноды.
+    """
+    kwargs = []
+
+    class _Client:
+        def __init__(self, **kw):
+            kwargs.append(kw)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            class _R:
+                status_code = 200
+            return _R()
+
+    monkeypatch.setattr(tts.settings, "tts_provider", "eleven")
+    monkeypatch.setattr(tts.settings, "tts_kk_provider", "eleven")
+    monkeypatch.setattr(tts.settings, "tts_fallback", "")
+    monkeypatch.setattr(tts.settings, "tts_kk_fallback", "")
+    monkeypatch.setattr(tts.settings, "elevenlabs_api_key", "k")
+    monkeypatch.setattr(tts.settings, "elevenlabs_voice_id", "v")
+    monkeypatch.setattr(tts, "_eleven_health_cache", None)
+    monkeypatch.setattr(tts.settings, "elevenlabs_verify_ssl", False)
+    monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+    out = asyncio.run(tts.healthy())
+    assert out["eleven"]["reachable"] is True
+    # Клиент пробы должен быть создан с verify=False — как у _eleven.
+    assert any(kw.get("verify") is False for kw in kwargs), kwargs
