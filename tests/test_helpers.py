@@ -98,12 +98,12 @@ def test_prepare_for_tts_chunk_limit_follows_provider(monkeypatch):
     spark_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     assert all(len(c) <= spark_max for c in spark_chunks)
 
-    # omni нарезаем как spark: своей нарезки по предложениям у него тоже нет
-    # (внутренняя — по длительности, а нам нужны куски под потоковую озвучку).
+    # У omni свои два лимита: группа крупнее (время почти не зависит от длины),
+    # а предложение внутри не рвётся вовсе — поэтому кусков МЕНЬШЕ, чем у Spark.
     monkeypatch.setattr(settings, "tts_kk_provider", "omni")
     _, omni_chunks = tts.prepare_for_tts(kk_text, "kazakh")
-    assert all(len(c) <= spark_max for c in omni_chunks)
-    assert omni_chunks == spark_chunks
+    assert all(len(c) <= settings.tts_kk_group_chars for c in omni_chunks)
+    assert len(omni_chunks) < len(spark_chunks)
 
     monkeypatch.setattr(settings, "tts_kk_provider", "eleven")
     _, eleven_chunks = tts.prepare_for_tts(kk_text, "kazakh")
@@ -770,3 +770,36 @@ def test_domain_dot_removed():
     assert "гов кз" in tts._normalize_for_tts("afm.gov.kz сайтына", "kazakh")
     # Словарь брендов не сломался: он применяется ПОСЛЕ разбора адреса.
     assert "е-гов мобайл" in tts._normalize_for_tts("через e-Gov mobile", "russian")
+
+
+def test_omni_keeps_long_sentence_whole(monkeypatch):
+    """Юридическое предложение (330+ симв. — норма для кодексов) у omni НЕ рвётся.
+
+    Шов внутри фразы слышен как запинка диктора: интонация начинается заново, да
+    ещё и с паузой склейки 400/250 мс. У eleven это лечили тем же способом
+    (ELEVENLABS_SENTENCE_CAP). Плата мала: у omni время почти не зависит от длины
+    (230 симв. -> 1,1 с, 460 -> 1,4 с, замер на ноде 17.08).
+    """
+    long_kk = ("Қаржы мониторингі субъектілері клиенттің күдікті операциясы туралы уәкілетті "
+               "органға хабарлама беруге міндетті, себебі бұл талап Қазақстан Республикасының "
+               "қылмыстық жолмен алынған кірістерді заңдастыруға және терроризмді қаржыландыруға "
+               "қарсы іс-қимыл туралы заңында анық көзделген және оны бұзу жауапкершілікке "
+               "әкеп соғады.")
+    assert len(long_kk) > 300
+
+    monkeypatch.setattr(settings, "tts_kk_provider", "omni")
+    _, omni_parts = tts.prepare_for_tts(long_kk, "kazakh")
+    assert len(omni_parts) == 1, omni_parts        # ни одного шва внутри фразы
+
+    # Spark не трогали: у него время растёт квадратично, ему мелкие куски нужны.
+    monkeypatch.setattr(settings, "tts_kk_provider", "spark")
+    _, spark_parts = tts.prepare_for_tts(long_kk, "kazakh")
+    assert len(spark_parts) > 1
+
+    # Патологию (перечисление без точек) omni всё же дробит — предохранитель цел.
+    monkeypatch.setattr(settings, "tts_kk_provider", "omni")
+    runaway = "тізім " * 300
+    _, parts = tts.prepare_for_tts(runaway, "kazakh")
+    assert len(parts) > 1
+    assert all(len(p) <= max(settings.tts_kk_sentence_cap,
+                             settings.tts_kk_group_chars) for p in parts)

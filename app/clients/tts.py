@@ -1109,11 +1109,19 @@ def prepare_for_tts(text: str, language: str | None = None,
         sent_max = max(settings.elevenlabs_max_chars,
                        settings.elevenlabs_sentence_cap)
         group = settings.elevenlabs_max_chars
-    elif provider in ("spark", "omni"):
-        # Оба казахских движка своей нарезки по предложениям не делают (OmniVoice
-        # умеет резать длинный текст сам, но по ОЦЕНКЕ ДЛИТЕЛЬНОСТИ, а нам нужны
-        # куски под потоковую озвучку) — режем сами и даём предложению запас,
-        # чтобы разрез попал на запятую, а не в середину фразы.
+    elif provider == "omni":
+        # Предложение НЕ РЕЖЕМ на границе лимита — как у eleven. Шов внутри фразы
+        # слышен как запинка: интонация начинается заново, да ещё и с паузой
+        # склейки (400/250 мс), а юридическое предложение на 330+ символов —
+        # норма для кодексов. Дробим только патологию: строку без точек длиннее
+        # cap. Куски под поток задаёт group.
+        sent_max = max(settings.tts_kk_sentence_cap, settings.tts_kk_group_chars)
+        group = settings.tts_kk_group_chars
+    elif provider == "spark":
+        # Spark своей нарезки не имеет и растёт квадратично по длине, поэтому у
+        # него ПРЕЖНИЙ, более мелкий лимит: запас ровно чтобы разрез дотянулся до
+        # запятой. Движок снят с боя, но настройку не трогаем — вернут, и она
+        # должна работать как раньше.
         sent_max = group = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     else:
         sent_max = settings.tts_max_chars
