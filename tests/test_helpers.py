@@ -263,8 +263,12 @@ def test_normalize_ru_ordinals_agree():
 
 def test_normalize_kk_inflects_case():
     # падеж переносится на раскрытое слово с верным окончанием
-    assert "кодекстің" in tts._normalize_for_tts("ҚК-нің 190-бабы", "kk")
     assert "Республикасының" in tts._normalize_for_tts("ҚР-ның заңы", "kk")
+    assert "субъектісінің" in tts._normalize_for_tts("ҚМС-нің міндеті", "kk")
+    # ⚠️ Ссылка на кодекс — ОСОБЫЙ случай, поэтому её тут больше не ждём в общей
+    # форме «кодекстің»: перед номером статьи нужен притяжательный аффикс
+    # («кодекс-і-нің»), это отдельное правило _NORM_KK_CHAIN, см. тест ниже.
+    assert "Қылмыстық кодексінің" in tts._normalize_for_tts("ҚК-нің 190-бабы", "kk")
 
 
 def test_normalize_does_not_touch_other_language():
@@ -718,3 +722,51 @@ def test_eleven_still_splits_pathological_run():
         assert all(len(p) <= 400 for p in parts), [len(p) for p in parts]
     finally:
         settings.elevenlabs_max_chars, settings.elevenlabs_sentence_cap = old_max, old_cap
+
+
+# ---------- Нормализация: дроби, юр-цепочки, адреса (найдено 2026-08-17) ----
+def test_fractions_read_as_fractions_both_languages():
+    """Дробь со слэшем раньше раскрывалась как ДВА числа, а слэш вслух не читается:
+    «1/2 части» превращалось в «один/два части». Проверяем оба языка."""
+    assert tts._normalize_for_tts("1/2 части суммы", "russian").startswith("одна вторая")
+    assert "две третьих" in tts._normalize_for_tts("2/3 голосов", "russian")
+    # Казахская форма — знаменатель в исходном падеже + числитель, как у
+    # десятичных («нөл бүтін оннан бес»).
+    assert tts._normalize_for_tts("2/3 мөлшерінде", "kazakh").startswith("үштен екі")
+    assert tts._normalize_for_tts("1/2 бөлігі", "kazakh").startswith("екіден бір")
+    # Слэш в тексте не остаётся — его нечем озвучить.
+    assert "/" not in tts._normalize_for_tts("1/3 бөлігі", "kazakh")
+
+
+def test_not_a_fraction_left_alone():
+    """«24/7» — не дробь: знаменателя в таблице нет, число раскрывается как есть
+    (лучше обычное числительное, чем неверная дробь)."""
+    out = tts._normalize_for_tts("сайт работает 24/7", "russian")
+    assert "двадцать четыре" in out and "вторых" not in out
+
+
+def test_kk_legal_chain_in_genitive():
+    """«ҚР ҚК 218-бабы» по-казахски требует родительного падежа во всей цепочке.
+    Пословное раскрытие давало именительный — носителю слышно как неграмотность."""
+    out = tts._normalize_for_tts("ҚР ҚК 218-бабы", "kazakh")
+    assert out.startswith("Қазақстан Республикасының Қылмыстық кодексінің")
+    assert "екі жүз он сегізінші" in out          # номер статьи — порядковый
+    # Падеж, написанный руками, даёт тот же результат (а не «кодекстің»).
+    assert tts._normalize_for_tts("ҚР-ның ҚК-нің 218-бабы", "kazakh") == out
+    # Кодекс без «ҚР» — тоже родительный перед номером статьи.
+    assert tts._normalize_for_tts("ҚК 218-бабына сәйкес", "kazakh").startswith(
+        "Қылмыстық кодексінің")
+    # А «ҚР бойынша» (перед строчным словом) остаётся именительным.
+    assert "Қазақстан Республикасы бойынша" in tts._normalize_for_tts(
+        "шешім ҚР бойынша", "kazakh")
+
+
+def test_domain_dot_removed():
+    """Точка в адресе — не конец предложения, но озвучке достаётся именно так:
+    TTS делает на ней паузу, а нарезка может разрезать кусок посреди адреса."""
+    for lang in ("kazakh", "russian"):
+        out = tts._normalize_for_tts("egov.kz сайтында", lang)
+        assert "кз" in out and ".кз" not in out and ".kz" not in out
+    assert "гов кз" in tts._normalize_for_tts("afm.gov.kz сайтына", "kazakh")
+    # Словарь брендов не сломался: он применяется ПОСЛЕ разбора адреса.
+    assert "е-гов мобайл" in tts._normalize_for_tts("через e-Gov mobile", "russian")
