@@ -735,6 +735,14 @@ const SILENCE_MS = 2000;
 // реального вопроса; если речь была, отправим что записалось, если нет —
 // сработает проверка в stopAndSend и экран попросит повторить.
 const MAX_RECORD_MS = 25000;
+// ...а если речи не было ВООБЩЕ — ждать эти 25 секунд незачем. Авто-стоп выше
+// срабатывает ТОЛЬКО после речи (тишина до первого слова в счётчик не идёт),
+// поэтому нажал кнопку и промолчал = запись висела до предела, а гражданин стоял
+// у экрана и не понимал, что происходит (отзыв с киоска 17.08 — «автостоп плохо
+// работает»). 7 с заведомо больше паузы «собраться с мыслями» у того, кто ТОЛЬКО
+// ЧТО нажал «Задать вопрос»; дальше показываем «Не услышал вопрос» и ждём
+// повторного нажатия. В STT такая запись, как и раньше, НЕ уходит.
+const NO_SPEECH_MS = 7000;
 // Была ли речь — решает детектор из vad.js (адаптивный порог от фонового шума
 // + накопленное время звучания). Прежний одиночный порог амплитуды в фойе
 // срабатывал на вдохе и стуке, и тишина уходила в STT, а тот выдумывал вопрос
@@ -742,6 +750,7 @@ const MAX_RECORD_MS = 25000;
 let vad = null;
 let stopping = false;
 let maxRecordTimer = null;
+let noSpeechTimer = null;
 
 async function startRecording() {
   stopAnswer();   // аватар ещё договаривает прошлый ответ? обрываем — посетитель хочет спросить заново
@@ -768,11 +777,17 @@ async function startRecording() {
   st.textContent = "говорите...";
   clearTimeout(maxRecordTimer);
   maxRecordTimer = setTimeout(function () { if (recording) stopAndSend(); }, MAX_RECORD_MS);
+  // Речь так и не началась — заканчиваем сами, не дожидаясь предела записи.
+  clearTimeout(noSpeechTimer);
+  noSpeechTimer = setTimeout(function () {
+    if (recording && (!vad || !vad.hasSpeech())) stopAndSend();
+  }, NO_SPEECH_MS);
 }
 
 async function stopAndSend() {
   if (!recording || stopping) return;
   clearTimeout(maxRecordTimer);
+  clearTimeout(noSpeechTimer);
   stopping = true; recording = false;
   btn.classList.remove("rec"); btn.textContent = "🎙 Задать вопрос";
   proc.disconnect(); src.disconnect(); stream.getTracks().forEach(t => t.stop());
