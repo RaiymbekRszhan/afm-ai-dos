@@ -54,6 +54,19 @@ def test_falls_back_to_offline_provider(monkeypatch):
     assert calls == ["eleven", "spark"]
 
 
+def test_omni_falls_back_to_cloud(monkeypatch):
+    """Топология с 2026-08: основной казахский — офлайн-OmniVoice, страховка —
+    облако. Упала GPU-нода — гражданин всё равно слышит ответ, а провайдер в
+    ответе честно eleven (по нему киоск выбирает темп проигрывания)."""
+    _providers(monkeypatch, primary="omni", fallback="eleven")
+    calls = _record_calls(monkeypatch, fail_for={"omni"})
+
+    audio, provider = asyncio.run(tts.synthesize_with_provider("Сәлеметсіз бе.", "kazakh"))
+    assert provider == "eleven"
+    assert audio == wav_bytes()
+    assert calls == ["omni", "eleven"]
+
+
 def test_no_fallback_configured_raises(monkeypatch):
     """Без запасного движка поведение прежнее — ошибка наверх (502 у клиента)."""
     _providers(monkeypatch, fallback="")

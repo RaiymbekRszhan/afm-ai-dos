@@ -163,7 +163,7 @@ if [ -n "$api_health" ]; then
   # Оркестратор УЖЕ пингует свои TTS-серверы по фактическим адресам (локальный
   # f5_server ИЛИ GPU-сервер АФМ) и кладёт статус в tts.servers.* — берём его
   # оттуда, а не гадаем URL (иначе при удалённом F5 ложный FAIL на localhost:8810).
-  check_tts_srv(){ # check_tts_srv f5|spark "Имя"
+  check_tts_srv(){ # check_tts_srv f5|spark|omni "Имя"
     local key="$1" name="$2" status
     status="$(printf '%s' "$api_health" | jget "tts.servers.$key.status")"
     case "$(printf '%s' "$api_health" | jget "tts.servers.$key.reachable")" in
@@ -174,8 +174,9 @@ if [ -n "$api_health" ]; then
   }
   case " $ru_prov $kk_prov " in *" f5 "*)    check_tts_srv f5    "F5 (русский TTS)";;    esac
   case " $ru_prov $kk_prov " in *" spark "*) check_tts_srv spark "Spark (казахский TTS)";; esac
+  case " $ru_prov $kk_prov " in *" omni "*)  check_tts_srv omni  "OmniVoice (казахский TTS)";; esac
   case " $ru_prov $kk_prov " in
-    *f5*|*spark*) ;;
+    *f5*|*spark*|*omni*) ;;
     *) printf "  ${Y}ℹ INFO${N}  TTS внешний (ru=%s, kk=%s) — локальные TTS-серверы не проверяю\n" "${ru_prov:-?}" "${kk_prov:-?}";;
   esac
 fi

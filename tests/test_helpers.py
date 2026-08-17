@@ -98,6 +98,13 @@ def test_prepare_for_tts_chunk_limit_follows_provider(monkeypatch):
     spark_max = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     assert all(len(c) <= spark_max for c in spark_chunks)
 
+    # omni нарезаем как spark: своей нарезки по предложениям у него тоже нет
+    # (внутренняя — по длительности, а нам нужны куски под потоковую озвучку).
+    monkeypatch.setattr(settings, "tts_kk_provider", "omni")
+    _, omni_chunks = tts.prepare_for_tts(kk_text, "kazakh")
+    assert all(len(c) <= spark_max for c in omni_chunks)
+    assert omni_chunks == spark_chunks
+
     monkeypatch.setattr(settings, "tts_kk_provider", "eleven")
     _, eleven_chunks = tts.prepare_for_tts(kk_text, "kazakh")
     assert all(len(c) <= settings.elevenlabs_max_chars for c in eleven_chunks)

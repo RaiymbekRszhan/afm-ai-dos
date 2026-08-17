@@ -1,6 +1,7 @@
 """Синтез речи (TTS). Один интерфейс synthesize(), провайдеры:
   - f5     : русский (F5-TTS-сервер по HTTP) — с ударениями (RUAccent)
-  - spark  : казахский (Spark-сервер по HTTP)
+  - omni   : казахский (OmniVoice-сервер по HTTP) — офлайн, основной
+  - spark  : казахский (Spark-сервер по HTTP) — прежний офлайн-движок
   - eleven : ElevenLabs (облако) — казахский на eleven_v3 чистый; НУЖЕН ИНТЕРНЕТ
   - say    : системный голос macOS, только для локальной отладки
   - openai : внешний OpenAI-совместимый /audio/speech сервер
@@ -1020,7 +1021,11 @@ def prepare_for_tts(text: str, language: str | None = None,
         sent_max = max(settings.elevenlabs_max_chars,
                        settings.elevenlabs_sentence_cap)
         group = settings.elevenlabs_max_chars
-    elif provider == "spark":
+    elif provider in ("spark", "omni"):
+        # Оба казахских движка своей нарезки по предложениям не делают (OmniVoice
+        # умеет резать длинный текст сам, но по ОЦЕНКЕ ДЛИТЕЛЬНОСТИ, а нам нужны
+        # куски под потоковую озвучку) — режем сами и даём предложению запас,
+        # чтобы разрез попал на запятую, а не в середину фразы.
         sent_max = group = max(settings.tts_max_chars, settings.tts_kk_max_chars)
     else:
         sent_max = settings.tts_max_chars
@@ -1255,6 +1260,8 @@ async def _synthesize_one(text: str, language: str | None = None,
         return await _f5(text, language)
     if provider == "spark":
         return await _spark(text, language)
+    if provider == "omni":
+        return await _omni(text, language)
     if provider == "eleven":
         return await _eleven(text, language)
     raise RuntimeError(f"Неизвестный TTS-провайдер: {provider!r}")
@@ -1518,6 +1525,25 @@ async def _spark(text: str, language: str | None) -> bytes:
         return resp.content
 
 
+# ---------- OmniVoice (казахский, отдельный сервис по HTTP) ----------
+async def _omni(text: str, language: str | None) -> bytes:
+    """Вызывает OmniVoice-сервер. Контракт ТОТ ЖЕ, что у Spark: POST -> WAV.
+
+    Контракт совпадает намеренно: замена движка = одна строка в .env
+    (TTS_KK_PROVIDER + OMNI_URL), нарезка/склейка/стриминг не меняются.
+    """
+    import httpx
+    if not settings.omni_url:
+        raise RuntimeError(
+            "TTS казахский = omni, но OMNI_URL не задан. Запусти omni_server."
+        )
+    async with httpx.AsyncClient(timeout=180) as client:
+        resp = await client.post(settings.omni_url,
+                                 json={"text": text, "language": language or "kazakh"})
+        resp.raise_for_status()
+        return resp.content
+
+
 # ---------- ElevenLabs (облако, казахский) ----------
 async def _eleven(text: str, language: str | None) -> bytes:
     """ElevenLabs TTS. Просим PCM и оборачиваем в WAV (пайплайн склеивает WAV).
@@ -1637,7 +1663,7 @@ async def _eleven_reachable(client) -> dict:
 async def healthy() -> dict:
     """Доступность выбранных TTS-серверов для `/health` оркестратора.
 
-    f5/spark — по факту HTTP-ответа (см. _probe_responds); eleven — по 2xx на
+    f5/spark/omni — по факту HTTP-ответа (см. _probe_responds); eleven — по 2xx на
     /user с кэшем (см. _eleven_reachable). Пусто, если провайдер не задействован.
 
     Фолбэк-провайдеры проверяются наравне с основными: молча умерший Spark — это
@@ -1654,6 +1680,8 @@ async def healthy() -> dict:
             out["f5"] = await _probe_responds(client, settings.f5_url)
         if "spark" in providers and settings.spark_url:
             out["spark"] = await _probe_responds(client, settings.spark_url)
+        if "omni" in providers and settings.omni_url:
+            out["omni"] = await _probe_responds(client, settings.omni_url)
         if "eleven" in providers:
             out["eleven"] = await _eleven_reachable(client)
     return out

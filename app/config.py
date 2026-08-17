@@ -43,21 +43,26 @@ class Settings(BaseSettings):
 
     # TTS — каждый язык на своём сервере (по HTTP). Провайдеры:
     #   f5     — русский (F5-TTS_RUSSIAN, F5_URL) — с ударениями (RUAccent)
-    #   spark  — казахский (Spark-сервер, SPARK_URL)
+    #   omni   — казахский (OmniVoice-сервер, OMNI_URL) — KazakhTTS-OmniVoice,
+    #            офлайн; пришёл на смену spark (тот стохастически выдавал 422)
+    #   spark  — казахский (Spark-сервер, SPARK_URL) — прежний офлайн-движок
     #   eleven — ElevenLabs (облако, ELEVENLABS_*) — казахский на eleven_v3 звучит
     #            чисто; ⚠️ НУЖЕН ИНТЕРНЕТ (в сети АФМ его нет — только если IT
     #            откроют доступ к api.elevenlabs.io), платно по символам
     #   say    — системный голос macOS (только локальная отладка)
     #   openai — внешний OpenAI-совместимый /audio/speech сервер
     tts_provider: str = "f5"        # русский/по умолчанию: f5 | say | openai | eleven
-    tts_kk_provider: str = "spark"  # казахский: spark | eleven | say | openai
+    tts_kk_provider: str = "omni"   # казахский: omni | spark | eleven | say | openai
     # Запасной провайдер, если основной не ответил (нет интернета к eleven, упал
     # сервер). Без него отказ облака = гражданин не слышит НИЧЕГО: в логах стенда
     # 27.07 казахский вопрос с eleven ждал 78 с и получил 502, хотя Spark был жив.
     # Пусто = без фолбэка (прежнее поведение). Фолбэк ru пуст: F5 — единственный
     # офлайн-движок русского, подменять его нечем.
     tts_fallback: str = ""
-    tts_kk_fallback: str = "spark"
+    # kk: основной — офлайн-omni, страховка — облако eleven (было наоборот, пока
+    # офлайн-движком был нестабильный Spark). Так казахский не зависит ни от
+    # интернета, ни от денег, но при падении ноды гражданин всё равно слышит ответ.
+    tts_kk_fallback: str = "eleven"
     # Сколько секунд не дёргать провайдера после его отказа. В офлайн-сети без
     # этого КАЖДЫЙ казахский вопрос сначала платил бы полный таймаут облака.
     # Первый запрос ждёт, следующие минуту идут сразу на фолбэк.
@@ -113,7 +118,8 @@ class Settings(BaseSettings):
     # JSON {text, language} (локальный f5_server, где референс задан на сервере).
     f5_ref_audio: str = ""   # путь к WAV-референсу тембра (для multipart-режима)
     f5_ref_text: str = ""    # транскрипт референса; "@путь" — прочитать из файла
-    spark_url: str = ""  # HTTP-эндпоинт Spark-TTS-сервера (казахский TTS)
+    spark_url: str = ""  # HTTP-эндпоинт Spark-TTS-сервера (казахский TTS, прежний)
+    omni_url: str = ""   # HTTP-эндпоинт OmniVoice-сервера (казахский TTS, основной)
     tts_format: str = "wav"
     # Длинное предложение (> ~182 симв.) TTS может обрезать — слишком длинные
     # предложения режем по словам на части не длиннее этого лимита.
@@ -256,13 +262,15 @@ class Settings(BaseSettings):
             return bool(self.tts_base_url and self.tts_model)
         if provider == "eleven":
             return bool(self.elevenlabs_api_key and self.elevenlabs_voice_id)
-        # f5/spark — сетевые сервисы: без адреса синтез невозможен. Проверяем URL,
+        # f5/spark/omni — сетевые сервисы: без адреса синтез невозможен. Проверяем URL,
         # иначе /health рапортует "включён", а /voice падает 502 уже у гражданина
         # (N3). "say" — локальный (macOS), URL не нужен.
         if provider == "f5":
             return bool(self.f5_url)
         if provider == "spark":
             return bool(self.spark_url)
+        if provider == "omni":
+            return bool(self.omni_url)
         if provider == "say":
             return True
         return False

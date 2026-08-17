@@ -1,0 +1,21 @@
+# OmniVoice-сервер (казахский TTS). venv: .venv-omni (создаётся omni_server/setup.sh)
+#
+# ⚠️ НЕ СЛИВАТЬ с .venv-spark и основным .venv: omnivoice требует
+# transformers >= 5.3, Spark сидит на 4.46. Полная установка — omni_server/setup.sh
+# (venv + библиотека + загрузка модели и аудио-токенизатора).
+[project]
+name = "ai-dos-omni"
+version = "0.1.0"
+description = "Ai-dos OmniVoice сервер казахского TTS (KazakhTTS-OmniVoice)"
+requires-python = ">=3.10"
+dependencies = [
+    "omnivoice==0.2.1",      # тянет torch>=2.4, transformers>=5.3, librosa, pydub
+    "soundfile",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "huggingface_hub[cli]",
+]
+
+[tool.uv]
+package = false

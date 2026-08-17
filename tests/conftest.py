@@ -1,7 +1,7 @@
 """Общая настройка тестов: офлайн-конфиг + замоканные внешние клиенты.
 
 Тесты НЕ ходят в сеть и НЕ грузят Whisper — внешние сервисы (STT-сервер АФМ,
-RAG :8077, F5/Spark) подменяются заглушками на уровне функций-клиентов.
+RAG :8077, F5/OmniVoice/Spark) подменяются заглушками на уровне функций-клиентов.
 """
 import os
 
@@ -17,6 +17,7 @@ os.environ["KIOSK_RATE_PER_MIN"] = "0"
 # без звука. Задаём фиктивные URL — сам синтез в тестах замокан (см. fixture client).
 os.environ.setdefault("F5_URL", "http://f5.test:8810/tts")
 os.environ.setdefault("SPARK_URL", "http://spark.test:8809/tts")
+os.environ.setdefault("OMNI_URL", "http://omni.test:8811/tts")
 
 import pytest
 from fastapi.testclient import TestClient

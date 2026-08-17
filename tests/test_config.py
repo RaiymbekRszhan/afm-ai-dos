@@ -26,6 +26,20 @@ def test_tts_enabled_false_for_spark_without_url():
     assert s.tts_enabled is False
 
 
+def test_tts_enabled_true_for_omni_with_url():
+    assert Settings(
+        tts_provider="f5", tts_kk_provider="omni",
+        f5_url="http://f5:8810/tts", omni_url="http://omni:8993/tts",
+    ).tts_enabled is True
+
+
+def test_tts_enabled_false_for_omni_without_url():
+    # То же правило, что у f5/spark: имя провайдера без адреса — не конфигурация.
+    # Иначе /health рапортует «включён», а казахский падает 502 уже у гражданина.
+    s = Settings(tts_provider="say", tts_kk_provider="omni", omni_url="")
+    assert s.tts_enabled is False
+
+
 def test_tts_enabled_true_for_say():
     assert Settings(tts_provider="say", tts_kk_provider="say").tts_enabled is True
 

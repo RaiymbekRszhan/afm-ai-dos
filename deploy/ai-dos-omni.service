@@ -1,0 +1,36 @@
+[Unit]
+Description=Ai-dos OmniVoice (казахский TTS, порт 8993)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-dos
+WorkingDirectory=/opt/ai-dos
+# GPU-нода АФМ: cuda. На CPU убрать строку (run.sh по умолчанию auto).
+Environment=OMNI_DEVICE=cuda
+# Оркестратор живёт на ДРУГОЙ машине (10.10.42.44) — слушаем не только localhost.
+# ⚠️ Порт должен быть закрыт снаружи LAN АФМ файрволом: аутентификации у сервиса нет.
+Environment=OMNI_HOST=0.0.0.0
+Environment=OMNI_PORT=8993
+# Модель и аудио-токенизатор лежат локально (models/omnivoice-kazakh/ +
+# .../audio_tokenizer/) — в сеть за ними ходить не нужно и НЕЛЬЗЯ (её нет).
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStart=/bin/bash omni_server/run.sh
+Restart=always
+RestartSec=5
+# Модель ~2,5 ГБ грузится с диска: не считаем медленный старт падением.
+TimeoutStartSec=600
+
+# Базовый sandbox. ProtectHome/ProtectSystem=strict НЕ ставим: модели/HF-кэш
+# могут быть в домашнем каталоге пользователя ai-dos.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

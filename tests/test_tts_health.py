@@ -3,6 +3,8 @@ HTTP-ответа (multipart-F5 на GPU отвечает 404, но ЖИВ), Ele
 """
 import asyncio
 
+import pytest
+
 from app.clients import tts
 
 
@@ -131,6 +133,30 @@ def test_healthy_probes_fallback_provider(monkeypatch):
     assert out["spark"]["reachable"] is True
 
 
+def test_healthy_probes_omni(monkeypatch):
+    """Казахский на OmniVoice: пингуем его сервер, а не Spark (тот может вообще
+    не быть поднят — это уже не основной движок)."""
+    monkeypatch.setattr(tts.settings, "tts_provider", "f5")
+    monkeypatch.setattr(tts.settings, "tts_kk_provider", "omni")
+    monkeypatch.setattr(tts.settings, "tts_fallback", "")
+    monkeypatch.setattr(tts.settings, "tts_kk_fallback", "")
+    monkeypatch.setattr(tts.settings, "f5_url", "http://f5:8991/tts")
+    monkeypatch.setattr(tts.settings, "omni_url", "http://omni:8993/tts")
+
+    seen = []
+
+    async def fake_probe(client, url):
+        seen.append(url)
+        return {"reachable": True, "status": 200}
+
+    monkeypatch.setattr(tts, "_probe_responds", fake_probe)
+
+    out = asyncio.run(tts.healthy())
+    assert out["omni"]["reachable"] is True
+    assert "spark" not in out
+    assert "http://omni:8993/tts" in seen
+
+
 # ---------------------------------------------------------------------------
 # Проверка TLS у клиента ElevenLabs. На сервере АФМ прокси вскрывает TLS, и
 # правку `verify=False` держали ПРЯМО В КОДЕ — она терялась при каждом
@@ -176,3 +202,49 @@ def test_eleven_verify_ssl_passed_to_client(monkeypatch):
     monkeypatch.setattr(tts.settings, "elevenlabs_verify_ssl", False)
     asyncio.run(tts._eleven("тест", "russian"))
     assert seen["verify"] is False                   # за прокси АФМ — отключаемо
+
+
+# ---------------------------------------------------------------------------
+# Контракт клиента OmniVoice. Он намеренно совпадает со Spark: смена движка
+# должна стоить одной строки в .env, а не правки пайплайна.
+# ---------------------------------------------------------------------------
+
+def test_omni_posts_spark_contract(monkeypatch):
+    seen = {}
+
+    class _Client:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **kw):
+            seen["url"] = url
+            seen["json"] = kw.get("json")
+
+            class _R:
+                content = b"RIFF....WAVE"
+
+                @staticmethod
+                def raise_for_status():
+                    return None
+            return _R()
+
+    monkeypatch.setattr(tts.settings, "omni_url", "http://omni:8993/tts")
+    monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+    out = asyncio.run(tts._omni("Сәлеметсіз бе.", "kazakh"))
+    assert out == b"RIFF....WAVE"
+    assert seen["url"] == "http://omni:8993/tts"
+    assert seen["json"] == {"text": "Сәлеметсіз бе.", "language": "kazakh"}
+
+
+def test_omni_without_url_raises(monkeypatch):
+    # Без адреса — понятная ошибка, а не таймаут на пустой строке.
+    monkeypatch.setattr(tts.settings, "omni_url", "")
+    with pytest.raises(RuntimeError, match="OMNI_URL"):
+        asyncio.run(tts._omni("тест", "kazakh"))
