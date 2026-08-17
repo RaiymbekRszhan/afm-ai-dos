@@ -4,8 +4,14 @@
 несовместимы с основным API и со Spark (у того transformers 4.46). Основной API
 зовёт сюда по HTTP.
 
-Контракт — ТОТ ЖЕ, что у Spark (его ждёт app/clients/tts.py -> _omni):
-    POST /tts   {"text": "...", "language": "kazakh"}   ->  audio/wav
+Два контракта (оба ждёт app/clients/tts.py -> _omni), как у F5:
+    POST /tts  JSON {"text": "...", "language": "kazakh"}      ->  audio/wav
+               — как у Spark; голос задан НА СЕРВЕРЕ (env ниже);
+    POST /tts  multipart {ref_audio, ref_text, gen_text}        ->  audio/wav
+               — голос клонируется с образца, который прислал КЛИЕНТ (так
+               оркестратор задаёт голос русского F5 на GPU-ноде АФМ). Промпт
+               кэшируется по хешу образца, поэтому платим за токенизацию один
+               раз, а не на каждый кусок ответа.
     GET  /health
 
 Модель — shyngys879/KazakhTTS-OmniVoice (файнтюн k2-fsa/OmniVoice на KazakhTTS2).
@@ -29,6 +35,8 @@ OMNI_NUM_STEP шагов), поэтому нет вырожденной гене
     OMNI_GUIDANCE     guidance scale. default: 2.0
     OMNI_PORT         default: 8811
 """
+import asyncio
+import hashlib
 import io
 import os
 import threading
@@ -37,9 +45,8 @@ import time
 import soundfile as sf
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
 
 MODEL = os.environ.get("OMNI_MODEL", "models/omnivoice-kazakh")
 DEVICE = os.environ.get("OMNI_DEVICE", "auto")
@@ -117,29 +124,54 @@ _infer_lock = threading.Lock()
 app = FastAPI(title="KazakhTTS-OmniVoice")
 
 
-class TTSRequest(BaseModel):
-    text: str = Field(..., max_length=MAX_CHARS)
-    language: str | None = "kazakh"
-
-
 @app.get("/health")
 def health():
     return {
         "status": "ok",
         "model": MODEL,
         "device": _device,
+        # cloning — про СЕРВЕРНЫЙ образец (env). Клиентский приходит в multipart
+        # и виден по client_refs: сколько чужих образцов уже закэшировано.
         "cloning": _prompt is not None,
+        "client_refs": len(_client_prompts),
         "instruct": INSTRUCT or None,
     }
 
 
-def _infer(text: str):
+# Клиентские референсы (multipart) — по хешу образца, чтобы не токенизировать его
+# на каждый кусок ответа. Клиент у нас один и образец один, поэтому 4 записей с
+# запасом; больше — вытесняем самый старый, иначе память утекает на чужих WAV.
+_client_prompts: dict[str, object] = {}
+_CLIENT_PROMPT_MAX = 4
+
+
+def _prompt_for_client_ref(audio: bytes, ref_text: str):
+    """Клон-промпт для присланного клиентом образца (с кэшем)."""
+    key = hashlib.sha256(audio).hexdigest() + "|" + ref_text
+    cached = _client_prompts.get(key)
+    if cached is not None:
+        return cached
+    # Читаем из памяти: временные файлы тут не нужны, create_voice_clone_prompt
+    # принимает (waveform, sample_rate).
+    data, sr = sf.read(io.BytesIO(audio), dtype="float32", always_2d=True)
+    wav = torch.from_numpy(data.mean(axis=1))  # моно: образец может быть стерео
+    with _infer_lock:
+        prompt = _model.create_voice_clone_prompt((wav, sr), ref_text=ref_text)
+    if len(_client_prompts) >= _CLIENT_PROMPT_MAX:
+        _client_prompts.pop(next(iter(_client_prompts)))
+    _client_prompts[key] = prompt
+    print(f"[omni] клон-промпт от клиента посчитан и закэширован ({len(audio)} байт образца)")
+    return prompt
+
+
+def _infer(text: str, prompt=None):
     """Один прогон синтеза. Режимы: клон -> voice design -> авто."""
     kw = {"num_step": NUM_STEP, "guidance_scale": GUIDANCE}
     if SPEED:
         kw["speed"] = SPEED
-    if _prompt is not None:
-        kw["voice_clone_prompt"] = _prompt
+    prompt = prompt if prompt is not None else _prompt
+    if prompt is not None:
+        kw["voice_clone_prompt"] = prompt
     elif INSTRUCT:
         kw["instruct"] = INSTRUCT
     # normalize_text=False: числа и юр-аббревиатуры уже раскрыты оркестратором
@@ -150,16 +182,50 @@ def _infer(text: str):
 
 
 @app.post("/tts")
-def synthesize(req: TTSRequest):
-    text = req.text.strip()
+async def tts(request: Request):
+    """Разводит два контракта по Content-Type.
+
+    Разбор ручной, а не через pydantic-модель в сигнатуре: один и тот же путь
+    должен принимать И JSON, И multipart, а FastAPI на смешанной сигнатуре
+    (Form/File + модель) ломает ту ветку, которой нет в запросе.
+    """
+    ctype = request.headers.get("content-type", "")
+    if ctype.startswith("multipart/"):
+        form = await request.form()
+        upload = form.get("ref_audio")
+        text = (form.get("gen_text") or "").strip()
+        ref_text = (form.get("ref_text") or "").strip()
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(status_code=400, detail="Нет файла ref_audio")
+        if not ref_text:
+            raise HTTPException(status_code=400, detail="Нет ref_text (транскрипт образца)")
+        audio_bytes = await upload.read()
+        _check_text(text)
+        # Токенизация образца блокирующая, как и синтез, — уводим в поток, иначе
+        # первый запрос заморозил бы весь event loop сервиса.
+        prompt = await asyncio.to_thread(_prompt_for_client_ref, audio_bytes, ref_text)
+    else:
+        payload = await request.json()
+        text = (payload.get("text") or "").strip()
+        _check_text(text)
+        prompt = None    # голос с сервера (env) либо выбранный моделью
+    return await asyncio.to_thread(_synthesize_blocking, text, prompt)
+
+
+def _check_text(text: str) -> None:
     if not text:
         raise HTTPException(status_code=400, detail="Пустой текст")
+    if len(text) > MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"Текст длиннее {MAX_CHARS} символов")
+
+
+def _synthesize_blocking(text: str, prompt=None):
     last_err: Exception | None = None
     for attempt in range(RETRIES + 1):
         started = time.monotonic()
         try:
             with _infer_lock:
-                wav = _infer(text)
+                wav = _infer(text, prompt)
         except torch.cuda.OutOfMemoryError as e:
             # OOM повтором не лечится (только усугубляет) — отдаём сразу.
             torch.cuda.empty_cache()

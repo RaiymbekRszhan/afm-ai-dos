@@ -456,6 +456,78 @@ def test_f5_reference_reads_at_path_and_caches(monkeypatch, tmp_path):
     assert str(ref) in tts._f5_ref_cache               # закэшировано
 
 
+def test_omni_multipart_contract_when_ref_configured(monkeypatch, tmp_path):
+    """OMNI_REF_AUDIO задан -> multipart, и казахский голос клонируется с НАШЕГО
+    образца — как у F5.
+
+    Зачем: обёртка OmniVoice на ноде АФМ звала generate() без референса, модель
+    выбирала голос сама, и получался женский ~219 Гц против мужского 147 Гц у
+    русского F5 — «цифровой офицер» менял пол вместе с языком (замер 17.08).
+    """
+    import asyncio
+    import httpx
+
+    ref = tmp_path / "ref_kk.wav"
+    ref.write_bytes(b"RIFF0000")
+    monkeypatch.setattr(tts.settings, "omni_url", "http://omni/tts")
+    monkeypatch.setattr(tts.settings, "omni_ref_audio", str(ref))
+    monkeypatch.setattr(tts.settings, "omni_ref_text", "транскрипт образца")
+    tts._omni_ref_cache.clear()
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    out = asyncio.run(tts._omni("Сәлеметсіз бе.", "kazakh"))
+    assert out == b"RIFFwav"
+    sent = _FakeClient.sent
+    assert sent["json"] is None                        # НЕ JSON-контракт
+    assert "ref_audio" in sent["files"]                 # образец — файлом
+    assert sent["data"]["ref_text"] == "транскрипт образца"
+    # ⚠️ Точечного паддинга, как у F5, тут быть НЕ должно: OmniVoice сам считает
+    # длительность и хвост не срезает, а лишние точки озвучил бы паузой.
+    assert sent["data"]["gen_text"] == "Сәлеметсіз бе."
+
+
+def test_omni_json_contract_when_no_ref(monkeypatch):
+    """Без OMNI_REF_AUDIO -> JSON {text, language}: контракт Spark, голос задан на
+    сервере. Это ОБЯЗАТЕЛЬНО дефолт: обёртка на ноде АФМ multipart не понимает."""
+    import asyncio
+    import httpx
+
+    monkeypatch.setattr(tts.settings, "omni_url", "http://omni/tts")
+    monkeypatch.setattr(tts.settings, "omni_ref_audio", "")
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    out = asyncio.run(tts._omni("Сәлеметсіз бе.", "kazakh"))
+    assert out == b"RIFFwav"
+    sent = _FakeClient.sent
+    assert sent["files"] is None                       # НЕ multipart
+    assert sent["json"] == {"text": "Сәлеметсіз бе.", "language": "kazakh"}
+
+
+def test_omni_reference_reads_at_path_and_requires_text(monkeypatch, tmp_path):
+    """OMNI_REF_TEXT='@path' читается из файла; пустой транскрипт — ошибка.
+
+    Транскрипт обязан совпадать со сказанным в образце, поэтому молчаливое
+    клонирование «без текста» запрещаем: клон от него заметно плывёт.
+    """
+    ref = tmp_path / "ref_kk.wav"
+    ref.write_bytes(b"RIFFaudio")
+    txt = tmp_path / "ref_kk.txt"
+    txt.write_text("сөйлемнің транскрипті", encoding="utf-8")
+    monkeypatch.setattr(tts.settings, "omni_ref_audio", str(ref))
+    monkeypatch.setattr(tts.settings, "omni_ref_text", "@" + str(txt))
+    tts._omni_ref_cache.clear()
+
+    audio, ref_text = tts._omni_reference()
+    assert audio == b"RIFFaudio"
+    assert ref_text == "сөйлемнің транскрипті"
+    assert str(ref) in tts._omni_ref_cache             # закэшировано
+
+    tts._omni_ref_cache.clear()
+    monkeypatch.setattr(tts.settings, "omni_ref_text", "   ")
+    with pytest.raises(RuntimeError, match="OMNI_REF_TEXT"):
+        tts._omni_reference()
+
+
 # ---------- RAG: роутинг языка и health-url ----------
 def test_resolve_lang():
     assert rag._resolve_lang("russian") == "ru"

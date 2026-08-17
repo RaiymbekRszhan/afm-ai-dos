@@ -1526,11 +1526,48 @@ async def _spark(text: str, language: str | None) -> bytes:
 
 
 # ---------- OmniVoice (казахский, отдельный сервис по HTTP) ----------
-async def _omni(text: str, language: str | None) -> bytes:
-    """Вызывает OmniVoice-сервер. Контракт ТОТ ЖЕ, что у Spark: POST -> WAV.
+_omni_ref_cache: dict[str, tuple[bytes, str]] = {}  # путь -> (аудио-байты, ref_text)
 
-    Контракт совпадает намеренно: замена движка = одна строка в .env
-    (TTS_KK_PROVIDER + OMNI_URL), нарезка/склейка/стриминг не меняются.
+
+def _omni_reference() -> tuple[bytes, str]:
+    """Клиентский референс (аудио + транскрипт) для multipart-контракта OmniVoice.
+
+    Один в один как `_f5_reference` — специально: голос обоих языков задаётся
+    одинаково, файлом в repo и строкой в .env, а не настройкой на чужом сервере.
+    """
+    path = settings.omni_ref_audio
+    cached = _omni_ref_cache.get(path)
+    if cached is not None:
+        return cached
+    if not os.path.isfile(path):
+        raise RuntimeError(f"OMNI_REF_AUDIO={path!r} — файл референса не найден.")
+    with open(path, "rb") as f:
+        audio = f.read()
+    ref_text = settings.omni_ref_text
+    if ref_text.startswith("@"):
+        ref_path = ref_text[1:]
+        if not os.path.isfile(ref_path):
+            raise RuntimeError(f"OMNI_REF_TEXT=@{ref_path} — файл транскрипта не найден.")
+        with open(ref_path, encoding="utf-8") as f:
+            ref_text = f.read().strip()
+    if not ref_text.strip():
+        raise RuntimeError(
+            "OMNI_REF_TEXT пуст — клонирование требует транскрипт референса, и он "
+            "обязан ТОЧНО совпадать со сказанным в WAV (иначе клон плывёт). "
+            "Укажи текст или @refs/ref_kk_omni.txt в .env."
+        )
+    result = (audio, ref_text)
+    _omni_ref_cache[path] = result
+    return result
+
+
+async def _omni(text: str, language: str | None) -> bytes:
+    """Вызывает OmniVoice-сервер (казахский TTS). Два контракта, как у F5:
+
+    - multipart (если задан OMNI_REF_AUDIO): POST {ref_audio, ref_text, gen_text}
+      — голос клонируется с НАШЕГО образца, сервер о нём знать не обязан;
+    - JSON (иначе): POST {text, language} — совпадает со Spark, голос задан на
+      сервере (или выбран им самим).
     """
     import httpx
     if not settings.omni_url:
@@ -1538,8 +1575,22 @@ async def _omni(text: str, language: str | None) -> bytes:
             "TTS казахский = omni, но OMNI_URL не задан. Запусти omni_server."
         )
     async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(settings.omni_url,
-                                 json={"text": text, "language": language or "kazakh"})
+        if settings.omni_ref_audio:
+            audio, ref_text = _omni_reference()
+            # Ничего похожего на F5-паддинг точками здесь НЕ нужно: OmniVoice
+            # оценивает длительность сам и хвост не срезает (проверено на бою —
+            # 222 симв. -> 14,3 с звука), а лишние точки он бы озвучил паузой.
+            resp = await client.post(
+                settings.omni_url,
+                files={"ref_audio": ("ref.wav", audio, "audio/wav")},
+                data={"ref_text": ref_text, "gen_text": text,
+                      "language": language or "kazakh"},
+            )
+        else:
+            resp = await client.post(
+                settings.omni_url,
+                json={"text": text, "language": language or "kazakh"},
+            )
         resp.raise_for_status()
         return resp.content
 

@@ -125,8 +125,20 @@ fi
 # провайдер выбран (второй просто не дёргается) — так фолбэк не остаётся без URL.
 if [ "$USE_LOCAL_OMNI" = "1" ]; then
   export OMNI_URL="${OMNI_URL:-http://localhost:8811/tts}"
+  # Наш omni_server понимает multipart-контракт (как F5 на GPU-ноде), поэтому
+  # голос задаём КЛИЕНТСКИМ образцом: тот же голос АФМ, что и у русского.
+  export OMNI_REF_AUDIO="${OMNI_REF_AUDIO:-refs/ref_kk_omni.wav}"
+  export OMNI_REF_TEXT="${OMNI_REF_TEXT:-@refs/ref_kk_omni.txt}"
 else
   export OMNI_URL="${OMNI_URL:-http://192.168.165.2:8992/tts}"
+  # ⚠️ ПУСТО НАМЕРЕННО. На ноде АФМ стоит ЧУЖАЯ обёртка («KazakhTTS API»), её
+  # /tts принимает только JSON: multipart она отвергнет (422), а референс внутри
+  # JSON молча проигнорирует — проверено 17.08. Голос там выбирает сама модель
+  # (женский ~219 Гц против мужского 147 Гц у русского F5). Чтобы получить голос
+  # АФМ и на казахском, нужен НАШ omni_server (или правка их обёртки —
+  # см. omni_server/README.md).
+  export OMNI_REF_AUDIO="${OMNI_REF_AUDIO:-}"
+  export OMNI_REF_TEXT="${OMNI_REF_TEXT:-}"
 fi
 if [ "$USE_LOCAL_SPARK" = "1" ]; then
   export SPARK_URL="${SPARK_URL:-http://localhost:8809/tts}"
